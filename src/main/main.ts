@@ -252,10 +252,11 @@ function setupAutoUpdates() {
   // The updater only works in a packaged app with published release metadata.
   if (!app.isPackaged) return;
 
-  // Manual: the General settings "check for updates" flow decides when to
-  // download, so a background check doesn't preempt it with the full-screen
-  // takeover. Install still happens on quit once something is downloaded.
-  autoUpdater.autoDownload = false;
+  // Automatic on launch: the startup check downloads a found update straight
+  // away, so the renderer walks available → downloading (progress bar) →
+  // downloaded → "reinicia para instalar" without any user action. The General
+  // settings "check for updates" modal rides the same status stream.
+  autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on("checking-for-update", () =>
