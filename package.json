@@ -1,6 +1,6 @@
 {
   "name": "admanager",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Active Directory Onboarding Manager — Bauer Media Audio Portugal",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -65,7 +65,7 @@
       }
     },
     "win": {
-      "icon": "build/icon.png",
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
