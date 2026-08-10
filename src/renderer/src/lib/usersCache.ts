@@ -25,3 +25,10 @@ export const usersCache: UsersCache = {
 export function setUsersCache(next: Partial<UsersCache>): void {
   Object.assign(usersCache, next);
 }
+
+// Users already living in a category (OU), read straight from the cache — used
+// to populate the "copy groups from" dropdowns without re-hitting AD. Callers
+// should still fall back to a fetch when `usersCache.loaded` is false.
+export function usersInGroup(groupName: string): UserWithGroup[] {
+  return usersCache.users.filter((u) => u.groupName === groupName && u.SamAccountName);
+}

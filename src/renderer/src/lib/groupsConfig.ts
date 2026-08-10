@@ -2,6 +2,9 @@ export interface GroupEntry {
   adGroups:   string[];
   jobTitles:  string[];
   department: string;
+  // SamAccountName of the user this group copies group memberships from by
+  // default. Pre-selected in the create-user wizard; "" / undefined = none.
+  defaultTemplateUser?: string;
 }
 
 export type GroupConfig = Record<string, GroupEntry>;
@@ -69,6 +72,7 @@ function migrate(raw: Record<string, unknown>): GroupConfig {
         adGroups:   val as string[],
         jobTitles:  defaults?.jobTitles  ?? [],
         department: defaults?.department ?? "",
+        defaultTemplateUser: "",
       };
     } else if (val && typeof val === "object") {
       const entry = val as Partial<GroupEntry>;
@@ -76,6 +80,7 @@ function migrate(raw: Record<string, unknown>): GroupConfig {
         adGroups:   entry.adGroups   ?? [],
         jobTitles:  entry.jobTitles  ?? [],
         department: entry.department ?? "",
+        defaultTemplateUser: entry.defaultTemplateUser ?? "",
       };
     }
   }

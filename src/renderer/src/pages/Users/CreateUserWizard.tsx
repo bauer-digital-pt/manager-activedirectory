@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { ArrowLeft, Check, ChevronRight, Users } from "lucide-react";
 import { adAPI, type ADGroup, type ADUser } from "../../adAPI";
 import { getGroupConfig, type GroupConfig } from "../../lib/groupsConfig";
+import { usersCache, usersInGroup } from "../../lib/usersCache";
 import { cn } from "../../lib/cn";
 import type { ExternalToast } from "sonner";
 
@@ -91,21 +92,40 @@ export default function CreateUserWizard({
 
   useEffect(() => { getGroupConfig().then(setGroupConfig_); }, []);
 
-  // When the category (OU) changes, fetch its current users so the operator can
-  // copy an existing member's group memberships onto the new account.
+  // When the category (OU) changes, offer its current users as "copy groups
+  // from" templates. Served straight from the shared users cache — no refetch —
+  // and only falls back to AD when the cache was never warmed. The group's
+  // configured default template user is pre-selected when present.
   useEffect(() => {
-    setForm((f) => ({ ...f, copyFromUser: "" }));
-    if (!form.groupName) { setTemplateUsers([]); return; }
+    if (!form.groupName) { setTemplateUsers([]); setForm((f) => ({ ...f, copyFromUser: "" })); return; }
+
+    const applyDefault = (list: ADUser[]) => {
+      const def = groupConfig[form.groupName]?.defaultTemplateUser ?? "";
+      const preselect = def && list.some((u) => u.SamAccountName === def) ? def : "";
+      setForm((f) => ({ ...f, copyFromUser: preselect }));
+    };
+
+    const cached = usersInGroup(form.groupName);
+    if (usersCache.loaded || cached.length > 0) {
+      setTemplateUsers(cached);
+      setLoadingTemplates(false);
+      applyDefault(cached);
+      return;
+    }
+
+    // Cache never loaded (wizard opened cold) — fetch this OU's members once.
     let cancelled = false;
     setLoadingTemplates(true);
+    setForm((f) => ({ ...f, copyFromUser: "" }));
     adAPI.getGroupMembers(form.groupName).then((r) => {
       if (cancelled) return;
-      const list = r.ok && Array.isArray(r.data) ? (r.data as ADUser[]) : [];
-      setTemplateUsers(list.filter((u) => u.SamAccountName));
+      const list = (r.ok && Array.isArray(r.data) ? (r.data as ADUser[]) : []).filter((u) => u.SamAccountName);
+      setTemplateUsers(list);
       setLoadingTemplates(false);
+      applyDefault(list);
     });
     return () => { cancelled = true; };
-  }, [form.groupName]);
+  }, [form.groupName, groupConfig]);
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
   const stepIdx = STEPS.findIndex((s) => s.id === step);

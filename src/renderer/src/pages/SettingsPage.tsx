@@ -5,7 +5,8 @@ import { getConnection, setConnection, type ConnectionInfo } from "../lib/connec
 import { getSettings, setSettings, type AppSettings } from "../lib/appSettings";
 import { getAppVersion } from "../lib/updates";
 import UpdateCheckModal from "../components/UpdateCheckModal";
-import { adAPI } from "../adAPI";
+import { adAPI, type ADUser } from "../adAPI";
+import { usersCache, usersInGroup } from "../lib/usersCache";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
 
@@ -312,6 +313,10 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
   const [newOnboarding, setNewOnboarding] = useState("");
   const [newADGroup, setNewADGroup] = useState("");
   const [newJobTitle, setNewJobTitle] = useState("");
+  // Members of the selected category (OU), used to pick a default template user.
+  // Cache-first: only hits AD when the shared users cache was never warmed.
+  const [groupUsers, setGroupUsers] = useState<Record<string, ADUser[]>>({});
+  const [loadingGroupUsers, setLoadingGroupUsers] = useState(false);
 
   useEffect(() => {
     getGroupConfig().then((c) => {
@@ -321,16 +326,34 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
     });
   }, []);
 
+  useEffect(() => {
+    if (!selected) return;
+    const cached = usersInGroup(selected);
+    if (usersCache.loaded || cached.length > 0) {
+      setGroupUsers((m) => ({ ...m, [selected]: cached }));
+      return;
+    }
+    let cancelled = false;
+    setLoadingGroupUsers(true);
+    adAPI.getGroupMembers(selected).then((r) => {
+      if (cancelled) return;
+      const list = (r.ok && Array.isArray(r.data) ? (r.data as ADUser[]) : []).filter((u) => u.SamAccountName);
+      setGroupUsers((m) => ({ ...m, [selected]: list }));
+      setLoadingGroupUsers(false);
+    });
+    return () => { cancelled = true; };
+  }, [selected]);
+
   const persist = async (next: GroupConfig) => {
     setConfig(next);
     await setGroupConfig(next);
   };
 
-  const entry = selected ? (config[selected] ?? { adGroups: [], jobTitles: [], department: "" }) : null;
+  const entry = selected ? (config[selected] ?? { adGroups: [], jobTitles: [], department: "", defaultTemplateUser: "" }) : null;
 
   const updateEntry = async (key: string, patch: Partial<typeof entry>) => {
     if (!key) return;
-    const current = config[key] ?? { adGroups: [], jobTitles: [], department: "" };
+    const current = config[key] ?? { adGroups: [], jobTitles: [], department: "", defaultTemplateUser: "" };
     await persist({ ...config, [key]: { ...current, ...patch } });
   };
 
@@ -383,6 +406,11 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
   const setDepartment = async (value: string) => {
     if (!selected) return;
     await updateEntry(selected, { department: value });
+  };
+
+  const setDefaultTemplateUser = async (value: string) => {
+    if (!selected) return;
+    await updateEntry(selected, { defaultTemplateUser: value });
   };
 
   const resetDefaults = async () => {
@@ -478,6 +506,45 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
           </div>
 
           <div className="px-8 py-6 space-y-8 max-w-xl">
+
+            {/* Default template user — whose group memberships new users copy */}
+            <section className="space-y-3">
+              <div>
+                <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Utilizador-modelo</h3>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Novos utilizadores deste grupo copiam os grupos deste utilizador (pré-selecionado no wizard).
+                </p>
+              </div>
+              {(() => {
+                const members = groupUsers[selected] ?? [];
+                const missing = entry.defaultTemplateUser && !members.some((u) => u.SamAccountName === entry.defaultTemplateUser);
+                return (
+                  <>
+                    <select
+                      value={entry.defaultTemplateUser ?? ""}
+                      onChange={(e) => setDefaultTemplateUser(e.target.value)}
+                      disabled={loadingGroupUsers}
+                      className="w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all disabled:opacity-60"
+                    >
+                      <option value="">
+                        {loadingGroupUsers
+                          ? "A carregar utilizadores…"
+                          : members.length === 0
+                            ? "Nenhum utilizador nesta pasta"
+                            : "Sem utilizador-modelo"}
+                      </option>
+                      {/* Keep a stored-but-absent selection visible instead of silently dropping it. */}
+                      {missing && <option value={entry.defaultTemplateUser}>{entry.defaultTemplateUser} (não encontrado)</option>}
+                      {members.map((u) => (
+                        <option key={u.SamAccountName} value={u.SamAccountName}>
+                          {u.DisplayName || u.SamAccountName}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                );
+              })()}
+            </section>
 
             {/* Department */}
             <section className="space-y-3">
