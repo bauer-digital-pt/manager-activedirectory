@@ -52,10 +52,20 @@ const EMPTY: Form = {
 
 const COMPANY = "Bauer Media Audio Portugal";
 
-const buildEmail = (first: string, last: string) =>
-  first && last
-    ? `${first.toLowerCase().replace(/\s/g, "")}.${last.toLowerCase().replace(/\s/g, "")}@bauermedia.pt`
-    : "";
+// Names in this org routinely carry Portuguese diacritics (João, Conceição) and
+// sometimes hyphens/apostrophes (Sá-Carneiro, D'Almeida). AD logon names and
+// email addresses must be plain ASCII, so strip accents and drop any character
+// that isn't a letter or digit when deriving a login token from a name.
+const deaccent = (s: string) =>
+  s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+const slug = (s: string) => deaccent(s).replace(/[^a-z0-9]/g, "");
+
+const buildEmail = (first: string, last: string) => {
+  const f = slug(first);
+  const l = slug(last);
+  return f && l ? `${f}.${l}@bauermedia.pt` : "";
+};
 
 export default function CreateUserWizard({
   groups,
@@ -84,7 +94,7 @@ export default function CreateUserWizard({
   const suggestDefaults = () => {
     setForm((f) => ({
       ...f,
-      username:   f.username   || (f.firstName && f.lastName ? `${f.firstName}.${f.lastName}`.toLowerCase().replace(/\s/g, "") : f.username),
+      username:   f.username   || (slug(f.firstName) && slug(f.lastName) ? `${slug(f.firstName)}.${slug(f.lastName)}` : f.username),
       email:      buildEmail(f.firstName, f.lastName),
       department: f.department || groupConfig[f.groupName]?.department || "",
     }));
@@ -390,13 +400,13 @@ export default function CreateUserWizard({
                           BMAP\
                         </span>
                         <input ref={usernameRef} value={form.username}
-                          onChange={(e) => set("username", e.target.value.toLowerCase())}
+                          onChange={(e) => set("username", deaccent(e.target.value).replace(/[^a-z0-9._-]/g, ""))}
                           placeholder="joao.silva" className={cn(inputCls, "flex-1")} />
                       </div>
                     </Field>
                     <Field label="Email">
                       <input ref={emailRef} value={form.email}
-                        onChange={(e) => set("email", e.target.value.toLowerCase())}
+                        onChange={(e) => set("email", deaccent(e.target.value).replace(/[^a-z0-9._%+@-]/g, ""))}
                         placeholder="joao.silva@bauermedia.pt" className={inputCls} />
                     </Field>
                   </div>
