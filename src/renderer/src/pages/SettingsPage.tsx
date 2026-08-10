@@ -243,7 +243,7 @@ function ConnectionTab({ toast }: { toast: { success: ToastFn; error: ToastFn } 
         <section className="space-y-4">
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Domain controller (IP or host)</label>
-            <input value={server} onChange={(e) => { setServer(e.target.value); setResult(null); }} placeholder="e.g. 192.168.1.10 or dc01.bmap.lis" className={inputCls} />
+            <input value={server} onChange={(e) => { setServer(e.target.value); setResult(null); }} placeholder="ex: pt-srv-dc02 (bmap.lis)" className={inputCls} />
           </div>
 
           <div className="space-y-1.5">

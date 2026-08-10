@@ -92,7 +92,7 @@ export default function SetupRequired({
         // Never a hard trap: allow leaving to the app while the install runs.
         actions={continueAction ? [continueAction] : undefined}
       >
-        <p className="flex max-w-[52ch] items-start gap-2 text-xs leading-relaxed text-zinc-400">
+        <p className="flex max-w-[52ch] items-start gap-2 text-xs leading-relaxed text-white/55">
           <Info size={14} className="mt-px shrink-0" />
           Vai transferir e instalar via Windows Update. Não feches a aplicação
           enquanto a instalação decorre.
@@ -118,7 +118,7 @@ export default function SetupRequired({
         }
         progress={{ percent: 100, label: "Concluído" }}
       >
-        <p className="flex items-center gap-2 text-sm text-zinc-400">
+        <p className="flex items-center gap-2 text-sm text-white/60">
           <Loader2 size={15} className="animate-spin" />
           A continuar…
         </p>
@@ -168,7 +168,7 @@ export default function SetupRequired({
       subtitle={
         <>
           Falta o módulo{" "}
-          <span className="font-medium text-zinc-700">
+          <span className="font-medium text-white">
             Active Directory (RSAT)
           </span>{" "}
           do Windows. Sem ele, o AD Manager não consegue comunicar com o Active
@@ -177,7 +177,7 @@ export default function SetupRequired({
       }
       actions={idleActions}
     >
-      <p className="mb-6 flex items-start gap-2 text-xs leading-relaxed text-zinc-400">
+      <p className="mb-6 flex items-start gap-2 text-xs leading-relaxed text-white/55">
         <Info size={14} className="mt-px shrink-0" />
         Transfere e instala via Windows Update (~alguns minutos).
       </p>

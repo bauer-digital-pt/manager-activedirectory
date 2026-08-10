@@ -1,8 +1,9 @@
-import { Users, Settings, Terminal, User } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Users, Settings, Terminal, User, LogOut } from "lucide-react";
 import { cn } from "../lib/cn";
 import type { Page } from "../App";
 import { initials } from "../lib/initials";
-import logo from "../assets/bauer-media-logo.svg";
+import brandFull from "../assets/logo_1.png";
 
 const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean }[] = [
   { id: "users",    label: "Users",    icon: Users,    bind: "1" },
@@ -19,20 +20,40 @@ interface SidebarProps {
   userName: string;
   /** Live connection state: true=up, false=down/timeout, null=checking. */
   connOk: boolean | null;
+  /** End the session and return to the login screen. */
+  onLogout: () => void;
 }
 
-export default function Sidebar({ active, onNavigate, devMode, userName, connOk }: SidebarProps) {
+export default function Sidebar({ active, onNavigate, devMode, userName, connOk, onLogout }: SidebarProps) {
   const nav = NAV.filter((n) => !n.dev || devMode);
   const inits = initials(userName);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close the account menu on an outside click or Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMenuOpen(false); };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [menuOpen]);
 
   const dotColor = connOk === false ? "#ef4444" : connOk === true ? "#1fd1bd" : "#f59e0b";
   const dotTitle = connOk === false ? "Sem ligação ao AD" : connOk === true ? "Ligado ao AD" : "A verificar ligação…";
 
   return (
     <aside className="w-16 h-full flex flex-col items-center border-r border-zinc-100 bg-white select-none">
-      {/* Logo */}
+      {/* Logo — full brand mark cropped in-place to just the "B" glyph. */}
       <div className="py-4 border-b border-zinc-100 w-full flex justify-center">
-        <img src={logo} alt="Bauer Media" className="w-9 h-9" />
+        <div className="h-9 w-9 overflow-hidden flex items-center justify-start" title="Bauer Media">
+          {/* logo_1 is the full "Bauer Media" lockup; scale it up and clip so only
+              the "B" glyph on the left shows (the wordmark + arrow fall outside). */}
+          <img src={brandFull} alt="Bauer Media" className="h-11 w-auto max-w-none object-left" />
+        </div>
       </div>
 
       {/* Nav */}
@@ -56,10 +77,14 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk 
         })}
       </nav>
 
-      {/* User avatar + live connection status */}
-      <div className="pb-4">
-        <div
-          className="relative w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-semibold"
+      {/* User avatar → account menu (logout). Live connection status on the dot. */}
+      <div className="relative pb-4" ref={menuRef}>
+        <button
+          type="button"
+          onClick={() => setMenuOpen((o) => !o)}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          className="relative w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-semibold transition-shadow hover:ring-2 hover:ring-violet-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
           style={{ backgroundColor: "#4700a3" }}
           title={`${userName || "Utilizador"} — ${dotTitle}`}
         >
@@ -68,7 +93,32 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk 
             className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white"
             style={{ backgroundColor: dotColor }}
           />
-        </div>
+        </button>
+
+        {menuOpen && (
+          <div
+            role="menu"
+            className="absolute bottom-0 left-full ml-3 w-56 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-xl z-50"
+          >
+            <div className="px-2.5 py-2">
+              <p className="truncate text-sm font-medium text-zinc-800">{userName || "Utilizador"}</p>
+              <p className="mt-0.5 flex items-center gap-1.5 text-xs text-zinc-400">
+                <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
+                {dotTitle}
+              </p>
+            </div>
+            <div className="my-1 h-px bg-zinc-100" />
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setMenuOpen(false); onLogout(); }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-red-50 hover:text-red-600"
+            >
+              <LogOut size={16} />
+              Terminar sessão
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );

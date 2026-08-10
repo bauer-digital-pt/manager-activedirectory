@@ -24,6 +24,10 @@ export interface ConnectionTestResult {
 
 const LS_KEY = "admanager.connection";
 
+// Default domain controller (domain: bmap.lis). Kept in sync with DEFAULT_DC in
+// the main process — mirrored here only for the browser (dev/mock) fallback.
+const DEFAULT_DC = "pt-srv-dc02";
+
 // window.configAPI is declared globally in groupsConfig.ts.
 
 export async function getConnection(): Promise<ConnectionInfo> {
@@ -34,10 +38,10 @@ export async function getConnection(): Promise<ConnectionInfo> {
     const stored = localStorage.getItem(LS_KEY);
     if (stored) {
       const raw = JSON.parse(stored);
-      return { server: raw.server ?? "", username: raw.username ?? "", hasPassword: !!raw.password };
+      return { server: raw.server || DEFAULT_DC, username: raw.username ?? "", hasPassword: !!raw.password };
     }
   } catch { /* fall through */ }
-  return { server: "", username: "", hasPassword: false };
+  return { server: DEFAULT_DC, username: "", hasPassword: false };
 }
 
 export async function setConnection(payload: ConnectionPayload): Promise<void> {

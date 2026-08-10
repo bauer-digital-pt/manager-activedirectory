@@ -35,6 +35,11 @@ function writeGroups(config: GroupConfig): void {
 // safeStorage (OS keychain) and is never sent back to the renderer in clear text.
 const CONN_PATH = join(app.getPath("userData"), "connection.json");
 
+// Domain controller the app talks to by default (domain: bmap.lis). Pre-filled
+// so a fresh install connects out of the box; the user can override it in
+// Settings → Connection. An empty stored value also falls back to this.
+const DEFAULT_DC = "pt-srv-dc02";
+
 interface StoredConnection {
   server: string;
   username: string;
@@ -46,13 +51,13 @@ function readStoredConnection(): StoredConnection {
     if (existsSync(CONN_PATH)) {
       const raw = JSON.parse(readFileSync(CONN_PATH, "utf8"));
       return {
-        server: raw.server ?? "",
+        server: raw.server || DEFAULT_DC,
         username: raw.username ?? "",
         password: raw.password ?? "",
       };
     }
   } catch { /* fall through */ }
-  return { server: "", username: "", password: "" };
+  return { server: DEFAULT_DC, username: "", password: "" };
 }
 
 function decryptPassword(encoded: string): string {

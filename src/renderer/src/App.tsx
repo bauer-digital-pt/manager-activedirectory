@@ -127,6 +127,17 @@ export default function App() {
     setConnOk(true);
   }, []);
 
+  // Explicit sign-out from the sidebar: drop the session (main process too) and
+  // return to a fresh login screen (not the relock flow) with the username kept
+  // for convenience.
+  const onLogout = useCallback(() => {
+    logout();
+    setAuthed(false);
+    setLocked(false);
+    setConnOk(null);
+    setPage("users");
+  }, []);
+
   // Live connection status dot: probe periodically while logged in.
   useEffect(() => {
     if (!authed) { setConnOk(null); return; }
@@ -243,6 +254,7 @@ export default function App() {
             devMode={devMode}
             userName={displayName || lastUsername}
             connOk={connOk}
+            onLogout={onLogout}
           />
           <main className="flex-1 overflow-hidden flex flex-col bg-white">
             {/* Keyed by page: a crash in one page shows a compact fallback (sidebar
