@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, ServerCrash, Settings, RotateCcw } from "lucide-react";
 import { adAPI, type ADGroup, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
 import type { ExternalToast } from "sonner";
@@ -10,36 +10,79 @@ type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
 interface UserWithGroup extends ADUser { groupName: string; }
 
-export default function UsersPage({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
+// Windows PowerShell's ConvertTo-Json returns a bare object for a single result
+// and null for none — normalize any of those shapes to a plain array.
+function toArray<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data == null) return [];
+  return [data as T];
+}
+
+export default function UsersPage({
+  toast,
+  onOpenSettings,
+}: {
+  toast: { success: ToastFn; error: ToastFn };
+  onOpenSettings?: () => void;
+}) {
   const [groups, setGroups] = useState<ADGroup[]>([]);
   const [allUsers, setAllUsers] = useState<UserWithGroup[]>([]);
   const [loadingGroups, setLoadingGroups] = useState(true);
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [groupsError, setGroupsError] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "create">("list");
   const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    adAPI.getGroups().then((r) => {
-      setLoadingGroups(false);
-      if (r.ok && Array.isArray(r.data)) {
-        const gs = r.data as ADGroup[];
-        setGroups(gs);
-        loadAllUsers(gs);
-      } else {
-        toast.error(r.error ?? "Failed to load groups");
-      }
-    });
+  const loadGroups = useCallback(() => {
+    setLoadingGroups(true);
+    setGroupsError(null);
+    adAPI
+      .getGroups()
+      .then((r) => {
+        setLoadingGroups(false);
+        if (r.ok) {
+          // Windows PowerShell's ConvertTo-Json emits a bare object (not an
+          // array) for a single group — normalize so one-group tenants work.
+          const gs = toArray<ADGroup>(r.data);
+          setGroups(gs);
+          setGroupsError(null);
+          loadAllUsers(gs);
+        } else {
+          // Explicit, recoverable error state — never a misleading "No users found".
+          setGroups([]);
+          setAllUsers([]);
+          setGroupsError(
+            r.error ??
+              "Não foi possível carregar os grupos do Active Directory.",
+          );
+        }
+      })
+      .catch((e) => {
+        setLoadingGroups(false);
+        setGroups([]);
+        setAllUsers([]);
+        setGroupsError(
+          typeof e?.message === "string"
+            ? e.message
+            : "Não foi possível comunicar com o Active Directory.",
+        );
+      });
   }, []);
+
+  useEffect(() => {
+    loadGroups();
+  }, [loadGroups]);
 
   const loadAllUsers = async (gs: ADGroup[]) => {
     setLoadingUsers(true);
     const results = await Promise.all(
       gs.map((g) =>
         adAPI.getGroupMembers(g.Name).then((r) => {
-          if (r.ok && Array.isArray(r.data))
-            return (r.data as ADUser[]).map((u) => ({ ...u, groupName: g.Name }));
+          if (r.ok)
+            // Same single-item serialization quirk as groups (one-member group).
+            return toArray<ADUser>(r.data).map((u) => ({ ...u, groupName: g.Name }));
           return [] as UserWithGroup[];
         })
       )
@@ -63,7 +106,12 @@ export default function UsersPage({ toast }: { toast: { success: ToastFn; error:
     if (groups.length > 0) loadAllUsers(groups);
   };
 
-  const goCreate = useCallback(() => setView("create"), []);
+  // Creating a user requires at least one group to place them in. With no
+  // groups the wizard would be a dead-end, so the entry points no-op instead.
+  const canCreate = groups.length > 0;
+  const goCreate = useCallback(() => {
+    if (groups.length > 0) setView("create");
+  }, [groups.length]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -124,8 +172,10 @@ export default function UsersPage({ toast }: { toast: { success: ToastFn; error:
               />
             </div>
             <button
-              onClick={() => setView("create")}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-violet-600 text-white rounded-md hover:bg-violet-700 transition-colors"
+              onClick={goCreate}
+              disabled={!canCreate}
+              title={canCreate ? undefined : "Sem grupos disponíveis para criar utilizadores"}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-violet-600 text-white rounded-md hover:bg-violet-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-violet-600"
             >
               <Plus size={14} strokeWidth={2.5} />
               New user
@@ -176,6 +226,12 @@ export default function UsersPage({ toast }: { toast: { success: ToastFn; error:
               <div key={i} className="h-14 bg-zinc-50 rounded-lg animate-pulse" />
             ))}
           </div>
+        ) : groupsError ? (
+          <GroupsError
+            message={groupsError}
+            onRetry={loadGroups}
+            onOpenSettings={onOpenSettings}
+          />
         ) : filtered.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-sm text-zinc-400">
             {search || activeGroup ? "No users match the current filters" : "No users found"}
@@ -192,8 +248,8 @@ export default function UsersPage({ toast }: { toast: { success: ToastFn; error:
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-50">
-              {filtered.map((u) => (
-                <UserRow key={u.SamAccountName} user={u} groupName={u.groupName} toast={toast} onRefresh={refresh} />
+              {filtered.map((u, i) => (
+                <UserRow key={u.SamAccountName || `row-${i}`} user={u} groupName={u.groupName} toast={toast} onRefresh={refresh} />
               ))}
             </tbody>
           </table>
@@ -201,7 +257,7 @@ export default function UsersPage({ toast }: { toast: { success: ToastFn; error:
       </div>
 
       {/* Footer */}
-      {!isLoading && filtered.length > 0 && (
+      {!isLoading && !groupsError && filtered.length > 0 && (
         <div className="px-6 py-3 border-t border-zinc-100">
           <span className="text-xs text-zinc-400">
             {filtered.length} {filtered.length === 1 ? "user" : "users"}
@@ -209,6 +265,56 @@ export default function UsersPage({ toast }: { toast: { success: ToastFn; error:
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+// Inline, recoverable error shown when groups can't be loaded — points the user
+// straight at the AD connection settings instead of a dead "No users found".
+function GroupsError({
+  message,
+  onRetry,
+  onOpenSettings,
+}: {
+  message: string;
+  onRetry: () => void;
+  onOpenSettings?: () => void;
+}) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center px-6 py-16 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-50 text-amber-600 ring-1 ring-amber-200/70">
+        <ServerCrash size={26} strokeWidth={2} />
+      </div>
+      <h3 className="mt-5 text-base font-semibold text-zinc-900">
+        Não foi possível carregar os grupos
+      </h3>
+      <p className="mt-2 max-w-[46ch] text-sm leading-relaxed text-zinc-500">
+        {message}
+      </p>
+      <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-zinc-400">
+        Verifica a ligação ao Active Directory em{" "}
+        <span className="font-medium text-zinc-500">Definições → Ligação AD</span>.
+      </p>
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
+        <button
+          onClick={onRetry}
+          className="inline-flex items-center gap-1.5 rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700"
+        >
+          <RotateCcw size={15} />
+          Tentar novamente
+        </button>
+        {onOpenSettings && (
+          <button
+            onClick={onOpenSettings}
+            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
+          >
+            <Settings size={15} />
+            Abrir definições
+          </button>
+        )}
+      </div>
     </div>
   );
 }
