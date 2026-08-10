@@ -178,7 +178,7 @@ export default function CreateUserWizard({
           // If repeating the same letter, cycle instead of extending buffer
           const isRepeat = typeaheadRef.buffer.length > 0 && typeaheadRef.buffer.split("").every((c) => c === letter);
           if (isRepeat) {
-            const matches = groups.filter((g) => g.Name.startsWith(letter));
+            const matches = groups.filter((g) => g.Name?.startsWith(letter));
             if (matches.length > 0) {
               const currentMatchIdx = matches.findIndex((g) => g.Name === form.groupName);
               set("groupName", matches[(currentMatchIdx + 1) % matches.length].Name);
@@ -186,7 +186,7 @@ export default function CreateUserWizard({
           } else {
             typeaheadRef.buffer += letter;
             const buf = typeaheadRef.buffer;
-            const matches = groups.filter((g) => g.Name.startsWith(buf));
+            const matches = groups.filter((g) => g.Name?.startsWith(buf));
             if (matches.length > 0) set("groupName", matches[0].Name);
           }
           typeaheadRef.timer = window.setTimeout(() => { typeaheadRef.buffer = ""; }, 600);
@@ -340,7 +340,7 @@ export default function CreateUserWizard({
                           "w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold flex-shrink-0",
                           active ? "bg-violet-600 text-white" : "bg-zinc-100 text-zinc-500"
                         )}>
-                          {g.Name[0]}
+                          {g.Name?.[0] ?? "?"}
                         </div>
                         <span className={cn(
                           "text-sm font-medium truncate",
@@ -420,7 +420,7 @@ export default function CreateUserWizard({
                     onChange={(e) => set("jobTitle", e.target.value)}
                     onFocus={() => setJobTitleFocused(true)}
                     onBlur={() => setTimeout(() => setJobTitleFocused(false), 150)}
-                    placeholder={groupEntry?.jobTitles[0] ?? "Ex: Jornalista"}
+                    placeholder={groupEntry?.jobTitles?.[0] ?? "Ex: Jornalista"}
                     className={inputCls} />
                   {jobTitleFocused && filteredJobTitles.length > 0 && (
                     <Dropdown items={filteredJobTitles} selected={form.jobTitle}
