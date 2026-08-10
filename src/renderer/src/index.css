@@ -54,3 +54,9 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { @apply bg-zinc-200 rounded-full; }
 }
+
+/* Frameless-window drag regions. `.drag` lets the user move the window by the
+   custom title bar; interactive children must opt back out with `.no-drag`,
+   otherwise the drag region swallows their clicks. Not Tailwind utilities. */
+.drag { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }

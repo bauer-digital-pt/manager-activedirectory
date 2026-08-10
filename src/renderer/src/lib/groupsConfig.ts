@@ -24,6 +24,12 @@ export const DEFAULT_GROUPS: GroupConfig = {
 
 const LS_KEY = "admanager.groupsConfig";
 
+export interface AppSettings {
+  devMode: boolean;
+  loginTimeoutMin: number;
+  lastUsername: string;
+}
+
 declare global {
   interface Window {
     configAPI?: {
@@ -31,6 +37,23 @@ declare global {
       setGroups(config: GroupConfig): Promise<void>;
       getConnection(): Promise<{ server: string; username: string; hasPassword: boolean }>;
       setConnection(conn: { server: string; username: string; password?: string }): Promise<void>;
+      getSettings(): Promise<AppSettings>;
+      setSettings(settings: Partial<AppSettings>): Promise<AppSettings>;
+    };
+    authAPI?: {
+      login(creds: { username: string; password: string }): Promise<{ ok: boolean; username?: string; displayName?: string; domain?: string; dc?: string; error?: string }>;
+      logout(): Promise<{ ok: boolean }>;
+      status(): Promise<{ ok: boolean; authenticated: boolean; username: string; lastUsername: string }>;
+      ping(): Promise<{ ok: boolean; error?: string }>;
+    };
+    appAPI?: {
+      getVersion(): Promise<string>;
+      platform: string;
+    };
+    windowAPI?: {
+      minimize(): void;
+      toggleMaximize(): void;
+      close(): void;
     };
   }
 }

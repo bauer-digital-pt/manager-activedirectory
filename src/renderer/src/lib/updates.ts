@@ -12,6 +12,7 @@ declare global {
   interface Window {
     updatesAPI?: {
       check(): Promise<{ ok: boolean; version?: string; error?: string }>;
+      download(): Promise<{ ok: boolean; error?: string }>;
       install(): Promise<void>;
       onStatus(cb: (status: UpdateStatus) => void): () => void;
     };
@@ -37,7 +38,17 @@ function simulateUpdate(cb: (status: UpdateStatus) => void): () => void {
 
 export const updatesAPI = {
   check: () => window.updatesAPI?.check() ?? Promise.resolve({ ok: false, error: "unavailable" }),
+  download: () => window.updatesAPI?.download() ?? Promise.resolve({ ok: false, error: "unavailable" }),
   install: () => window.updatesAPI?.install() ?? Promise.resolve(),
   onStatus: (cb: (status: UpdateStatus) => void) =>
     window.updatesAPI?.onStatus(cb) ?? simulateUpdate(cb),
 };
+
+// App version for the General settings panel. Falls back to a dev placeholder
+// in the browser preview where appAPI is absent.
+export async function getAppVersion(): Promise<string> {
+  try {
+    if (window.appAPI?.getVersion) return await window.appAPI.getVersion();
+  } catch { /* ignore */ }
+  return "dev";
+}

@@ -1,21 +1,33 @@
 import { useState, useEffect } from "react";
-import { Plus, Trash2, X, Settings2, Layers, Server, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Plus, Trash2, X, Settings2, Layers, Server, Loader2, CheckCircle2, XCircle, SlidersHorizontal, RefreshCw } from "lucide-react";
 import { getGroupConfig, setGroupConfig, DEFAULT_GROUPS, type GroupConfig } from "../lib/groupsConfig";
 import { getConnection, setConnection, type ConnectionInfo } from "../lib/connectionConfig";
+import { getSettings, setSettings, type AppSettings } from "../lib/appSettings";
+import { getAppVersion } from "../lib/updates";
+import UpdateCheckModal from "../components/UpdateCheckModal";
 import { adAPI } from "../adAPI";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
-type Tab = "groups" | "connection";
+type Tab = "general" | "groups" | "connection";
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
+  { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "groups", label: "Onboarding Groups", icon: Layers },
   { id: "connection", label: "AD Connection", icon: Server },
 ];
 
-export default function SettingsPage({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
-  const [tab, setTab] = useState<Tab>("groups");
+interface SettingsPageProps {
+  toast: { success: ToastFn; error: ToastFn };
+  /** Called after any change to app settings, so the shell can refresh. */
+  onSettingsChange?: () => void;
+  /** Toggled while the update-check modal is open (suppresses full-screen takeover). */
+  onUpdateModal?: (open: boolean) => void;
+}
+
+export default function SettingsPage({ toast, onSettingsChange, onUpdateModal }: SettingsPageProps) {
+  const [tab, setTab] = useState<Tab>("general");
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -41,8 +53,109 @@ export default function SettingsPage({ toast }: { toast: { success: ToastFn; err
           </div>
         </div>
       </div>
+      {tab === "general" && <GeneralTab toast={toast} onSettingsChange={onSettingsChange} onUpdateModal={onUpdateModal} />}
       {tab === "groups" && <GroupsTab toast={toast} />}
       {tab === "connection" && <ConnectionTab toast={toast} />}
+    </div>
+  );
+}
+
+function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
+  toast: { success: ToastFn; error: ToastFn };
+  onSettingsChange?: () => void;
+  onUpdateModal?: (open: boolean) => void;
+}) {
+  const [devMode, setDevMode] = useState(false);
+  const [timeout, setTimeoutMin] = useState(30);
+  const [version, setVersion] = useState("");
+  const [showUpdate, setShowUpdate] = useState(false);
+
+  useEffect(() => {
+    getSettings().then((s) => { setDevMode(s.devMode); setTimeoutMin(s.loginTimeoutMin); });
+    getAppVersion().then(setVersion);
+  }, []);
+
+  const persist = async (patch: Partial<AppSettings>) => {
+    const next = await setSettings(patch);
+    setDevMode(next.devMode);
+    setTimeoutMin(next.loginTimeoutMin);
+    onSettingsChange?.();
+  };
+
+  const toggleDev = async () => {
+    await persist({ devMode: !devMode });
+    toast.success(!devMode ? "Modo developer ativado" : "Modo developer desativado");
+  };
+
+  const openUpdate = () => { onUpdateModal?.(true); setShowUpdate(true); };
+  const closeUpdate = () => { setShowUpdate(false); onUpdateModal?.(false); };
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="px-8 py-6 space-y-8 max-w-xl">
+        {/* Developer mode */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Modo developer</h3>
+              <p className="text-xs text-zinc-400 mt-0.5">Mostra a Consola de atividade na barra lateral.</p>
+            </div>
+            <button
+              onClick={toggleDev}
+              role="switch"
+              aria-checked={devMode}
+              className={cn(
+                "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
+                devMode ? "bg-violet-600" : "bg-zinc-200"
+              )}
+            >
+              <span className={cn(
+                "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
+                devMode ? "translate-x-5" : "translate-x-0.5"
+              )} />
+            </button>
+          </div>
+        </section>
+
+        {/* Login timeout */}
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Tempo de inatividade</h3>
+            <p className="text-xs text-zinc-400 mt-0.5">Ao fim deste tempo sem atividade, a sessão bloqueia e pede a palavra-passe.</p>
+          </div>
+          <div className="flex items-center gap-4">
+            <input
+              type="range"
+              min={5}
+              max={60}
+              step={5}
+              value={timeout}
+              onChange={(e) => setTimeoutMin(Number(e.target.value))}
+              onMouseUp={() => persist({ loginTimeoutMin: timeout })}
+              onKeyUp={() => persist({ loginTimeoutMin: timeout })}
+              className="flex-1 accent-violet-600"
+            />
+            <span className="w-16 text-right text-sm font-medium tabular-nums text-zinc-700">{timeout} min</span>
+          </div>
+        </section>
+
+        {/* Version + updates */}
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Versão</h3>
+            <p className="text-xs text-zinc-400 mt-0.5">AD Manager {version || "…"}</p>
+          </div>
+          <button
+            onClick={openUpdate}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 transition-colors"
+          >
+            <RefreshCw size={14} />
+            Procurar atualizações
+          </button>
+        </section>
+      </div>
+
+      {showUpdate && <UpdateCheckModal onClose={closeUpdate} />}
     </div>
   );
 }

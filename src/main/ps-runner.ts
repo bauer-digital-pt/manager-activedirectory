@@ -36,7 +36,7 @@ export interface LogEntry {
 }
 
 // ── Mock responses per script ──────────────────────────────────────────────
-function mockResponse(script: string, args: string[]): { ok: boolean; data?: unknown; error?: string } {
+function mockResponse(script: string, args: string[], conn?: ADConnection): { ok: boolean; data?: unknown; error?: string } {
   switch (script) {
     case "Get-ADGroup-All.ps1":
       return {
@@ -88,6 +88,25 @@ function mockResponse(script: string, args: string[]): { ok: boolean; data?: unk
       return { ok: true, data: { success: true, username } };
     }
 
+    case "Test-ADConnection.ps1":
+      return { ok: true, data: { success: true, domain: "bmap.lis", forest: "bmap.lis", dc: "dc01.bmap.lis" } };
+
+    case "Test-ADCredential.ps1": {
+      // Login validator. Creds arrive on `conn` (in mock mode they're never put
+      // on the env). Password "wrong" simulates invalid credentials.
+      const user = conn?.username ?? "";
+      const pass = conn?.password ?? "";
+      if (!user || !pass) return { ok: false, error: "Credenciais em falta." };
+      if (pass === "wrong") return { ok: true, data: { success: false, error: "Credenciais inválidas." } };
+      const bare = user.replace(/^.*\\/, "").replace(/@.*$/, "");
+      const displayName = bare
+        .split(/[.\-_]/)
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ");
+      return { ok: true, data: { success: true, domain: "bmap.lis", dc: "dc01.bmap.lis", displayName } };
+    }
+
     case "Add-ADGroup.ps1":
       return { ok: true, data: { success: true } };
 
@@ -124,7 +143,7 @@ export function runPS(
     const ts = Date.now();
     // Small artificial delay to simulate real PS execution
     return new Promise((resolve) => setTimeout(() => {
-      const result = mockResponse(script, args);
+      const result = mockResponse(script, args, conn);
       const stdout = result.ok ? JSON.stringify(result.data) : JSON.stringify({ success: false, error: result.error });
       const entry: LogEntry = {
         id: ts.toString(36),

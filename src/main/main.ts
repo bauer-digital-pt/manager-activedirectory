@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, Menu } from "electron";
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { spawn } from "child_process";
@@ -86,9 +86,60 @@ function getConnection(): ADConnection {
   };
 }
 
+// --- App settings (settings.json) ---
+// General preferences, separate from AD group config and the AD connection.
+// Non-secret: stored in clear. lastUsername is remembered to pre-fill the login
+// screen; the login PASSWORD is never persisted (session-only, see `session`).
+const SETTINGS_PATH = join(app.getPath("userData"), "settings.json");
+
+interface AppSettings {
+  devMode: boolean;
+  loginTimeoutMin: number;
+  lastUsername: string;
+}
+
+const DEFAULT_SETTINGS: AppSettings = { devMode: false, loginTimeoutMin: 30, lastUsername: "" };
+
+function readSettings(): AppSettings {
+  try {
+    if (existsSync(SETTINGS_PATH)) {
+      const raw = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
+      return {
+        devMode: !!raw.devMode,
+        loginTimeoutMin: Math.min(60, Math.max(5, Number(raw.loginTimeoutMin) || 30)),
+        lastUsername: typeof raw.lastUsername === "string" ? raw.lastUsername : "",
+      };
+    }
+  } catch { /* fall through */ }
+  return { ...DEFAULT_SETTINGS };
+}
+
+function writeSettings(next: AppSettings): void {
+  writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), "utf8");
+}
+
+// --- In-memory login session (NEVER persisted) ---
+// The credentials the user typed at the login screen become the credentials all
+// AD operations run with, for this run only. Password lives here and nowhere on
+// disk; cleared on every launch and on logout / inactivity relock.
+let session: ADConnection | null = null;
+
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 
 let mainWindow: BrowserWindow | null = null;
+
+// Drop the native application menu (File/Edit/…). On macOS a null menu also
+// strips the standard Cmd+C/V/X/Q/W accelerators, so keep a minimal app+edit
+// menu there; on Windows/Linux the frameless window has no menu bar at all.
+function installAppMenu() {
+  if (process.platform === "darwin") {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }]),
+    );
+  } else {
+    Menu.setApplicationMenu(null);
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -96,8 +147,13 @@ function createWindow() {
     height: 750,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: "hiddenInset",
     backgroundColor: "#ffffff",
+    // Frameless everywhere. macOS keeps the traffic lights via the hidden title
+    // bar (inset a touch so they clear our custom top bar); Windows/Linux drop
+    // the frame entirely and rely on the renderer's TitleBar for drag + controls.
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hidden" as const, trafficLightPosition: { x: 14, y: 16 } }
+      : { frame: false }),
     webPreferences: {
       preload: join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -162,9 +218,30 @@ app.whenReady().then(() => {
     label: "ready",
     detail: `AD Manager ${app.getVersion()} · ${process.platform} ${process.arch} · Electron ${process.versions.electron} · packaged=${app.isPackaged}`,
   });
+  // Login now owns authentication. Purge any legacy service-account password left
+  // encrypted at rest by earlier versions — creds are session-only from here on.
+  clearLegacyStoredPassword();
+  installAppMenu();
   createWindow();
   setupAutoUpdates();
 });
+
+// One-time migration: earlier builds persisted the AD password (safeStorage) in
+// connection.json. Login supersedes that, so strip the stored password while
+// keeping server/username for pre-fill and DC targeting.
+function clearLegacyStoredPassword() {
+  try {
+    const stored = readStoredConnection();
+    if (stored.password) {
+      writeFileSync(
+        CONN_PATH,
+        JSON.stringify({ server: stored.server, username: stored.username, password: "" }, null, 2),
+        "utf8",
+      );
+      pushLog({ level: "info", source: "app", label: "auth", detail: "Legacy stored AD password cleared" });
+    }
+  } catch { /* best-effort */ }
+}
 
 // --- Auto-updates (GitHub Releases via electron-updater) ---
 function sendToRenderer(channel: string, payload: unknown) {
@@ -175,7 +252,10 @@ function setupAutoUpdates() {
   // The updater only works in a packaged app with published release metadata.
   if (!app.isPackaged) return;
 
-  autoUpdater.autoDownload = true;
+  // Manual: the General settings "check for updates" flow decides when to
+  // download, so a background check doesn't preempt it with the full-screen
+  // takeover. Install still happens on quit once something is downloaded.
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on("checking-for-update", () =>
@@ -379,8 +459,12 @@ function handle(
   });
 }
 
+// AD operations run with the logged-in session credentials. Before login (or
+// after a relock) `session` is null and cmdlets fall back to the local domain /
+// current Windows user — harmless because the login gate blocks the UI until a
+// session exists. Module/connection checks deliberately DON'T use this path.
 function ps(script: string, args: string[] = []) {
-  return runPS(script, args, emitLog, getConnection());
+  return runPS(script, args, emitLog, session ?? getConnection());
 }
 
 handle("ad:get-groups", async () => {
@@ -456,6 +540,109 @@ handle("updates:check", async () => {
 handle("updates:install", () => {
   autoUpdater.quitAndInstall();
 });
+
+// Manually start the download for an already-detected update (General settings
+// modal flow, since autoDownload is off).
+handle("updates:download", async () => {
+  if (!app.isPackaged) return { ok: false, error: "Updates only run in the installed app." };
+  try {
+    await autoUpdater.downloadUpdate();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+});
+
+// --- Auth / session IPC ---
+// Validates the typed credentials against the domain (an authenticated bind via
+// Get-ADDomain in Test-ADCredential.ps1). On success the creds become the live
+// session used by every AD op. The password is NEVER persisted or returned.
+handle("auth:login", async (_e, rawPayload) => {
+  const payload = rawPayload as { username?: string; password?: string };
+  const username = (payload?.username ?? "").trim();
+  const password = payload?.password ?? "";
+  if (!username || !password) {
+    return { ok: false, error: "Indica o utilizador e a palavra-passe." };
+  }
+
+  // Target the configured DC if one is set; otherwise auto-discover (empty).
+  const server = readStoredConnection().server;
+  const attempt: ADConnection = { server, username, password };
+
+  // 15s ceiling so an unreachable DC fails fast at the login screen.
+  const r = await runPS("Test-ADCredential.ps1", [], emitLog, attempt, 15000);
+  if (!r.ok) {
+    return { ok: false, error: r.error ?? "Não foi possível autenticar." };
+  }
+
+  const data = (r.data ?? {}) as { success?: boolean; domain?: string; dc?: string; displayName?: string; error?: string };
+  if (data.success === false) {
+    return { ok: false, error: data.error ?? "Credenciais inválidas." };
+  }
+
+  // Pin the DC we actually bound to, so subsequent ops don't re-discover.
+  session = { server: data.dc || server, username, password };
+
+  // Remember only the username (non-secret) for pre-fill next time.
+  const settings = readSettings();
+  if (settings.lastUsername !== username) writeSettings({ ...settings, lastUsername: username });
+
+  pushLog({ level: "success", source: "app", label: "auth", detail: `Login ${username} @ ${data.domain ?? "domínio"}` });
+  return { ok: true, username, displayName: data.displayName, domain: data.domain, dc: data.dc };
+});
+
+handle("auth:logout", () => {
+  session = null;
+  pushLog({ level: "info", source: "app", label: "auth", detail: "Logout / sessão terminada" });
+  return { ok: true };
+});
+
+handle("auth:status", () => {
+  const settings = readSettings();
+  return {
+    ok: true,
+    authenticated: !!session,
+    username: session?.username ?? "",
+    lastUsername: settings.lastUsername,
+  };
+});
+
+// Lightweight liveness probe for the sidebar status dot. Runs on the session
+// creds; quiet (no emitLog) so it doesn't flood the Console every few seconds.
+handle("auth:ping", async () => {
+  if (!session) return { ok: false, error: "no session" };
+  const r = await runPS("Test-ADConnection.ps1", [], undefined, session, 8000);
+  return { ok: r.ok, error: r.error };
+});
+
+// --- Settings IPC ---
+handle("config:get-settings", () => readSettings());
+handle("config:set-settings", (_e, rawPayload) => {
+  const p = (rawPayload ?? {}) as Partial<AppSettings>;
+  const current = readSettings();
+  const next: AppSettings = {
+    devMode: p.devMode !== undefined ? !!p.devMode : current.devMode,
+    loginTimeoutMin: p.loginTimeoutMin !== undefined
+      ? Math.min(60, Math.max(5, Number(p.loginTimeoutMin) || current.loginTimeoutMin))
+      : current.loginTimeoutMin,
+    lastUsername: p.lastUsername !== undefined ? String(p.lastUsername) : current.lastUsername,
+  };
+  writeSettings(next);
+  return next;
+});
+
+// --- App / window IPC ---
+handle("app:get-version", () => app.getVersion());
+
+// Frameless window controls driven by the renderer TitleBar. Raw ipcMain.on
+// (fire-and-forget, no result) so they don't spam the Console.
+ipcMain.on("window:minimize", () => mainWindow?.minimize());
+ipcMain.on("window:toggle-maximize", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+});
+ipcMain.on("window:close", () => mainWindow?.close());
 
 // --- Config IPC ---
 handle("config:get-groups", () => readGroups());

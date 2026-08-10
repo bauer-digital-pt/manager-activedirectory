@@ -5,6 +5,26 @@ contextBridge.exposeInMainWorld("configAPI", {
   setGroups: (groups: unknown) => ipcRenderer.invoke("config:set-groups", groups),
   getConnection: () => ipcRenderer.invoke("config:get-connection"),
   setConnection: (conn: unknown) => ipcRenderer.invoke("config:set-connection", conn),
+  getSettings: () => ipcRenderer.invoke("config:get-settings"),
+  setSettings: (settings: unknown) => ipcRenderer.invoke("config:set-settings", settings),
+});
+
+contextBridge.exposeInMainWorld("authAPI", {
+  login: (creds: { username: string; password: string }) => ipcRenderer.invoke("auth:login", creds),
+  logout: () => ipcRenderer.invoke("auth:logout"),
+  status: () => ipcRenderer.invoke("auth:status"),
+  ping: () => ipcRenderer.invoke("auth:ping"),
+});
+
+contextBridge.exposeInMainWorld("appAPI", {
+  getVersion: () => ipcRenderer.invoke("app:get-version"),
+  platform: process.platform,
+});
+
+contextBridge.exposeInMainWorld("windowAPI", {
+  minimize: () => ipcRenderer.send("window:minimize"),
+  toggleMaximize: () => ipcRenderer.send("window:toggle-maximize"),
+  close: () => ipcRenderer.send("window:close"),
 });
 
 contextBridge.exposeInMainWorld("consoleAPI", {
@@ -44,6 +64,7 @@ contextBridge.exposeInMainWorld("adAPI", {
 
 contextBridge.exposeInMainWorld("updatesAPI", {
   check: () => ipcRenderer.invoke("updates:check"),
+  download: () => ipcRenderer.invoke("updates:download"),
   install: () => ipcRenderer.invoke("updates:install"),
   onStatus: (cb: (status: unknown) => void) => {
     const listener = (_e: unknown, status: unknown) => cb(status);
