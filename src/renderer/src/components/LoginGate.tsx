@@ -5,7 +5,7 @@ import { login, type LoginResult } from "../lib/auth";
 import { initials } from "../lib/initials";
 
 interface LoginGateProps {
-  /** Pre-filled username (remembered from a previous login). */
+  /** Pre-filled username (remembered from a previous login on this PC). */
   lastUsername?: string;
   /** Relock after inactivity: username is fixed, only the password is asked. */
   locked?: boolean;
@@ -13,34 +13,53 @@ interface LoginGateProps {
 }
 
 // Full-screen login. Shown on every launch (before the main app) and again on an
-// inactivity relock. On a relock the username is fixed and only the password is
-// requested. The password is sent straight to the main process for validation
-// and is never stored here. Layout comes from the shared AuthShell.
+// inactivity relock. When a username is remembered (relock OR a previous
+// logout/launch on this PC) we show a compact identity card — avatar + name +
+// password only — with a "Não és tu?" escape hatch to sign in as someone else.
+// The password is sent straight to the main process for validation and is never
+// stored here. Layout comes from the shared AuthShell.
 export default function LoginGate({ lastUsername = "", locked = false, onSuccess }: LoginGateProps) {
   const [username, setUsername] = useState(lastUsername);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when the user clicks "Não és tu?" to sign in with a different account —
+  // drops the remembered identity and reveals the username field.
+  const [switchUser, setSwitchUser] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
   const usernameRef = useRef<HTMLInputElement>(null);
 
+  // Compact identity mode: a remembered user (relock or a previous session on
+  // this machine) and the user hasn't chosen to switch accounts.
+  const showIdentity = (locked || !!lastUsername) && !switchUser;
+
   useEffect(() => {
-    // On a relock (or when a username is already remembered) go straight to the
-    // password field; otherwise focus the username field.
-    if (locked || lastUsername) passwordRef.current?.focus();
+    // In identity mode go straight to the password; otherwise the username.
+    if (showIdentity) passwordRef.current?.focus();
     else usernameRef.current?.focus();
-  }, [locked, lastUsername]);
+  }, [showIdentity]);
+
+  const useAnotherAccount = () => {
+    setSwitchUser(true);
+    setUsername("");
+    setPassword("");
+    setError(null);
+    // Focus runs via the effect once the field mounts, but nudge it too.
+    setTimeout(() => usernameRef.current?.focus(), 0);
+  };
 
   const submit = async () => {
     if (busy) return;
     setError(null);
-    if (!username.trim() || !password) {
+    // In identity mode the username is the remembered one; otherwise the field.
+    const user = showIdentity ? lastUsername : username;
+    if (!user.trim() || !password) {
       setError("Indica o utilizador e a palavra-passe.");
       return;
     }
     setBusy(true);
     try {
-      const res = await login(username, password);
+      const res = await login(user, password);
       if (res.ok) {
         setPassword("");
         onSuccess(res);
@@ -63,14 +82,14 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
   return (
     <AuthShell>
       <form className="w-full max-w-[380px]" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-        {locked ? (
+        {showIdentity ? (
           <>
             <div className="mb-6 flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-sm font-semibold text-white ring-1 ring-white/15">
                 {initials(lastUsername) || <User size={20} />}
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-white/50">Sessão bloqueada</p>
+                <p className="text-xs text-white/50">{locked ? "Sessão bloqueada" : "Sessão iniciada como"}</p>
                 <p className="truncate text-sm font-medium text-white">{lastUsername}</p>
               </div>
             </div>
@@ -85,7 +104,7 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
         )}
 
         <div className="mt-8 space-y-4">
-          {!locked && (
+          {!showIdentity && (
             <div className="space-y-1.5">
               <label className="text-xs font-semibold uppercase tracking-wider text-white/70">Utilizador</label>
               <div className="relative">
@@ -134,8 +153,19 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
             className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-[#4700a3] shadow-sm transition-colors hover:bg-white/90 disabled:opacity-60"
           >
             {busy ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
-            {busy ? "A autenticar…" : locked ? "Desbloquear" : "Entrar"}
+            {busy ? "A autenticar…" : locked && showIdentity ? "Desbloquear" : "Entrar"}
           </button>
+
+          {showIdentity && (
+            <button
+              type="button"
+              onClick={useAnotherAccount}
+              disabled={busy}
+              className="w-full text-center text-xs text-white/50 transition-colors hover:text-white/80 disabled:opacity-60"
+            >
+              Não és tu? <span className="underline underline-offset-2">Iniciar sessão com outra conta</span>
+            </button>
+          )}
         </div>
 
         <p className="mt-8 text-xs text-white/40">Bauer Media Audio Portugal</p>
