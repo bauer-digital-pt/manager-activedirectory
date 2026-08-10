@@ -5,6 +5,8 @@ export interface ADGroup {
   Description: string;
   GroupCategory: string;
   GroupScope: string;
+  // Category folders are OUs under O365 — the exact OU DN, when available.
+  DistinguishedName?: string;
 }
 
 export interface ADUser {

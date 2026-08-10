@@ -553,6 +553,7 @@ handle("ad:create-user", async (_e, rawParams) => {
     params.department ?? "",
     params.company ?? "",
     params.email ?? "",
+    params.copyFromUser ?? "",
   ];
   return ps("New-ADUser.ps1", args);
 });

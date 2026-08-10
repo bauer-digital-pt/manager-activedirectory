@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { ArrowLeft, Check, ChevronRight } from "lucide-react";
-import { adAPI, type ADGroup } from "../../adAPI";
+import { ArrowLeft, Check, ChevronRight, Users } from "lucide-react";
+import { adAPI, type ADGroup, type ADUser } from "../../adAPI";
 import { getGroupConfig, type GroupConfig } from "../../lib/groupsConfig";
 import { cn } from "../../lib/cn";
 import type { ExternalToast } from "sonner";
@@ -18,6 +18,7 @@ const STEPS: { id: Step; label: string }[] = [
 
 interface Form {
   groupName: string;
+  copyFromUser: string;
   firstName: string;
   lastName: string;
   username: string;
@@ -35,6 +36,7 @@ interface Form {
 
 const EMPTY: Form = {
   groupName: "",
+  copyFromUser: "",
   firstName: "",
   lastName: "",
   username: "",
@@ -83,8 +85,27 @@ export default function CreateUserWizard({
   const [deptFocused, setDeptFocused]           = useState(false);
   const [loginInfoOpen, setLoginInfoOpen]       = useState(false);
   const [groupConfig, setGroupConfig_]        = useState<GroupConfig>({});
+  // Users already living in the selected OU — offered as "copy groups from" templates.
+  const [templateUsers, setTemplateUsers]     = useState<ADUser[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
 
   useEffect(() => { getGroupConfig().then(setGroupConfig_); }, []);
+
+  // When the category (OU) changes, fetch its current users so the operator can
+  // copy an existing member's group memberships onto the new account.
+  useEffect(() => {
+    setForm((f) => ({ ...f, copyFromUser: "" }));
+    if (!form.groupName) { setTemplateUsers([]); return; }
+    let cancelled = false;
+    setLoadingTemplates(true);
+    adAPI.getGroupMembers(form.groupName).then((r) => {
+      if (cancelled) return;
+      const list = r.ok && Array.isArray(r.data) ? (r.data as ADUser[]) : [];
+      setTemplateUsers(list.filter((u) => u.SamAccountName));
+      setLoadingTemplates(false);
+    });
+    return () => { cancelled = true; };
+  }, [form.groupName]);
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
   const stepIdx = STEPS.findIndex((s) => s.id === step);
@@ -247,6 +268,7 @@ export default function CreateUserWizard({
       username:              form.username,
       password:              form.password,
       groupName:             form.groupName,
+      copyFromUser:          form.copyFromUser,
       description:           form.jobTitle,
       street:                form.street,
       city:                  form.city,
@@ -354,6 +376,39 @@ export default function CreateUserWizard({
                   );
                 })}
               </div>
+
+              {/* Copy group memberships from an existing user in this OU (optional). */}
+              {form.groupName && (
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-600">
+                    <Users size={13} className="text-zinc-400" />
+                    Copiar grupos de <span className="text-zinc-400">(opcional)</span>
+                  </label>
+                  <select
+                    value={form.copyFromUser}
+                    onChange={(e) => set("copyFromUser", e.target.value)}
+                    disabled={loadingTemplates}
+                    className={cn(inputCls, "disabled:opacity-60")}
+                  >
+                    <option value="">
+                      {loadingTemplates
+                        ? "A carregar utilizadores…"
+                        : templateUsers.length === 0
+                          ? "Nenhum utilizador nesta pasta"
+                          : "Não copiar grupos"}
+                    </option>
+                    {templateUsers.map((u) => (
+                      <option key={u.SamAccountName} value={u.SamAccountName}>
+                        {u.DisplayName || u.SamAccountName}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-zinc-400">
+                    O novo utilizador fica na pasta <span className="font-medium text-zinc-500">{form.groupName}</span>
+                    {form.copyFromUser && " e herda os grupos do utilizador escolhido"}.
+                  </p>
+                </div>
+              )}
             </>
           )}
 
@@ -523,6 +578,9 @@ export default function CreateUserWizard({
                 {(
                   [
                     ["Group",      form.groupName],
+                    ...(form.copyFromUser
+                      ? [["Grupos de", templateUsers.find((u) => u.SamAccountName === form.copyFromUser)?.DisplayName ?? form.copyFromUser]] as [string, string][]
+                      : []),
                     ["Full name",  `${form.firstName} ${form.lastName}`],
                     ["Username",   `BMAP\\${form.username}`],
                     ["Email",      form.email],

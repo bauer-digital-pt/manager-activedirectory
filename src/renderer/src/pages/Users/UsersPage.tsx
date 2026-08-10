@@ -1,14 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Search, ServerCrash, Settings, RotateCcw } from "lucide-react";
+import { Plus, Search, ServerCrash, Settings, RotateCcw, RefreshCw } from "lucide-react";
 import { adAPI, type ADGroup, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
 import type { ExternalToast } from "sonner";
 import CreateUserWizard from "./CreateUserWizard";
 import UserRow from "./UserRow";
+import { usersCache, setUsersCache, type UserWithGroup } from "../../lib/usersCache";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
-
-interface UserWithGroup extends ADUser { groupName: string; }
 
 // Windows PowerShell's ConvertTo-Json returns a bare object for a single result
 // and null for none — normalize any of those shapes to a plain array.
@@ -25,57 +24,19 @@ export default function UsersPage({
   toast: { success: ToastFn; error: ToastFn };
   onOpenSettings?: () => void;
 }) {
-  const [groups, setGroups] = useState<ADGroup[]>([]);
-  const [allUsers, setAllUsers] = useState<UserWithGroup[]>([]);
-  const [loadingGroups, setLoadingGroups] = useState(true);
+  // Seed from the module-level cache so returning from Settings is instant and
+  // doesn't re-fetch the whole directory. A first-ever mount has loaded=false.
+  const [groups, setGroups] = useState<ADGroup[]>(usersCache.groups);
+  const [allUsers, setAllUsers] = useState<UserWithGroup[]>(usersCache.users);
+  const [loadingGroups, setLoadingGroups] = useState(!usersCache.loaded);
   const [loadingUsers, setLoadingUsers] = useState(false);
-  const [groupsError, setGroupsError] = useState<string | null>(null);
+  const [groupsError, setGroupsError] = useState<string | null>(usersCache.error);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "create">("list");
   const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
 
-  const loadGroups = useCallback(() => {
-    setLoadingGroups(true);
-    setGroupsError(null);
-    adAPI
-      .getGroups()
-      .then((r) => {
-        setLoadingGroups(false);
-        if (r.ok) {
-          // Windows PowerShell's ConvertTo-Json emits a bare object (not an
-          // array) for a single group — normalize so one-group tenants work.
-          const gs = toArray<ADGroup>(r.data);
-          setGroups(gs);
-          setGroupsError(null);
-          loadAllUsers(gs);
-        } else {
-          // Explicit, recoverable error state — never a misleading "No users found".
-          setGroups([]);
-          setAllUsers([]);
-          setGroupsError(
-            r.error ??
-              "Não foi possível carregar os grupos do Active Directory.",
-          );
-        }
-      })
-      .catch((e) => {
-        setLoadingGroups(false);
-        setGroups([]);
-        setAllUsers([]);
-        setGroupsError(
-          typeof e?.message === "string"
-            ? e.message
-            : "Não foi possível comunicar com o Active Directory.",
-        );
-      });
-  }, []);
-
-  useEffect(() => {
-    loadGroups();
-  }, [loadGroups]);
-
-  const loadAllUsers = async (gs: ADGroup[]) => {
+  const loadAllUsers = useCallback(async (gs: ADGroup[]) => {
     setLoadingUsers(true);
     const results = await Promise.all(
       gs.map((g) =>
@@ -99,12 +60,56 @@ export default function UsersPage({
       }
     }
     setAllUsers(merged);
+    setUsersCache({ users: merged, loaded: true });
     setLoadingUsers(false);
-  };
+  }, []);
 
-  const refresh = () => {
-    if (groups.length > 0) loadAllUsers(groups);
-  };
+  const loadGroups = useCallback(() => {
+    setLoadingGroups(true);
+    setGroupsError(null);
+    adAPI
+      .getGroups()
+      .then((r) => {
+        setLoadingGroups(false);
+        if (r.ok) {
+          // Windows PowerShell's ConvertTo-Json emits a bare object (not an
+          // array) for a single group — normalize so one-group tenants work.
+          const gs = toArray<ADGroup>(r.data);
+          setGroups(gs);
+          setGroupsError(null);
+          setUsersCache({ groups: gs, error: null });
+          loadAllUsers(gs);
+        } else {
+          // Explicit, recoverable error state — never a misleading "No users found".
+          setGroups([]);
+          setAllUsers([]);
+          const err = r.error ?? "Não foi possível carregar os grupos do Active Directory.";
+          setGroupsError(err);
+          setUsersCache({ groups: [], users: [], error: err, loaded: true });
+        }
+      })
+      .catch((e) => {
+        setLoadingGroups(false);
+        setGroups([]);
+        setAllUsers([]);
+        const err =
+          typeof e?.message === "string"
+            ? e.message
+            : "Não foi possível comunicar com o Active Directory.";
+        setGroupsError(err);
+        setUsersCache({ groups: [], users: [], error: err, loaded: true });
+      });
+  }, [loadAllUsers]);
+
+  useEffect(() => {
+    // Only fetch on the first ever mount; subsequent mounts reuse the cache.
+    if (!usersCache.loaded) loadGroups();
+  }, [loadGroups]);
+
+  // Full reload — used by the toolbar refresh button and after creating a user.
+  const refresh = useCallback(() => {
+    loadGroups();
+  }, [loadGroups]);
 
   // Creating a user requires at least one group to place them in. With no
   // groups the wizard would be a dead-end, so the entry points no-op instead.
@@ -171,6 +176,14 @@ export default function UsersPage({
                 className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-52 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
               />
             </div>
+            <button
+              onClick={refresh}
+              disabled={isLoading}
+              title="Recarregar do Active Directory"
+              className="inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={cn(isLoading && "animate-spin")} />
+            </button>
             <button
               onClick={goCreate}
               disabled={!canCreate}
