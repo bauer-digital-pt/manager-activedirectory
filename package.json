@@ -37,7 +37,8 @@
       {
         "provider": "github",
         "owner": "bauer-digital-pt",
-        "repo": "manager-activedirectory"
+        "repo": "manager-activedirectory",
+        "releaseType": "release"
       }
     ],
     "mac": {
