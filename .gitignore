@@ -15,3 +15,6 @@ npm-debug.log*
 
 # Claude Code (local tooling, memory, launch config)
 .claude/
+
+# TS incremental build info
+*.tsbuildinfo
