@@ -1,0 +1,128 @@
+{
+  "name": "admanager",
+  "version": "1.0.0",
+  "description": "Active Directory Onboarding Manager — Bauer Media Audio Portugal",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "dev:browser": "vite --config vite.browser.config.mts",
+    "build": "tsc && vite build && electron-builder",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:mock": "concurrently \"vite\" \"wait-on http://localhost:5173 && MOCK_PS=1 electron .\""
+  },
+  "build": {
+    "appId": "pt.bauermedia.admanager",
+    "productName": "AD Manager",
+    "copyright": "Copyright © 2025 Bauer Media Audio Portugal",
+    "asar": true,
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "src/main/ps-scripts",
+        "to": "ps-scripts",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "bauer-digital-pt",
+        "repo": "manager-activedirectory"
+      }
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.business",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "AD Manager",
+      "background": null,
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "requestedExecutionLevel": "requireAdministrator",
+      "publisherName": "Bauer Media Audio Portugal",
+      "legalTrademarks": "Bauer Media Audio Portugal",
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AD Manager"
+    }
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.22",
+    "@radix-ui/react-select": "^2.3.6",
+    "@radix-ui/react-separator": "^1.1.14",
+    "@tailwindcss/vite": "^4.3.3",
+    "clsx": "^2.1.1",
+    "electron-updater": "^6.8.9",
+    "lucide-react": "^1.26.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^9.0.0",
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0",
+    "typescript": "^5.5.3",
+    "vite": "^5.4.1",
+    "vite-plugin-electron": "^0.28.7",
+    "vite-plugin-electron-renderer": "^0.14.5",
+    "wait-on": "^8.0.0"
+  },
+  "allowScripts": {
+    "electron@32.3.3": true,
+    "esbuild@0.21.5": true,
+    "fsevents@2.3.3": true
+  }
+}
