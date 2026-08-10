@@ -28,10 +28,13 @@ try {
     ConvertTo-Json -InputObject $groups -Compress
   }
 } catch {
+  # ASCII-only messages: PowerShell 5.1 reads BOM-less .ps1 files as ANSI, so
+  # accented literals get corrupted on the wire and can break JSON.parse in the
+  # runner. Keep it plain ASCII to stay readable in every codepage.
   $raw = $_.Exception.Message
-  $srv = if ($env:AD_SERVER) { $env:AD_SERVER } else { "o Active Directory" }
+  $srv = if ($env:AD_SERVER) { $env:AD_SERVER } else { "o servidor AD" }
   if ($raw -match 'Web Services|ADServerDown|unable to contact|server is not operational|find(ing)? .*server') {
-    $msg = "Não foi possível contactar o Active Directory Web Services em '$srv'. Confirma a ligação/VPN e que o serviço ADWS está a correr e acessível (porta 9389)."
+    $msg = "Nao foi possivel contactar o Active Directory Web Services em '$srv' (porta 9389). Confirma a ligacao/VPN, que o ADWS esta a correr, e experimenta o nome completo do servidor (ex: $srv.bmap.lis)."
   } else {
     $msg = $raw
   }

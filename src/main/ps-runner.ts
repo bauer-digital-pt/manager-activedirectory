@@ -127,6 +127,25 @@ function friendlyError(raw: string): string {
   return msg;
 }
 
+// PowerShell output can carry a UTF-8 BOM and — when a BOM-less .ps1 with
+// accented literals is misread as ANSI — stray raw control bytes that land
+// inside JSON strings, which JSON.parse rejects ("bad control character").
+// Strip the BOM and any C0 control chars except tab/newline/carriage-return so
+// a script's JSON result still parses instead of falling back to a generic error.
+function parseJsonLoose(raw: string): unknown {
+  let out = "";
+  for (const ch of raw) {
+    const c = ch.codePointAt(0)!;
+    // Drop the UTF-8 BOM and C0 control chars except tab/newline/carriage
+    // return — a BOM-less .ps1 misread as ANSI can leak raw control bytes into
+    // JSON strings, which JSON.parse rejects ("bad control character").
+    if (c === 0xfeff) continue;
+    if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) continue;
+    out += ch;
+  }
+  return JSON.parse(out.trim());
+}
+
 // ── Runner ─────────────────────────────────────────────────────────────────
 export function runPS(
   script: string,
@@ -220,7 +239,7 @@ export function runPS(
         }
         let errorMessage: string | undefined;
         try {
-          const parsed = JSON.parse((stdout ?? "").trim());
+          const parsed = parseJsonLoose(stdout ?? "") as { error?: string } | null;
           errorMessage = parsed?.error ?? undefined;
         } catch { /* ignore */ }
         resolve({ ok: false, error: friendlyError(errorMessage ?? (stderr || err.message)) });
@@ -228,7 +247,7 @@ export function runPS(
       }
 
       try {
-        resolve({ ok: true, data: JSON.parse(stdout.trim()) });
+        resolve({ ok: true, data: parseJsonLoose(stdout) });
       } catch {
         resolve({ ok: true, data: stdout.trim() });
       }
