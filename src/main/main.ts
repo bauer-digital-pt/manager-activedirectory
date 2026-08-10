@@ -273,6 +273,16 @@ function setupAutoUpdates() {
   // which emits normal progress and is far more robust on locked-down networks.
   autoUpdater.disableDifferentialDownload = true;
 
+  // The Windows build is NOT code-signed (no certificate in CI), so electron-
+  // updater's Authenticode check rejects every downloaded installer with
+  // "New version … is not signed by the application owner" and the update
+  // silently never applies. Until a signing certificate is available, skip that
+  // verification. The installer is still fetched over HTTPS from our own GitHub
+  // releases. `verifyUpdateCodeSignature` returning null means "no error".
+  (autoUpdater as unknown as {
+    verifyUpdateCodeSignature: () => Promise<string | null>;
+  }).verifyUpdateCodeSignature = () => Promise.resolve(null);
+
   autoUpdater.on("checking-for-update", () =>
     pushLog({ level: "info", source: "updater", label: "checking-for-update", detail: "A procurar atualizações…" }));
   autoUpdater.on("update-available", (info) => {
@@ -626,7 +636,9 @@ handle("auth:status", () => {
 // creds; quiet (no emitLog) so it doesn't flood the Console every few seconds.
 handle("auth:ping", async () => {
   if (!session) return { ok: false, error: "no session" };
-  const r = await runPS("Test-ADConnection.ps1", [], undefined, session, 8000);
+  // This AD can take ~7s per call, so an 8s ceiling was borderline. Give the
+  // probe generous headroom so a slow-but-healthy DC doesn't flap the dot red.
+  const r = await runPS("Test-ADConnection.ps1", [], undefined, session, 20000);
   return { ok: r.ok, error: r.error };
 });
 
