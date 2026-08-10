@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "BauerMediaSans";
+  src: url("./assets/fonts/BauerMediaSans-Light.otf") format("opentype");
+  font-weight: 300;
+  font-style: normal;
+}
+@font-face {
+  font-family: "BauerMediaSans";
+  src: url("./assets/fonts/BauerMediaSans-LightItalic.otf") format("opentype");
+  font-weight: 300;
+  font-style: italic;
+}
+@font-face {
+  font-family: "BauerMediaSans";
+  src: url("./assets/fonts/BauerMediaSans-Regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: "BauerMediaSans";
+  src: url("./assets/fonts/BauerMediaSans-RegularItalic.otf") format("opentype");
+  font-weight: 400;
+  font-style: italic;
+}
+@font-face {
+  font-family: "BauerMediaSans";
+  src: url("./assets/fonts/BauerMediaSans-Bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+}
+@font-face {
+  font-family: "BauerMediaSans";
+  src: url("./assets/fonts/BauerMediaSans-BoldItalic.otf") format("opentype");
+  font-weight: 700;
+  font-style: italic;
+}
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+  html { font-size: 19.6px; }
+  body {
+    font-family: "BauerMediaSans", system-ui, sans-serif;
+    @apply bg-white text-zinc-900 antialiased;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #root { height: 100vh; display: flex; flex-direction: column; }
+}
+
+@layer base {
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-zinc-200 rounded-full; }
+}

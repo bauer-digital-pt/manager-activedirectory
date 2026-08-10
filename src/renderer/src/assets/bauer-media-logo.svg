@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Teal triangles background grid -->
+  <polygon points="8,18 18,24 8,30"   fill="#1fd1bd" opacity="0.85"/>
+  <polygon points="8,36 18,42 8,48"   fill="#1fd1bd" opacity="0.85"/>
+  <polygon points="8,54 18,60 8,66"   fill="#1fd1bd" opacity="0.85"/>
+  <polygon points="8,72 18,78 8,84"   fill="#1fd1bd" opacity="0.85"/>
+  <polygon points="8,90 18,96 8,102"  fill="#1fd1bd" opacity="0.85"/>
+
+  <polygon points="22,27 32,33 22,39" fill="#1fd1bd" opacity="0.6"/>
+  <polygon points="22,45 32,51 22,57" fill="#1fd1bd" opacity="0.6"/>
+  <polygon points="22,63 32,69 22,75" fill="#1fd1bd" opacity="0.6"/>
+  <polygon points="22,81 32,87 22,93" fill="#1fd1bd" opacity="0.6"/>
+
+  <polygon points="36,18 46,24 36,30" fill="#1fd1bd" opacity="0.4"/>
+  <polygon points="36,54 46,60 36,66" fill="#1fd1bd" opacity="0.4"/>
+  <polygon points="36,90 46,96 36,102" fill="#1fd1bd" opacity="0.4"/>
+
+  <!-- Purple B shape (rounded, thick stroke) -->
+  <!-- Vertical stroke -->
+  <rect x="34" y="18" width="11" height="84" rx="5.5" fill="#4700a3"/>
+
+  <!-- Top bump of B -->
+  <path d="M45 18 Q82 18 82 42 Q82 60 45 60" stroke="#4700a3" stroke-width="11" fill="none" stroke-linecap="round"/>
+
+  <!-- Bottom bump of B -->
+  <path d="M45 60 Q86 60 86 82 Q86 102 45 102" stroke="#4700a3" stroke-width="11" fill="none" stroke-linecap="round"/>
+
+  <!-- Bottom horizontal foot -->
+  <rect x="34" y="96" width="36" height="11" rx="5.5" fill="#4700a3"/>
+</svg>
