@@ -647,8 +647,13 @@ handle("auth:login", async (_e, rawPayload) => {
     return { ok: false, error: data.error ?? "Credenciais inválidas." };
   }
 
-  // Pin the DC we actually bound to, so subsequent ops don't re-discover.
-  session = { server: data.dc || server, username, password };
+  // Pin the DC we actually bound to. The successful bind used `server` (the
+  // configured DC, e.g. pt-srv-dc02) — so keep it. We must NOT repin to the
+  // domain's PDCEmulator (data.dc): it can be a DIFFERENT DC whose ADWS isn't
+  // reachable from this client, which made login succeed but every later
+  // Get-AD* call fail with ADServerDownException. Only fall back to the
+  // discovered DC when no server was configured (pure auto-discovery).
+  session = { server: server || data.dc || "", username, password };
 
   // Remember only the username (non-secret) for pre-fill next time.
   const settings = readSettings();
