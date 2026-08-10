@@ -1,0 +1,38 @@
+name: Release
+
+# Builds the Windows installer and publishes it to GitHub Releases so
+# electron-updater clients auto-update. Triggered by pushing a version tag
+# (e.g. `git tag v1.0.1 && git push origin v1.0.1`) or run manually from the
+# Actions tab. `--publish always` makes both paths publish; the release goes
+# out as a full release (see the `releaseType: release` publish config).
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # electron-builder needs this to create the GitHub Release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer & publish to GitHub Releases
+        env:
+          # The default Actions token; the permissions block above grants it
+          # contents:write. electron-builder reads GH_TOKEN for the GitHub publisher.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run build -- --publish always
