@@ -69,7 +69,7 @@ export default function App() {
         }
         return m;
       });
-    }, 6000);
+    }, 3000);
     return () => clearTimeout(t);
   }, [checkModule]);
 
@@ -86,10 +86,17 @@ export default function App() {
   }, []);
 
   // Still checking — a light splash avoids flashing the app (or a black window).
+  // It must read as *loading*, not a frozen blank window: an unlabelled pulsing
+  // logo on white is indistinguishable from a crash. The wordmark + status line
+  // make it obviously intentional, and the check is capped at a few seconds.
   if (moduleMissing === null) {
     return (
-      <div className="flex flex-col h-screen items-center justify-center bg-white">
-        <img src={logo} alt="Bauer Media" className="w-12 h-12 opacity-90 animate-pulse" />
+      <div className="flex h-screen flex-col items-center justify-center gap-5 bg-white">
+        <img src={logo} alt="Bauer Media" className="h-12 w-12 animate-pulse opacity-90" />
+        <div className="flex flex-col items-center gap-1.5">
+          <span className="text-sm font-medium tracking-wide text-zinc-500">AD Manager</span>
+          <span className="text-xs text-zinc-400">A iniciar…</span>
+        </div>
       </div>
     );
   }

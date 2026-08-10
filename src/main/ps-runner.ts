@@ -113,7 +113,12 @@ export function runPS(
   script: string,
   args: string[] = [],
   log?: (entry: LogEntry) => void,
-  conn?: ADConnection
+  conn?: ADConnection,
+  // Hard ceiling so a hung PowerShell (e.g. `Get-Module -ListAvailable` stalling
+  // on an unreachable network module path in a domain, or an unreachable DC)
+  // never hangs the IPC — and therefore the UI — forever. The process is killed
+  // and the call resolves with an actionable error the renderer already handles.
+  timeoutMs = 30000
 ): Promise<{ ok: boolean; data?: unknown; error?: string }> {
   if (MOCK_MODE) {
     const ts = Date.now();
@@ -157,7 +162,20 @@ export function runPS(
     if (conn?.username) env.AD_USER     = conn.username;
     if (conn?.password) env.AD_PASSWORD = conn.password;
 
-    execFile("powershell.exe", psArgs, { encoding: "utf8", env }, (err, stdout, stderr) => {
+    execFile(
+      "powershell.exe",
+      psArgs,
+      {
+        encoding: "utf8",
+        env,
+        timeout: timeoutMs,
+        // Don't flash a console window on every AD call.
+        windowsHide: true,
+        // A large group's member list can serialize to well over the 1 MB
+        // default, which would otherwise fail the call with ENOBUFS.
+        maxBuffer: 20 * 1024 * 1024,
+      },
+      (err, stdout, stderr) => {
       const durationMs = Date.now() - ts;
       const exitCode = err?.code != null ? (err.code as number) : (err ? 1 : 0);
       const ok = !err;
@@ -167,6 +185,20 @@ export function runPS(
       }
 
       if (err) {
+        const e = err as NodeJS.ErrnoException & { killed?: boolean };
+        // Timeout: execFile killed the process after `timeoutMs`.
+        if (e.killed) {
+          resolve({
+            ok: false,
+            error: `A operação demorou demasiado tempo (mais de ${Math.round(timeoutMs / 1000)}s) e foi cancelada. Verifica a ligação ao Active Directory e tenta novamente.`,
+          });
+          return;
+        }
+        // Output exceeded maxBuffer (extremely large directory response).
+        if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+          resolve({ ok: false, error: "A resposta do Active Directory é demasiado grande para ser processada." });
+          return;
+        }
         let errorMessage: string | undefined;
         try {
           const parsed = JSON.parse((stdout ?? "").trim());
