@@ -48,7 +48,9 @@ const CONN_PATH = join(app.getPath("userData"), "connection.json");
 // Domain controller the app talks to by default (domain: bmap.lis). Pre-filled
 // so a fresh install connects out of the box; the user can override it in
 // Settings → Connection. An empty stored value also falls back to this.
-const DEFAULT_DC = "pt-srv-dc02";
+// We use the DC's IP directly (not the hostname pt-srv-dc02) because some client
+// PCs don't resolve the DC hostname via DNS, which broke ADWS connectivity.
+const DEFAULT_DC = "10.4.0.12";
 
 interface StoredConnection {
   server: string;
