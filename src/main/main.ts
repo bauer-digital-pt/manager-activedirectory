@@ -165,6 +165,15 @@ function createWindow() {
   bindLogWindow(win);
   wireWindowLogging(win);
 
+  // Pin the zoom to 100%. Running elevated (requireAdministrator) can drop the
+  // app's per-monitor DPI awareness and render everything shrunk, and Chromium
+  // otherwise persists any stray Ctrl+wheel zoom per origin. Reset it on every
+  // load and lock the pinch/zoom limits so the UI can't get stuck tiny.
+  win.webContents.on("did-finish-load", () => {
+    win.webContents.setZoomFactor(1);
+    win.webContents.setVisualZoomLevelLimits(1, 1);
+  });
+
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL);
   } else {
