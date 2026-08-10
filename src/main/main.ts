@@ -267,6 +267,11 @@ function setupAutoUpdates() {
   // settings "check for updates" modal rides the same status stream.
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  // Differential downloads (via the .blockmap) routinely hang at 0% behind
+  // corporate proxies/firewalls because they rely on HTTP range requests to the
+  // GitHub asset CDN. Force a plain full download of the installer — a few MB —
+  // which emits normal progress and is far more robust on locked-down networks.
+  autoUpdater.disableDifferentialDownload = true;
 
   autoUpdater.on("checking-for-update", () =>
     pushLog({ level: "info", source: "updater", label: "checking-for-update", detail: "A procurar atualizações…" }));
