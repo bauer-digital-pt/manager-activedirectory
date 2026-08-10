@@ -52,6 +52,19 @@ const CONN_PATH = join(app.getPath("userData"), "connection.json");
 // PCs don't resolve the DC hostname via DNS, which broke ADWS connectivity.
 const DEFAULT_DC = "10.4.0.12";
 
+// Legacy stored server values that must be transparently migrated to the IP:
+// the hostname pt-srv-dc02 doesn't resolve via DNS on some client PCs, which
+// broke the AD connection. An install carrying the old hostname in
+// connection.json would otherwise keep using it and ignore the new default.
+const LEGACY_DCS = new Set(["pt-srv-dc02", "pt-srv-dc02.bmap.lis"]);
+
+function migrateServer(server: string): string {
+  const s = (server ?? "").trim();
+  if (!s) return DEFAULT_DC;
+  if (LEGACY_DCS.has(s.toLowerCase())) return DEFAULT_DC;
+  return s;
+}
+
 interface StoredConnection {
   server: string;
   username: string;
@@ -63,7 +76,7 @@ function readStoredConnection(): StoredConnection {
     if (existsSync(CONN_PATH)) {
       const raw = JSON.parse(readFileSync(CONN_PATH, "utf8"));
       return {
-        server: raw.server || DEFAULT_DC,
+        server: migrateServer(raw.server),
         username: raw.username ?? "",
         password: raw.password ?? "",
       };
