@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, safeStorage } from "electron";
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { spawn } from "child_process";
 import electronUpdater from "electron-updater";
 import { runPS, type ADConnection } from "./ps-runner";
 
@@ -87,7 +88,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: "hiddenInset",
-    backgroundColor: "#0f1117",
+    backgroundColor: "#ffffff",
     webPreferences: {
       preload: join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -133,6 +134,102 @@ function setupAutoUpdates() {
     sendToRenderer("updates:status", { state: "error", message: String(err?.message ?? err) }));
 
   autoUpdater.checkForUpdates().catch(() => { /* offline / no releases yet */ });
+}
+
+// --- RSAT ActiveDirectory auto-install ---
+// The RSAT "Active Directory" module is a Windows Feature-on-Demand. On Windows
+// 10/11 it installs via DISM /add-capability, which streams a real percentage to
+// stdout that we forward to the renderer as a progress bar. The packaged app runs
+// elevated (requireAdministrator), so DISM inherits admin rights — no extra UAC.
+const RSAT_CAPABILITY = "Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0";
+
+// Turns a raw DISM error/output into a short, actionable Portuguese message.
+function friendlyInstallError(output: string, code: number | null): string {
+  const text = (output || "").toLowerCase();
+  if (text.includes("0x800f0954") || text.includes("0x800f0906") || text.includes("0x800f081f")) {
+    return "O Windows Update / Funcionalidades Opcionais parece estar bloqueado por política nesta máquina "
+      + "(erro 0x800f0954). Instala o RSAT manualmente com os passos abaixo, ou pede ao IT para permitir o "
+      + "download de funcionalidades opcionais diretamente do Windows Update.";
+  }
+  if (code === 740 || text.includes("elevat") || text.includes("access is denied") || text.includes("acesso negado")) {
+    return "É preciso executar o AD Manager como administrador para instalar o componente. "
+      + "Fecha a app, clica com o botão direito e escolhe “Executar como administrador”.";
+  }
+  if (text.includes("could not be found") || text.includes("não foi possível encontrar")) {
+    return "O Windows não encontrou os ficheiros do RSAT (pode ser uma edição de Windows sem esta funcionalidade, "
+      + "ou Windows Server). Instala o RSAT manualmente com os passos abaixo.";
+  }
+  return `A instalação automática falhou${code != null ? ` (código ${code})` : ""}. `
+    + "Tenta novamente ou instala o RSAT manualmente com os passos abaixo.";
+}
+
+// Runs the DISM install, forwarding progress on the "ad:install-progress" channel.
+// Resolves with the final outcome so the invoking IPC call also gets a result.
+function installADModule(): Promise<{ ok: boolean; rebootRequired?: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") {
+      const error = "A instalação automática só está disponível no Windows.";
+      sendToRenderer("ad:install-progress", { state: "error", message: error });
+      resolve({ ok: false, error });
+      return;
+    }
+
+    sendToRenderer("ad:install-progress", { state: "installing", percent: 0, message: "A preparar a instalação…" });
+
+    let dism;
+    try {
+      dism = spawn(
+        "dism.exe",
+        ["/online", "/add-capability", `/capabilityname:${RSAT_CAPABILITY}`, "/norestart"],
+        { windowsHide: true },
+      );
+    } catch (e) {
+      const error = friendlyInstallError(e instanceof Error ? e.message : String(e), null);
+      sendToRenderer("ad:install-progress", { state: "error", message: error });
+      resolve({ ok: false, error });
+      return;
+    }
+
+    let buf = "";
+    let lastPercent = 0;
+
+    const onData = (chunk: Buffer) => {
+      buf += chunk.toString("utf8");
+      // DISM updates a single progress line in place; grab the last "NN.N%" seen.
+      const matches = buf.match(/(\d{1,3}(?:[.,]\d)?)\s*%/g);
+      if (matches && matches.length) {
+        const raw = matches[matches.length - 1].replace(/[^\d.,]/g, "").replace(",", ".");
+        const p = Math.min(99, Math.max(lastPercent, Math.round(parseFloat(raw))));
+        if (p !== lastPercent) {
+          lastPercent = p;
+          sendToRenderer("ad:install-progress", { state: "installing", percent: p, message: "A instalar componentes…" });
+        }
+      }
+      // Keep only a tail of the buffer so error strings survive without unbounded growth.
+      if (buf.length > 16384) buf = buf.slice(-4096);
+    };
+
+    dism.stdout?.on("data", onData);
+    dism.stderr?.on("data", onData);
+
+    dism.on("error", (err) => {
+      const error = friendlyInstallError(err.message, null);
+      sendToRenderer("ad:install-progress", { state: "error", message: error });
+      resolve({ ok: false, error });
+    });
+
+    dism.on("close", (code) => {
+      if (code === 0 || code === 3010) {
+        const rebootRequired = code === 3010;
+        sendToRenderer("ad:install-progress", { state: "done", percent: 100, rebootRequired });
+        resolve({ ok: true, rebootRequired });
+      } else {
+        const error = friendlyInstallError(buf, code);
+        sendToRenderer("ad:install-progress", { state: "error", message: error, code });
+        resolve({ ok: false, error });
+      }
+    });
+  });
 }
 
 app.on("window-all-closed", () => {
@@ -202,6 +299,12 @@ ipcMain.handle("ad:remove-group", async (_e, groupName: string) => {
 // Reports whether the RSAT ActiveDirectory module is installed on this machine.
 ipcMain.handle("ad:check-module", async () => {
   return ps("Check-ADModule.ps1");
+});
+
+// Installs the RSAT ActiveDirectory module via DISM, streaming progress to the
+// renderer on "ad:install-progress". Resolves with the final outcome.
+ipcMain.handle("ad:install-module", async () => {
+  return installADModule();
 });
 
 // --- Update IPC ---
