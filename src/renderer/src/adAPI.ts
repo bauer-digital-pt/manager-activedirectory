@@ -66,6 +66,9 @@ declare global {
     };
     consoleAPI?: {
       onLog(cb: (entry: unknown) => void): () => void;
+      getHistory(): Promise<unknown[]>;
+      clear(): Promise<void>;
+      report(entry: { level?: string; source?: string; label?: string; detail?: string; data?: unknown }): void;
     };
   }
 }

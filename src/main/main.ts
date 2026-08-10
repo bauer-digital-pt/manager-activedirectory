@@ -3,7 +3,16 @@ import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { spawn } from "child_process";
 import electronUpdater from "electron-updater";
-import { runPS, type ADConnection } from "./ps-runner";
+import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
+import {
+  bindLogWindow,
+  pushLog,
+  getHistory,
+  clearHistory,
+  redact,
+  redactPsArgs,
+  truncate,
+} from "./logbus";
 
 const { autoUpdater } = electronUpdater;
 
@@ -97,6 +106,8 @@ function createWindow() {
   });
 
   mainWindow = win;
+  bindLogWindow(win);
+  wireWindowLogging(win);
 
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL);
@@ -105,7 +116,52 @@ function createWindow() {
   }
 }
 
+// Mirror the window's load lifecycle, renderer console output, crashes, and
+// outbound network requests into the activity log, so the Console shows exactly
+// what is being loaded, every connection, and every failure/timeout.
+function wireWindowLogging(win: BrowserWindow) {
+  const wc = win.webContents;
+
+  wc.on("did-start-loading", () => pushLog({ level: "debug", source: "window", label: "did-start-loading" }));
+  wc.on("dom-ready", () => pushLog({ level: "debug", source: "window", label: "dom-ready", detail: wc.getURL() }));
+  wc.on("did-finish-load", () => pushLog({ level: "success", source: "window", label: "did-finish-load", detail: wc.getURL() }));
+  wc.on("did-fail-load", (_e, code, desc, url, isMainFrame) =>
+    pushLog({ level: "error", source: "window", label: "did-fail-load", detail: `${desc} (${code}) — ${url}`, data: { code, desc, url, isMainFrame } }));
+  wc.on("did-fail-provisional-load", (_e, code, desc, url) =>
+    pushLog({ level: "error", source: "window", label: "did-fail-provisional-load", detail: `${desc} (${code}) — ${url}`, data: { code, desc, url } }));
+  wc.on("render-process-gone", (_e, details) =>
+    pushLog({ level: "error", source: "window", label: "render-process-gone", detail: details.reason, data: details }));
+  wc.on("unresponsive", () => pushLog({ level: "warn", source: "window", label: "unresponsive" }));
+  wc.on("responsive", () => pushLog({ level: "info", source: "window", label: "responsive" }));
+  wc.on("preload-error", (_e, preloadPath, error) =>
+    pushLog({ level: "error", source: "window", label: "preload-error", detail: String(error?.message ?? error), data: { preloadPath } }));
+
+  // Renderer console.* (and Chromium resource warnings) surfaced in main.
+  const CHROME_LEVEL: Record<number, "debug" | "info" | "warn" | "error"> = { 0: "debug", 1: "info", 2: "warn", 3: "error" };
+  wc.on("console-message", (_e, level, message, line, sourceId) =>
+    pushLog({ level: CHROME_LEVEL[level] ?? "info", source: "renderer", label: "console", detail: message, data: { line, sourceId } }));
+
+  // Outbound HTTP(S) connections (auto-update checks, downloads). file:// asset
+  // loads are intentionally skipped so a startup burst doesn't drown the log.
+  const wr = win.webContents.session.webRequest;
+  wr.onCompleted(({ url, method, statusCode }) => {
+    if (!/^https?:/i.test(url)) return;
+    const level = statusCode >= 400 ? "error" : "debug";
+    pushLog({ level, source: "net", label: `${method} ${statusCode}`, detail: url });
+  });
+  wr.onErrorOccurred(({ url, method, error }) => {
+    if (!/^https?:/i.test(url)) return;
+    pushLog({ level: "error", source: "net", label: `${method} failed`, detail: `${error} — ${url}`, data: { error } });
+  });
+}
+
 app.whenReady().then(() => {
+  pushLog({
+    level: "info",
+    source: "app",
+    label: "ready",
+    detail: `AD Manager ${app.getVersion()} · ${process.platform} ${process.arch} · Electron ${process.versions.electron} · packaged=${app.isPackaged}`,
+  });
   createWindow();
   setupAutoUpdates();
 });
@@ -122,18 +178,31 @@ function setupAutoUpdates() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on("update-available", (info) =>
-    sendToRenderer("updates:status", { state: "available", version: info.version }));
-  autoUpdater.on("update-not-available", () =>
-    sendToRenderer("updates:status", { state: "none" }));
-  autoUpdater.on("download-progress", (p) =>
-    sendToRenderer("updates:status", { state: "downloading", percent: Math.round(p.percent) }));
-  autoUpdater.on("update-downloaded", (info) =>
-    sendToRenderer("updates:status", { state: "downloaded", version: info.version }));
-  autoUpdater.on("error", (err) =>
-    sendToRenderer("updates:status", { state: "error", message: String(err?.message ?? err) }));
+  autoUpdater.on("checking-for-update", () =>
+    pushLog({ level: "info", source: "updater", label: "checking-for-update", detail: "A procurar atualizações…" }));
+  autoUpdater.on("update-available", (info) => {
+    pushLog({ level: "info", source: "updater", label: "update-available", detail: `v${info.version}`, data: info });
+    sendToRenderer("updates:status", { state: "available", version: info.version });
+  });
+  autoUpdater.on("update-not-available", (info) => {
+    pushLog({ level: "info", source: "updater", label: "update-not-available", detail: "Já está na versão mais recente." });
+    sendToRenderer("updates:status", { state: "none" });
+  });
+  autoUpdater.on("download-progress", (p) => {
+    pushLog({ level: "debug", source: "updater", label: "download-progress", detail: `${Math.round(p.percent)}% · ${Math.round(p.bytesPerSecond / 1024)} KB/s` });
+    sendToRenderer("updates:status", { state: "downloading", percent: Math.round(p.percent) });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
+    pushLog({ level: "success", source: "updater", label: "update-downloaded", detail: `v${info.version} pronta a instalar` });
+    sendToRenderer("updates:status", { state: "downloaded", version: info.version });
+  });
+  autoUpdater.on("error", (err) => {
+    pushLog({ level: "error", source: "updater", label: "error", detail: String(err?.message ?? err), data: { stack: err?.stack } });
+    sendToRenderer("updates:status", { state: "error", message: String(err?.message ?? err) });
+  });
 
-  autoUpdater.checkForUpdates().catch(() => { /* offline / no releases yet */ });
+  autoUpdater.checkForUpdates().catch((e) =>
+    pushLog({ level: "warn", source: "updater", label: "check-failed", detail: String(e?.message ?? e) }));
 }
 
 // --- RSAT ActiveDirectory auto-install ---
@@ -169,11 +238,13 @@ function installADModule(): Promise<{ ok: boolean; rebootRequired?: boolean; err
   return new Promise((resolve) => {
     if (process.platform !== "win32") {
       const error = "A instalação automática só está disponível no Windows.";
+      pushLog({ level: "error", source: "rsat", label: "install", detail: error });
       sendToRenderer("ad:install-progress", { state: "error", message: error });
       resolve({ ok: false, error });
       return;
     }
 
+    pushLog({ level: "info", source: "rsat", label: "install", detail: `A iniciar DISM /add-capability ${RSAT_CAPABILITY}` });
     sendToRenderer("ad:install-progress", { state: "installing", percent: 0, message: "A preparar a instalação…" });
 
     let dism;
@@ -214,6 +285,7 @@ function installADModule(): Promise<{ ok: boolean; rebootRequired?: boolean; err
 
     dism.on("error", (err) => {
       const error = friendlyInstallError(err.message, null);
+      pushLog({ level: "error", source: "rsat", label: "install", detail: error, data: { raw: err.message } });
       sendToRenderer("ad:install-progress", { state: "error", message: error });
       resolve({ ok: false, error });
     });
@@ -221,10 +293,12 @@ function installADModule(): Promise<{ ok: boolean; rebootRequired?: boolean; err
     dism.on("close", (code) => {
       if (code === 0 || code === 3010) {
         const rebootRequired = code === 3010;
+        pushLog({ level: "success", source: "rsat", label: "install", detail: rebootRequired ? "Instalado (é preciso reiniciar)" : "Instalado", data: { code } });
         sendToRenderer("ad:install-progress", { state: "done", percent: 100, rebootRequired });
         resolve({ ok: true, rebootRequired });
       } else {
         const error = friendlyInstallError(buf, code);
+        pushLog({ level: "error", source: "rsat", label: "install", detail: error, data: { code, output: truncate(buf) } });
         sendToRenderer("ad:install-progress", { state: "error", message: error, code });
         resolve({ ok: false, error });
       }
@@ -242,24 +316,83 @@ app.on("activate", () => {
 
 // --- IPC handlers ---
 
-function emitLog(entry: import("./ps-runner").LogEntry) {
-  if (!mainWindow) return;
-  mainWindow.webContents.send("console:log", entry);
+// Normalize a raw PowerShell LogEntry into the unified activity log. Secrets in
+// positional args are masked, stdout is parsed (so the Console can show the real
+// result/data), and timeouts/failures surface their actual reason.
+function emitLog(e: LogEntry) {
+  let parsed: unknown;
+  try { parsed = e.stdout ? JSON.parse(e.stdout.trim()) : undefined; } catch { parsed = undefined; }
+  const errorMsg =
+    (parsed && typeof parsed === "object" && parsed && "error" in parsed ? (parsed as { error?: string }).error : undefined) ||
+    (e.stderr?.trim() || undefined);
+  pushLog({
+    ts: e.ts,
+    level: e.ok ? "success" : "error",
+    source: "ps",
+    label: e.script,
+    detail: e.ok ? (e.args.length ? redactPsArgs(e.script, e.args).filter(Boolean).join(" ") : undefined) : errorMsg,
+    data: {
+      args: redactPsArgs(e.script, e.args),
+      exitCode: e.exitCode,
+      stdout: e.stdout ? truncate(e.stdout) : "",
+      stderr: e.stderr ?? "",
+      parsed,
+    },
+    durationMs: e.durationMs,
+    mocked: e.mocked,
+  });
+}
+
+// Wrap an IPC handler so every invocation is logged (request + outcome +
+// duration) with secrets redacted. This is what makes non-PS activity
+// (config, connection, updates) visible in the Console, not just AD scripts.
+function handle(
+  channel: string,
+  fn: (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown,
+) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const start = Date.now();
+    pushLog({ level: "debug", source: "ipc", label: channel, detail: "→ invoke", data: { args: args.map((a) => redact(a)) } });
+    try {
+      const result = await fn(event, ...args);
+      const failed = !!(result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false);
+      pushLog({
+        level: failed ? "error" : "info",
+        source: "ipc",
+        label: channel,
+        detail: failed ? `✗ ${(result as { error?: string }).error ?? "erro"}` : "✓ concluído",
+        data: { result: redact(result) },
+        durationMs: Date.now() - start,
+      });
+      return result;
+    } catch (err) {
+      pushLog({
+        level: "error",
+        source: "ipc",
+        label: channel,
+        detail: `✗ ${err instanceof Error ? err.message : String(err)}`,
+        data: { stack: err instanceof Error ? err.stack : undefined },
+        durationMs: Date.now() - start,
+      });
+      throw err;
+    }
+  });
 }
 
 function ps(script: string, args: string[] = []) {
   return runPS(script, args, emitLog, getConnection());
 }
 
-ipcMain.handle("ad:get-groups", async () => {
+handle("ad:get-groups", async () => {
   return ps("Get-ADGroup-All.ps1");
 });
 
-ipcMain.handle("ad:get-group-members", async (_e, groupName: string) => {
-  return ps("Get-ADGroupMembers.ps1", [groupName]);
+handle("ad:get-group-members", async (_e, groupName) => {
+  return ps("Get-ADGroupMembers.ps1", [groupName as string]);
 });
 
-ipcMain.handle("ad:create-user", async (_e, params: Record<string, string>) => {
+handle("ad:create-user", async (_e, rawParams) => {
+  const params = rawParams as Record<string, string>;
   const args = [
     params.firstName,
     params.lastName,
@@ -280,35 +413,37 @@ ipcMain.handle("ad:create-user", async (_e, params: Record<string, string>) => {
   return ps("New-ADUser.ps1", args);
 });
 
-ipcMain.handle("ad:reset-password", async (_e, params: { username: string; newPassword: string }) => {
-  return ps("Reset-ADPassword.ps1", [params.username, params.newPassword]);
+handle("ad:reset-password", async (_e, params) => {
+  const p = params as { username: string; newPassword: string };
+  return ps("Reset-ADPassword.ps1", [p.username, p.newPassword]);
 });
 
-ipcMain.handle("ad:unlock-user", async (_e, username: string) => {
-  return ps("Unlock-ADUser.ps1", [username]);
+handle("ad:unlock-user", async (_e, username) => {
+  return ps("Unlock-ADUser.ps1", [username as string]);
 });
 
-ipcMain.handle("ad:add-group-permission", async (_e, params: { groupName: string; description: string }) => {
-  return ps("Add-ADGroup.ps1", [params.groupName, params.description]);
+handle("ad:add-group-permission", async (_e, params) => {
+  const p = params as { groupName: string; description: string };
+  return ps("Add-ADGroup.ps1", [p.groupName, p.description]);
 });
 
-ipcMain.handle("ad:remove-group", async (_e, groupName: string) => {
-  return ps("Remove-ADGroup.ps1", [groupName]);
+handle("ad:remove-group", async (_e, groupName) => {
+  return ps("Remove-ADGroup.ps1", [groupName as string]);
 });
 
 // Reports whether the RSAT ActiveDirectory module is installed on this machine.
-ipcMain.handle("ad:check-module", async () => {
+handle("ad:check-module", async () => {
   return ps("Check-ADModule.ps1");
 });
 
 // Installs the RSAT ActiveDirectory module via DISM, streaming progress to the
 // renderer on "ad:install-progress". Resolves with the final outcome.
-ipcMain.handle("ad:install-module", async () => {
+handle("ad:install-module", async () => {
   return installADModule();
 });
 
 // --- Update IPC ---
-ipcMain.handle("updates:check", async () => {
+handle("updates:check", async () => {
   if (!app.isPackaged) return { ok: false, error: "Updates only run in the installed app." };
   try {
     const r = await autoUpdater.checkForUpdates();
@@ -318,22 +453,23 @@ ipcMain.handle("updates:check", async () => {
   }
 });
 
-ipcMain.handle("updates:install", () => {
+handle("updates:install", () => {
   autoUpdater.quitAndInstall();
 });
 
 // --- Config IPC ---
-ipcMain.handle("config:get-groups", () => readGroups());
-ipcMain.handle("config:set-groups", (_e, groups: Record<string, unknown>) => { writeGroups(groups); });
+handle("config:get-groups", () => readGroups());
+handle("config:set-groups", (_e, groups) => { writeGroups(groups as Record<string, unknown>); });
 
 // --- Connection IPC ---
 // Never returns the password itself — only whether one is stored.
-ipcMain.handle("config:get-connection", () => {
+handle("config:get-connection", () => {
   const stored = readStoredConnection();
   return { server: stored.server, username: stored.username, hasPassword: !!stored.password };
 });
 
-ipcMain.handle("config:set-connection", (_e, payload: { server: string; username: string; password?: string }) => {
+handle("config:set-connection", (_e, rawPayload) => {
+  const payload = rawPayload as { server: string; username: string; password?: string };
   const current = readStoredConnection();
   const next: StoredConnection = {
     server: payload.server ?? "",
@@ -346,7 +482,8 @@ ipcMain.handle("config:set-connection", (_e, payload: { server: string; username
 
 // Runs a test using the given values (if provided) instead of the saved ones,
 // so the user can verify before saving. Falls back to saved config otherwise.
-ipcMain.handle("ad:test-connection", (_e, override?: { server: string; username: string; password?: string }) => {
+handle("ad:test-connection", (_e, rawOverride) => {
+  const override = rawOverride as { server: string; username: string; password?: string } | undefined;
   let conn = getConnection();
   if (override) {
     conn = {
@@ -358,4 +495,21 @@ ipcMain.handle("ad:test-connection", (_e, override?: { server: string; username:
     };
   }
   return runPS("Test-ADConnection.ps1", [], emitLog, conn);
+});
+
+// --- Console / activity log IPC ---
+// Registered on raw ipcMain (not the logging `handle` wrapper) so reading or
+// clearing the log doesn't itself generate log noise or recurse.
+ipcMain.handle("console:get-history", () => getHistory());
+ipcMain.handle("console:clear", () => { clearHistory(); });
+ipcMain.on("console:report", (_e, entry: {
+  level?: import("./logbus").LogLevel; source?: string; label?: string; detail?: string; data?: unknown;
+}) => {
+  pushLog({
+    level: entry?.level ?? "info",
+    source: entry?.source ?? "renderer",
+    label: entry?.label ?? "event",
+    detail: entry?.detail,
+    data: entry?.data,
+  });
 });

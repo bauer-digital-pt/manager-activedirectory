@@ -9,9 +9,17 @@ contextBridge.exposeInMainWorld("configAPI", {
 
 contextBridge.exposeInMainWorld("consoleAPI", {
   onLog: (cb: (entry: unknown) => void) => {
-    ipcRenderer.on("console:log", (_e, entry) => cb(entry));
-    return () => ipcRenderer.removeAllListeners("console:log");
+    const listener = (_e: unknown, entry: unknown) => cb(entry);
+    ipcRenderer.on("console:log", listener);
+    return () => ipcRenderer.removeListener("console:log", listener);
   },
+  // Back-fill everything logged before the Console page mounted (startup module
+  // check, group load, window loads, etc.).
+  getHistory: () => ipcRenderer.invoke("console:get-history"),
+  clear: () => ipcRenderer.invoke("console:clear"),
+  // Report a renderer-side event (uncaught error, unhandled rejection) into the
+  // shared activity log so it shows alongside main-process activity.
+  report: (entry: unknown) => ipcRenderer.send("console:report", entry),
 });
 
 contextBridge.exposeInMainWorld("adAPI", {
