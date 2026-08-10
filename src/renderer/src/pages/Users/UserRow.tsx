@@ -64,8 +64,17 @@ export default function UserRow({
     return () => window.removeEventListener("keydown", handler);
   }, [modal, busy]);
 
-  const initials = (user.DisplayName || user.SamAccountName)
-    .split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  // Guard against malformed AD records (a member with no DisplayName *and* no
+  // SamAccountName — e.g. a nested group or computer account). A raw
+  // `.split()` on undefined here throws and, without a boundary, blanks the app.
+  const displayName = user.DisplayName || user.SamAccountName || "—";
+  const initials =
+    (displayName
+      .split(" ")
+      .slice(0, 2)
+      .map((w) => w[0])
+      .join("")
+      .toUpperCase() || "?");
 
   const doReset = async () => {
     setBusy(true);

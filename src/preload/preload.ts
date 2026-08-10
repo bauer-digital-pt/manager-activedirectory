@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld("adAPI", {
   removeGroup: (groupName: string) => ipcRenderer.invoke("ad:remove-group", groupName),
   testConnection: (override?: unknown) => ipcRenderer.invoke("ad:test-connection", override),
   checkModule: () => ipcRenderer.invoke("ad:check-module"),
+  installModule: () => ipcRenderer.invoke("ad:install-module"),
+  onInstallProgress: (cb: (status: unknown) => void) => {
+    const listener = (_e: unknown, status: unknown) => cb(status);
+    ipcRenderer.on("ad:install-progress", listener);
+    return () => ipcRenderer.removeListener("ad:install-progress", listener);
+  },
 });
 
 contextBridge.exposeInMainWorld("updatesAPI", {

@@ -147,7 +147,7 @@ export default function CreateUserWizard({
         if (e.key === "ArrowLeft")                  { e.preventDefault(); prev(); return; }
       }
 
-      if (step === "group") {
+      if (step === "group" && groups.length > 0) {
         const idx = groups.findIndex((g) => g.Name === form.groupName);
 
         if (e.key === "ArrowDown") {
