@@ -16,6 +16,16 @@ import {
 
 const { autoUpdater } = electronUpdater;
 
+// Log (don't die on) stray main-process errors. Without these, an uncaught
+// throw — e.g. from the auto-updater tearing down — pops a native crash dialog
+// and takes the app down with no trace in the activity log.
+process.on("uncaughtException", (err) => {
+  pushLog({ level: "error", source: "app", label: "uncaughtException", detail: String(err?.message ?? err), data: { stack: err?.stack } });
+});
+process.on("unhandledRejection", (reason) => {
+  pushLog({ level: "error", source: "app", label: "unhandledRejection", detail: reason instanceof Error ? reason.message : String(reason), data: { stack: reason instanceof Error ? reason.stack : undefined } });
+});
+
 const CONFIG_PATH = join(app.getPath("userData"), "groups.json");
 type GroupConfig = Record<string, unknown>;
 
@@ -262,6 +272,10 @@ function sendToRenderer(channel: string, payload: unknown) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
 
+// Set once an update installer has finished downloading, so updates:install
+// never calls quitAndInstall with nothing staged (which throws → crash dialog).
+let updateReady = false;
+
 function setupAutoUpdates() {
   // The updater only works in a packaged app with published release metadata.
   if (!app.isPackaged) return;
@@ -303,6 +317,7 @@ function setupAutoUpdates() {
     sendToRenderer("updates:status", { state: "downloading", percent: Math.round(p.percent) });
   });
   autoUpdater.on("update-downloaded", (info) => {
+    updateReady = true;
     pushLog({ level: "success", source: "updater", label: "update-downloaded", detail: `v${info.version} pronta a instalar` });
     sendToRenderer("updates:status", { state: "downloaded", version: info.version });
   });
@@ -568,7 +583,29 @@ handle("updates:check", async () => {
 });
 
 handle("updates:install", () => {
-  autoUpdater.quitAndInstall();
+  if (!app.isPackaged) return { ok: false, error: "Updates only run in the installed app." };
+  if (!updateReady) {
+    return { ok: false, error: "Ainda não há atualização transferida para instalar." };
+  }
+  // Reply to the renderer FIRST, then tear down on the next tick. quitAndInstall
+  // starts closing windows immediately; running it inline (and without a catch)
+  // meant any failure — common with elevated perMachine NSIS installers — threw
+  // an unhandled exception that crashed the whole app with a native error dialog.
+  setImmediate(() => {
+    try {
+      // isSilent=true runs the elevated perMachine NSIS updater without reopening
+      // the full install wizard under UAC; forceRunAfter=true relaunches the app.
+      autoUpdater.quitAndInstall(true, true);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      pushLog({ level: "error", source: "updater", label: "quitAndInstall-failed", detail: msg });
+      sendToRenderer("updates:status", {
+        state: "error",
+        message: "Não foi possível iniciar a instalação. Fecha a app e volta a abrir para aplicar a atualização.",
+      });
+    }
+  });
+  return { ok: true };
 });
 
 // Manually start the download for an already-detected update (General settings

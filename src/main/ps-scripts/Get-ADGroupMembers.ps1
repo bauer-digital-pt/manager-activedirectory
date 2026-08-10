@@ -12,6 +12,14 @@ param([string]$GroupName)
 $WarningPreference  = "SilentlyContinue"
 $ProgressPreference = "SilentlyContinue"
 
+# Guard an empty/null group name: -Identity $null makes Get-ADGroupMember ignore
+# the -Server in @conn and fall back to the local AD: drive, which fails with a
+# misleading "server down" error. Return an empty list instead.
+if ([string]::IsNullOrWhiteSpace($GroupName)) {
+  "[]"
+  return
+}
+
 try {
   Import-Module ActiveDirectory -ErrorAction Stop -WarningAction SilentlyContinue
 
