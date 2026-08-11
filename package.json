@@ -1,6 +1,6 @@
 {
   "name": "admanager",
-  "version": "1.0.24",
+  "version": "1.0.25",
   "description": "Active Directory Onboarding Manager — Bauer Media Audio Portugal",
   "main": "dist-electron/main.js",
   "scripts": {

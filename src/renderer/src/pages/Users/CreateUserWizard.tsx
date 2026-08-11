@@ -153,7 +153,7 @@ export default function CreateUserWizard({
   const next = () => { if (stepIdx < STEPS.length - 1) setStep(STEPS[stepIdx + 1].id); };
   const prev = () => { if (stepIdx > 0) setStep(STEPS[stepIdx - 1].id); };
 
-  const typeaheadRef = useState({ buffer: "", timer: 0 })[0];
+  const typeaheadRef = useRef({ buffer: "", timer: 0 }).current;
 
   const firstNameRef   = useRef<HTMLInputElement>(null);
   const lastNameRef    = useRef<HTMLInputElement>(null);
@@ -183,11 +183,11 @@ export default function CreateUserWizard({
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       e.preventDefault();
       if (stepIdx === 0) onClose();
-      else prev();
+      else setStep(STEPS[stepIdx - 1].id);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [stepIdx]);
+  }, [stepIdx, onClose]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

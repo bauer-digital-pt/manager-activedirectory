@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Plus, Trash2, X, Settings2, Layers, Server, Loader2, CheckCircle2, XCircle, SlidersHorizontal, RefreshCw } from "lucide-react";
 import { getGroupConfig, setGroupConfig, DEFAULT_GROUPS, type GroupConfig } from "../lib/groupsConfig";
 import { getConnection, setConnection, type ConnectionInfo } from "../lib/connectionConfig";
@@ -443,13 +443,16 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
 
   // The sidebar shows the real AD OU folders, unioned with any stored config
   // keys (so manually-added or renamed groups don't vanish).
-  const sortedKeys = [...new Set([...categories.map((c) => c.Name), ...Object.keys(config)])].sort();
+  const sortedKeys = useMemo(
+    () => [...new Set([...categories.map((c) => c.Name), ...Object.keys(config)])].sort(),
+    [categories, config]
+  );
 
-  // Auto-select the first group once the list is known.
+  // Auto-select the first group once the list is known. Re-derives on any
+  // membership change (not just a count change) while nothing is selected.
   useEffect(() => {
     if (!selected && sortedKeys.length > 0) setSelected(sortedKeys[0]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortedKeys.length]);
+  }, [selected, sortedKeys]);
 
   return (
     <div className="flex flex-1 overflow-hidden">
