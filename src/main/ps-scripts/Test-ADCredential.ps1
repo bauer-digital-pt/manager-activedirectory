@@ -67,26 +67,83 @@ try {
 # --- Step 1b: restrict access to Domain Admins. ---
 # Only members of the "Domain Admins" group may log in. We match by the group's
 # well-known RID (512) rather than its name so it works regardless of the
-# domain's display language. GetAuthorizationGroups() returns the user's full
-# (recursive) token-group set. Fail CLOSED: if membership can't be determined,
-# access is denied.
+# domain's display language. Fail CLOSED: if membership CANNOT be determined at
+# all, access is denied. But we must not deny a real admin just because a SID
+# lookup hiccuped — so membership is read the robust way first.
+#
+# PRIMARY: the "tokenGroups" constructed attribute on the user object. The DC
+# computes it server-side and returns the raw SIDs (as byte[]) of every group
+# the user is in, recursively — including Domain Admins. Because we only read
+# SIDs (never resolve them to names) this is immune to the
+# PrincipalOperationException (error 1301, "the group's SID could not be
+# resolved") that aborts GetAuthorizationGroups() the moment it meets ONE
+# unresolvable SID. That failure is common here: we bind to a remote DC by IP,
+# and resolving group names needs a Global Catalog that may be unreachable.
+#
+# FALLBACK: GetAuthorizationGroups(), but enumerated defensively so a single bad
+# SID skips instead of aborting the whole check.
+$diag = ""
 try {
   $up = [System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($ctx, $sam)
   if ($null -eq $up) {
     Out-Result @{ success = $false; error = "Utilizador nao encontrado no dominio." }
     return
   }
+
   $isDomainAdmin = $false
-  foreach ($g in $up.GetAuthorizationGroups()) {
+  $determined    = $false
+
+  # PRIMARY: tokenGroups (raw SIDs, no name resolution).
+  try {
+    $de = $up.GetUnderlyingObject()
+    $de.RefreshCache(@("tokenGroups"))
+    $tg = $de.Properties["tokenGroups"]
+    if ($tg -and $tg.Count -gt 0) {
+      $determined = $true
+      foreach ($raw in $tg) {
+        try {
+          $sid = New-Object System.Security.Principal.SecurityIdentifier([byte[]]$raw, 0)
+          if ($sid.Value.EndsWith("-512")) { $isDomainAdmin = $true; break }
+        } catch { }
+      }
+    }
+  } catch {
+    $diag += "tokenGroups: " + $_.Exception.Message + "; "
+  }
+
+  # FALLBACK: defensively enumerated GetAuthorizationGroups().
+  if (-not $determined) {
     try {
-      if ($g.Sid -and $g.Sid.Value -like '*-512') { $isDomainAdmin = $true; break }
-    } catch { }
+      $en = $up.GetAuthorizationGroups().GetEnumerator()
+      $guard = 0
+      while ($guard -lt 5000) {
+        $guard++
+        $g = $null
+        try {
+          if (-not $en.MoveNext()) { break }
+          $g = $en.Current
+        } catch { continue }   # skip one unresolvable SID, keep going
+        $determined = $true
+        try {
+          if ($g -and $g.Sid -and $g.Sid.Value.EndsWith("-512")) { $isDomainAdmin = $true; break }
+        } catch { }
+      }
+    } catch {
+      $diag += "authGroups: " + $_.Exception.Message + "; "
+    }
+  }
+
+  if (-not $determined) {
+    if ($diag) { [Console]::Error.WriteLine("admin-check: " + $diag) }
+    Out-Result @{ success = $false; error = "Nao foi possivel validar as permissoes de administrador de dominio. Tenta novamente." }
+    return
   }
   if (-not $isDomainAdmin) {
     Out-Result @{ success = $false; error = "Acesso restrito a administradores de dominio." }
     return
   }
 } catch {
+  [Console]::Error.WriteLine("admin-check outer: " + $_.Exception.Message + "; " + $diag)
   Out-Result @{ success = $false; error = "Nao foi possivel validar as permissoes de administrador de dominio. Tenta novamente." }
   return
 }
