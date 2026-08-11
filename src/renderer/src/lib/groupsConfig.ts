@@ -51,6 +51,7 @@ declare global {
     };
     appAPI?: {
       getVersion(): Promise<string>;
+      getStartupInfo?(): Promise<{ version: string; justUpdated: boolean; previousVersion?: string }>;
       platform: string;
     };
     windowAPI?: {

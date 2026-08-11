@@ -1,4 +1,4 @@
-import { Sparkles, Download, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Sparkles, Download, CheckCircle2, AlertTriangle, RefreshCw } from "lucide-react";
 import StatusScreen, { type StatusAction } from "./StatusScreen";
 import { type UpdateStatus } from "../lib/updates";
 
@@ -68,6 +68,23 @@ export default function UpdateAvailable({
             { label: "Reiniciar e instalar", variant: "primary", onClick: onInstall },
             { label: "Mais tarde", variant: "ghost", onClick: onDismiss },
           ]}
+        />
+      );
+
+    case "installing":
+      // Non-dismissible: the app will quit + relaunch on its own once the silent
+      // installer finishes. No actions, indeterminate bar (unknown duration).
+      return (
+        <StatusScreen
+          tone="brand"
+          eyebrow={EYEBROW}
+          badge={<RefreshCw size={26} strokeWidth={2} className="animate-spin" />}
+          title="A instalar a atualização"
+          subtitle={
+            (status.version ? "Versão " + status.version + ". " : "") +
+            "A app vai fechar e reabrir sozinha — não é preciso fazer nada."
+          }
+          progress={{ percent: 100, label: "A aplicar…", indeterminate: true }}
         />
       );
 

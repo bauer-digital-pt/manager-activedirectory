@@ -60,3 +60,14 @@
    otherwise the drag region swallows their clicks. Not Tailwind utilities. */
 .drag { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
+
+/* Indeterminate progress sweep — used on the "installing update" screen where
+   the duration is unknown (the NSIS installer runs silently). A pill glides
+   left→right on a loop. */
+@keyframes status-indeterminate {
+  0%   { left: -40%; }
+  100% { left: 100%; }
+}
+.status-indeterminate {
+  animation: status-indeterminate 1.15s ease-in-out infinite;
+}

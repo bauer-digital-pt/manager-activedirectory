@@ -122,6 +122,34 @@ function getConnection(): ADConnection {
 // screen; the login PASSWORD is never persisted (session-only, see `session`).
 const SETTINGS_PATH = join(app.getPath("userData"), "settings.json");
 
+// Remembers the version this profile last ran, so the next launch can tell
+// whether we just came back from an (auto-)update and greet the user.
+const VERSION_PATH = join(app.getPath("userData"), "version.json");
+interface StartupInfo { version: string; justUpdated: boolean; previousVersion?: string }
+let startupInfo: StartupInfo = { version: "", justUpdated: false };
+
+// Compare the version stored last run against the running one. A mismatch means
+// an update was applied since; a first-ever run (no file) is NOT an update.
+function computeStartupInfo() {
+  const current = app.getVersion();
+  let previous: string | undefined;
+  try {
+    if (existsSync(VERSION_PATH)) {
+      const raw = JSON.parse(readFileSync(VERSION_PATH, "utf8")) as { version?: string };
+      if (typeof raw.version === "string" && raw.version) previous = raw.version;
+    }
+  } catch { /* ignore a corrupt marker */ }
+  startupInfo = {
+    version: current,
+    justUpdated: !!previous && previous !== current,
+    previousVersion: previous,
+  };
+  try { writeFileSync(VERSION_PATH, JSON.stringify({ version: current }), "utf8"); } catch { /* best-effort */ }
+  if (startupInfo.justUpdated) {
+    pushLog({ level: "success", source: "updater", label: "updated", detail: `${previous} -> ${current}` });
+  }
+}
+
 interface AppSettings {
   devMode: boolean;
   loginTimeoutMin: number;
@@ -260,6 +288,7 @@ app.whenReady().then(() => {
   // Login now owns authentication. Purge any legacy service-account password left
   // encrypted at rest by earlier versions — creds are session-only from here on.
   clearLegacyStoredPassword();
+  computeStartupInfo();
   installAppMenu();
   createWindow();
   setupAutoUpdates();
@@ -290,6 +319,7 @@ function sendToRenderer(channel: string, payload: unknown) {
 // Set once an update installer has finished downloading, so updates:install
 // never calls quitAndInstall with nothing staged (which throws → crash dialog).
 let updateReady = false;
+let downloadedVersion: string | undefined;
 
 function setupAutoUpdates() {
   // The updater only works in a packaged app with published release metadata.
@@ -333,6 +363,7 @@ function setupAutoUpdates() {
   });
   autoUpdater.on("update-downloaded", (info) => {
     updateReady = true;
+    downloadedVersion = info.version;
     pushLog({ level: "success", source: "updater", label: "update-downloaded", detail: `v${info.version} pronta a instalar` });
     sendToRenderer("updates:status", { state: "downloaded", version: info.version });
   });
@@ -603,14 +634,13 @@ handle("updates:install", () => {
   if (!updateReady) {
     return { ok: false, error: "Ainda não há atualização transferida para instalar." };
   }
-  // Reply to the renderer FIRST, then tear down on the next tick. quitAndInstall
-  // starts closing windows immediately; running it inline (and without a catch)
-  // meant any failure — common with elevated perMachine NSIS installers — threw
-  // an unhandled exception that crashed the whole app with a native error dialog.
-  setImmediate(() => {
+  // Show the branded "A instalar…" takeover BEFORE anything closes, so the
+  // window never just vanishes (which read as a crash). Then give the renderer
+  // a moment to paint that screen and run the SILENT installer — no ugly NSIS
+  // wizard, forceRunAfter relaunches the freshly-installed app.
+  sendToRenderer("updates:status", { state: "installing", version: downloadedVersion });
+  setTimeout(() => {
     try {
-      // isSilent=true runs the elevated perMachine NSIS updater without reopening
-      // the full install wizard under UAC; forceRunAfter=true relaunches the app.
       autoUpdater.quitAndInstall(true, true);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -620,7 +650,7 @@ handle("updates:install", () => {
         message: "Não foi possível iniciar a instalação. Fecha a app e volta a abrir para aplicar a atualização.",
       });
     }
-  });
+  }, 700);
   return { ok: true };
 });
 
@@ -723,6 +753,7 @@ handle("config:set-settings", (_e, rawPayload) => {
 
 // --- App / window IPC ---
 handle("app:get-version", () => app.getVersion());
+handle("app:startup-info", () => startupInfo);
 
 // Frameless window controls driven by the renderer TitleBar. Raw ipcMain.on
 // (fire-and-forget, no result) so they don't spam the Console.

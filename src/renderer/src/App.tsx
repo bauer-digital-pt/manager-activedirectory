@@ -11,7 +11,7 @@ import UsersPage from "./pages/Users/UsersPage";
 import SettingsPage from "./pages/SettingsPage";
 import ConsolePage from "./pages/ConsolePage";
 import { adAPI } from "./adAPI";
-import { updatesAPI, type UpdateStatus } from "./lib/updates";
+import { updatesAPI, getStartupInfo, type UpdateStatus } from "./lib/updates";
 import { getAuthStatus, logout, ping, type LoginResult } from "./lib/auth";
 import { getSettings, type AppSettings, DEFAULT_SETTINGS } from "./lib/appSettings";
 import logo from "./assets/bauer-media-logo.svg";
@@ -119,6 +119,25 @@ export default function App() {
     return off;
   }, []);
 
+  // Kick off the install: flip to the custom "installing" takeover IMMEDIATELY
+  // (so the window shows a branded screen instead of vanishing), then ask main
+  // to run the silent installer. Main quits + relaunches once it finishes.
+  const startInstall = useCallback(() => {
+    setUpdateDismissed(false);
+    setSuppressTakeover(false);
+    setUpdate((u) => ({ state: "installing", version: "version" in u ? u.version : undefined }));
+    void updatesAPI.install();
+  }, []);
+
+  // One-time "updated to vX" welcome shown right after an auto-update relaunch.
+  useEffect(() => {
+    getStartupInfo().then((info) => {
+      if (info.justUpdated) {
+        toast.success(`Atualizado para a versão ${info.version} 🎉`, { duration: 6000 });
+      }
+    });
+  }, []);
+
   const onLoginSuccess = useCallback((res: LoginResult) => {
     setAuthed(true);
     setLocked(false);
@@ -190,6 +209,11 @@ export default function App() {
         onOpenSettings={() => { setContinueAnyway(true); setBannerDismissed(false); setPage("settings"); }}
       />
     );
+  } else if (update.state === "installing") {
+    // Installing is non-dismissible: the app quits + relaunches on its own.
+    content = (
+      <UpdateAvailable status={update} onInstall={startInstall} onDismiss={() => {}} />
+    );
   } else if (
     (update.state === "available" || update.state === "downloading" || update.state === "downloaded") &&
     !updateDismissed && !suppressTakeover
@@ -198,7 +222,7 @@ export default function App() {
     content = (
       <UpdateAvailable
         status={update}
-        onInstall={() => updatesAPI.install()}
+        onInstall={startInstall}
         onDismiss={() => setUpdateDismissed(true)}
       />
     );
@@ -236,7 +260,7 @@ export default function App() {
               Atualização {update.version ? `(${update.version}) ` : ""}pronta a instalar.
             </span>
             <button
-              onClick={() => updatesAPI.install()}
+              onClick={startInstall}
               className="px-3 py-1 rounded-md bg-white/15 hover:bg-white/25 font-medium transition-colors"
             >
               Reiniciar e instalar

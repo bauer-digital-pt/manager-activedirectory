@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("authAPI", {
 
 contextBridge.exposeInMainWorld("appAPI", {
   getVersion: () => ipcRenderer.invoke("app:get-version"),
+  getStartupInfo: () => ipcRenderer.invoke("app:startup-info"),
   platform: process.platform,
 });
 

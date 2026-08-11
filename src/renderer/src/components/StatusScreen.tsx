@@ -20,8 +20,9 @@ export interface StatusScreenProps {
   eyebrow?: string;
   title: string;
   subtitle?: ReactNode;
-  /** When present, render an animated progress bar (0–100) + optional label + the % number. */
-  progress?: { percent: number; label?: string } | null;
+  /** When present, render an animated progress bar (0–100) + optional label + the % number.
+   * `indeterminate` shows a looping sweep instead of a fixed width (unknown duration). */
+  progress?: { percent: number; label?: string; indeterminate?: boolean } | null;
   /** Action row — the first/primary action is the most prominent; ghost is subtle. */
   actions?: StatusAction[];
   /** Optional extra content (manual instructions, notes) rendered below the actions. */
@@ -89,22 +90,31 @@ export default function StatusScreen({
             <span className="min-w-0 truncate text-sm text-white/60">
               {progress.label ?? "A processar…"}
             </span>
-            <span className="shrink-0 font-mono text-sm font-medium tabular-nums text-white/85">
-              {percent}%
-            </span>
+            {!progress.indeterminate && (
+              <span className="shrink-0 font-mono text-sm font-medium tabular-nums text-white/85">
+                {percent}%
+              </span>
+            )}
           </div>
           <div
-            className="h-2.5 w-full overflow-hidden rounded-full bg-white/15"
+            className="relative h-2.5 w-full overflow-hidden rounded-full bg-white/15"
             role="progressbar"
-            aria-valuenow={percent}
+            aria-valuenow={progress.indeterminate ? undefined : percent}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-label={progress.label ?? title}
           >
-            <div
-              className="h-full rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${percent}%`, backgroundColor: t.fill }}
-            />
+            {progress.indeterminate ? (
+              <div
+                className="status-indeterminate absolute inset-y-0 w-2/5 rounded-full"
+                style={{ backgroundColor: t.fill }}
+              />
+            ) : (
+              <div
+                className="h-full rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${percent}%`, backgroundColor: t.fill }}
+              />
+            )}
           </div>
         </div>
       )}

@@ -1,6 +1,6 @@
 {
   "name": "admanager",
-  "version": "1.0.25",
+  "version": "1.0.26",
   "description": "Active Directory Onboarding Manager — Bauer Media Audio Portugal",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -85,7 +85,10 @@
     "nsis": {
       "oneClick": false,
       "perMachine": true,
-      "allowToChangeInstallationDirectory": true,
+      "allowToChangeInstallationDirectory": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "menuCategory": false,
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",

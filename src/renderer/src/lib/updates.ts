@@ -6,6 +6,7 @@ export type UpdateStatus =
   | { state: "available"; version?: string }
   | { state: "downloading"; percent?: number }
   | { state: "downloaded"; version?: string }
+  | { state: "installing"; version?: string }
   | { state: "error"; message?: string };
 
 declare global {
@@ -51,4 +52,24 @@ export async function getAppVersion(): Promise<string> {
     if (window.appAPI?.getVersion) return await window.appAPI.getVersion();
   } catch { /* ignore */ }
   return "dev";
+}
+
+// Startup info from the main process — used to greet the user with a one-time
+// "updated to vX" welcome right after an auto-update relaunch. In the browser
+// preview appAPI is absent, but ?justupdated lets the welcome be verified.
+export interface StartupInfo {
+  version: string;
+  justUpdated: boolean;
+  previousVersion?: string;
+}
+
+export async function getStartupInfo(): Promise<StartupInfo> {
+  try {
+    if (window.appAPI?.getStartupInfo) return await window.appAPI.getStartupInfo();
+  } catch { /* ignore */ }
+  const params = new URLSearchParams(location.search);
+  if (params.has("justupdated")) {
+    return { version: "1.1.0", justUpdated: true, previousVersion: "1.0.25" };
+  }
+  return { version: "dev", justUpdated: false };
 }
