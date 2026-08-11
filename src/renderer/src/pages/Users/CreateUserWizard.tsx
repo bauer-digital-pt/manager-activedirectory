@@ -3,6 +3,7 @@ import { ArrowLeft, Check, ChevronRight, Users } from "lucide-react";
 import { adAPI, type ADGroup, type ADUser } from "../../adAPI";
 import { getGroupConfig, type GroupConfig } from "../../lib/groupsConfig";
 import { usersCache, usersInGroup } from "../../lib/usersCache";
+import SearchableSelect from "../../components/SearchableSelect";
 import { cn } from "../../lib/cn";
 import type { ExternalToast } from "sonner";
 
@@ -404,25 +405,27 @@ export default function CreateUserWizard({
                     <Users size={13} className="text-zinc-400" />
                     Copiar grupos de <span className="text-zinc-400">(opcional)</span>
                   </label>
-                  <select
+                  <SearchableSelect
                     value={form.copyFromUser}
-                    onChange={(e) => set("copyFromUser", e.target.value)}
+                    onChange={(v) => set("copyFromUser", v)}
+                    options={templateUsers.map((u) => ({
+                      value: u.SamAccountName,
+                      label: u.DisplayName || u.SamAccountName,
+                      sublabel: u.DisplayName ? u.SamAccountName : undefined,
+                    }))}
                     disabled={loadingTemplates}
-                    className={cn(inputCls, "disabled:opacity-60")}
-                  >
-                    <option value="">
-                      {loadingTemplates
+                    clearable
+                    clearLabel="Não copiar grupos"
+                    placeholder={
+                      loadingTemplates
                         ? "A carregar utilizadores…"
                         : templateUsers.length === 0
                           ? "Nenhum utilizador nesta pasta"
-                          : "Não copiar grupos"}
-                    </option>
-                    {templateUsers.map((u) => (
-                      <option key={u.SamAccountName} value={u.SamAccountName}>
-                        {u.DisplayName || u.SamAccountName}
-                      </option>
-                    ))}
-                  </select>
+                          : "Não copiar grupos"
+                    }
+                    searchPlaceholder="Procurar utilizador…"
+                    emptyText="Nenhum utilizador nesta pasta"
+                  />
                   <p className="text-xs text-zinc-400">
                     O novo utilizador fica na pasta <span className="font-medium text-zinc-500">{form.groupName}</span>
                     {form.copyFromUser && " e herda os grupos do utilizador escolhido"}.

@@ -64,6 +64,33 @@ try {
   return
 }
 
+# --- Step 1b: restrict access to Domain Admins. ---
+# Only members of the "Domain Admins" group may log in. We match by the group's
+# well-known RID (512) rather than its name so it works regardless of the
+# domain's display language. GetAuthorizationGroups() returns the user's full
+# (recursive) token-group set. Fail CLOSED: if membership can't be determined,
+# access is denied.
+try {
+  $up = [System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($ctx, $sam)
+  if ($null -eq $up) {
+    Out-Result @{ success = $false; error = "Utilizador nao encontrado no dominio." }
+    return
+  }
+  $isDomainAdmin = $false
+  foreach ($g in $up.GetAuthorizationGroups()) {
+    try {
+      if ($g.Sid -and $g.Sid.Value -like '*-512') { $isDomainAdmin = $true; break }
+    } catch { }
+  }
+  if (-not $isDomainAdmin) {
+    Out-Result @{ success = $false; error = "Acesso restrito a administradores de dominio." }
+    return
+  }
+} catch {
+  Out-Result @{ success = $false; error = "Nao foi possivel validar as permissoes de administrador de dominio. Tenta novamente." }
+  return
+}
+
 # --- Step 2: credentials are valid -> fetch domain info + display name. ---
 # A failure here does not undo the validated password: let the user in with
 # whatever info we could gather rather than blocking on a secondary lookup.

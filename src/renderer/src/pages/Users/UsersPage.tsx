@@ -35,6 +35,10 @@ export default function UsersPage({
   const [view, setView] = useState<"list" | "create">("list");
   const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  // Lazy render: only mount the first slice of rows and grow as the user scrolls
+  // near the bottom, so a large directory doesn't build thousands of DOM rows.
+  const PAGE = 40;
+  const [visibleCount, setVisibleCount] = useState(PAGE);
 
   const loadAllUsers = useCallback(async (gs: ADGroup[]) => {
     setLoadingUsers(true);
@@ -147,6 +151,21 @@ export default function UsersPage({
     return matchesGroup && matchesSearch;
   });
 
+  // Reset the window whenever the result set changes (filter/search/reload).
+  useEffect(() => { setVisibleCount(PAGE); }, [search, activeGroup, allUsers]);
+
+  const visible = filtered.slice(0, visibleCount);
+  const hasMore = visibleCount < filtered.length;
+
+  // Grow the window as the scroll position approaches the bottom.
+  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!hasMore) return;
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 280) {
+      setVisibleCount((n) => Math.min(n + PAGE, filtered.length));
+    }
+  };
+
   if (view === "create") {
     return (
       <CreateUserWizard
@@ -232,7 +251,7 @@ export default function UsersPage({
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" onScroll={onScroll}>
         {isLoading ? (
           <div className="px-6 py-4 space-y-3">
             {Array.from({ length: 5 }).map((_, i) => (
@@ -261,11 +280,16 @@ export default function UsersPage({
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-50">
-              {filtered.map((u, i) => (
+              {visible.map((u, i) => (
                 <UserRow key={u.SamAccountName || `row-${i}`} user={u} groupName={u.groupName} toast={toast} onRefresh={refresh} />
               ))}
             </tbody>
           </table>
+        )}
+        {hasMore && (
+          <div className="px-6 py-3 text-center text-xs text-zinc-400">
+            A mostrar {visible.length} de {filtered.length} — continua a fazer scroll para ver mais
+          </div>
         )}
       </div>
 

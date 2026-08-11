@@ -5,8 +5,9 @@ import { getConnection, setConnection, type ConnectionInfo } from "../lib/connec
 import { getSettings, setSettings, type AppSettings } from "../lib/appSettings";
 import { getAppVersion } from "../lib/updates";
 import UpdateCheckModal from "../components/UpdateCheckModal";
-import { adAPI, type ADUser } from "../adAPI";
+import { adAPI, type ADUser, type ADGroup } from "../adAPI";
 import { usersCache, usersInGroup } from "../lib/usersCache";
+import SearchableSelect from "../components/SearchableSelect";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
 
@@ -317,13 +318,30 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
   // Cache-first: only hits AD when the shared users cache was never warmed.
   const [groupUsers, setGroupUsers] = useState<Record<string, ADUser[]>>({});
   const [loadingGroupUsers, setLoadingGroupUsers] = useState(false);
+  // The real category folders (OUs) pulled from AD — the sidebar list.
+  const [categories, setCategories] = useState<ADGroup[]>(usersCache.groups);
+  const [loadingCategories, setLoadingCategories] = useState(!usersCache.loaded);
 
   useEffect(() => {
-    getGroupConfig().then((c) => {
-      setConfig(c);
-      const keys = Object.keys(c).sort();
-      if (keys.length > 0) setSelected(keys[0]);
+    getGroupConfig().then(setConfig);
+  }, []);
+
+  // Load the OU folders for the sidebar — cache-first, fetch only when cold.
+  useEffect(() => {
+    if (usersCache.loaded || usersCache.groups.length > 0) {
+      setCategories(usersCache.groups);
+      setLoadingCategories(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingCategories(true);
+    adAPI.getGroups().then((r) => {
+      if (cancelled) return;
+      const gs = r.ok && Array.isArray(r.data) ? (r.data as ADGroup[]) : [];
+      setCategories(gs);
+      setLoadingCategories(false);
     });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -419,7 +437,15 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
     toast.success("Reset to defaults");
   };
 
-  const sortedKeys = Object.keys(config).sort();
+  // The sidebar shows the real AD OU folders, unioned with any stored config
+  // keys (so manually-added or renamed groups don't vanish).
+  const sortedKeys = [...new Set([...categories.map((c) => c.Name), ...Object.keys(config)])].sort();
+
+  // Auto-select the first group once the list is known.
+  useEffect(() => {
+    if (!selected && sortedKeys.length > 0) setSelected(sortedKeys[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedKeys.length]);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -517,31 +543,35 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
               </div>
               {(() => {
                 const members = groupUsers[selected] ?? [];
-                const missing = entry.defaultTemplateUser && !members.some((u) => u.SamAccountName === entry.defaultTemplateUser);
+                const stored = entry.defaultTemplateUser ?? "";
+                const missing = stored && !members.some((u) => u.SamAccountName === stored);
+                const options = [
+                  // Keep a stored-but-absent selection visible instead of dropping it.
+                  ...(missing ? [{ value: stored, label: `${stored} (não encontrado)` }] : []),
+                  ...members.map((u) => ({
+                    value: u.SamAccountName,
+                    label: u.DisplayName || u.SamAccountName,
+                    sublabel: u.DisplayName ? u.SamAccountName : undefined,
+                  })),
+                ];
                 return (
-                  <>
-                    <select
-                      value={entry.defaultTemplateUser ?? ""}
-                      onChange={(e) => setDefaultTemplateUser(e.target.value)}
-                      disabled={loadingGroupUsers}
-                      className="w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all disabled:opacity-60"
-                    >
-                      <option value="">
-                        {loadingGroupUsers
-                          ? "A carregar utilizadores…"
-                          : members.length === 0
-                            ? "Nenhum utilizador nesta pasta"
-                            : "Sem utilizador-modelo"}
-                      </option>
-                      {/* Keep a stored-but-absent selection visible instead of silently dropping it. */}
-                      {missing && <option value={entry.defaultTemplateUser}>{entry.defaultTemplateUser} (não encontrado)</option>}
-                      {members.map((u) => (
-                        <option key={u.SamAccountName} value={u.SamAccountName}>
-                          {u.DisplayName || u.SamAccountName}
-                        </option>
-                      ))}
-                    </select>
-                  </>
+                  <SearchableSelect
+                    value={stored}
+                    onChange={setDefaultTemplateUser}
+                    options={options}
+                    disabled={loadingGroupUsers}
+                    clearable
+                    clearLabel="Sem utilizador-modelo"
+                    placeholder={
+                      loadingGroupUsers
+                        ? "A carregar utilizadores…"
+                        : members.length === 0
+                          ? "Nenhum utilizador nesta pasta"
+                          : "Sem utilizador-modelo"
+                    }
+                    searchPlaceholder="Procurar utilizador…"
+                    emptyText="Nenhum utilizador nesta pasta"
+                  />
                 );
               })()}
             </section>
