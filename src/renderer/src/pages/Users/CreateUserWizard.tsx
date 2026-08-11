@@ -279,7 +279,10 @@ export default function CreateUserWizard({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [step, groups, form, saving]);
+    // groupConfig is read via suggestDefaults() inside this handler; without it
+    // an Enter pressed before the next form/step change would run against a
+    // stale (empty) config and skip the department default.
+  }, [step, groups, form, saving, groupConfig]);
 
   const submit = async () => {
     setSaving(true);

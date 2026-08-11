@@ -124,6 +124,10 @@ export default function UsersPage({
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // The wizard mounts in place of the list (view === "create") but this
+      // component's hooks keep running, so bail out or we'd fight the wizard's
+      // own global key handlers and poke a now-unmounted search input.
+      if (view !== "list") return;
       const tag = (e.target as HTMLElement).tagName;
       const inInput = tag === "INPUT" || tag === "TEXTAREA";
       if (inInput) return;
@@ -140,7 +144,7 @@ export default function UsersPage({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [goCreate]);
+  }, [goCreate, view]);
 
   const filtered = allUsers.filter((u) => {
     const matchesGroup = !activeGroup || u.groupName === activeGroup;

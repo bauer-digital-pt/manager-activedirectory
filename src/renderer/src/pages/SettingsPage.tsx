@@ -349,6 +349,10 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
     const cached = usersInGroup(selected);
     if (usersCache.loaded || cached.length > 0) {
       setGroupUsers((m) => ({ ...m, [selected]: cached }));
+      // Clear here too: a cold fetch for a previously-selected group may still
+      // be in flight (its .then is cancelled), so this branch must reset the
+      // flag or the template picker stays stuck "A carregar".
+      setLoadingGroupUsers(false);
       return;
     }
     let cancelled = false;

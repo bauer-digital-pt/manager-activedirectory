@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Check, ChevronsUpDown, Search, X } from "lucide-react";
 import { cn } from "../lib/cn";
 
@@ -45,6 +45,7 @@ export default function SearchableSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0); // highlighted index within `rows`
+  const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -134,6 +135,9 @@ export default function SearchableSelect({
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={onKeyDown}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
         className={cn(
           "w-full flex items-center gap-2 px-3 py-2 text-sm bg-white border rounded-lg text-left transition-all",
           "focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400",
@@ -141,22 +145,31 @@ export default function SearchableSelect({
           disabled && "opacity-60 cursor-not-allowed"
         )}
       >
-        <span className={cn("flex-1 truncate", selected ? "text-zinc-800" : "text-zinc-400")}>
+        <span
+          className={cn(
+            "flex-1 truncate",
+            selected ? "text-zinc-800" : "text-zinc-400",
+            selected && clearable && !disabled && "pr-6"
+          )}
+        >
           {selected ? selected.label : placeholder}
         </span>
-        {selected && clearable && !disabled && (
-          <span
-            role="button"
-            tabIndex={-1}
-            aria-label="Limpar"
-            onClick={(e) => { e.stopPropagation(); commit(""); }}
-            className="p-0.5 rounded text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
-          >
-            <X size={13} />
-          </span>
-        )}
         <ChevronsUpDown size={14} className="flex-shrink-0 text-zinc-400" />
       </button>
+
+      {/* Clear control — a SIBLING of the trigger, not a child: an interactive
+          element nested inside a <button> is invalid markup. Overlaid just
+          left of the chevron. */}
+      {selected && clearable && !disabled && (
+        <button
+          type="button"
+          aria-label="Limpar"
+          onClick={(e) => { e.stopPropagation(); commit(""); }}
+          className="absolute right-8 top-1/2 -translate-y-1/2 p-0.5 rounded text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
+        >
+          <X size={13} />
+        </button>
+      )}
 
       {open && (
         <div className="absolute z-30 mt-1.5 w-full rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden">
@@ -168,10 +181,14 @@ export default function SearchableSelect({
               onChange={(e) => { setQuery(e.target.value); setActive(0); }}
               onKeyDown={onKeyDown}
               placeholder={searchPlaceholder}
+              role="combobox"
+              aria-expanded
+              aria-controls={listId}
+              aria-activedescendant={rows[active] ? `${listId}-opt-${active}` : undefined}
               className="flex-1 bg-transparent text-sm text-zinc-800 placeholder:text-zinc-300 focus:outline-none"
             />
           </div>
-          <div ref={listRef} className="max-h-60 overflow-y-auto py-1">
+          <div ref={listRef} id={listId} role="listbox" className="max-h-60 overflow-y-auto py-1">
             {rows.length === 0 ? (
               <div className="px-3 py-6 text-center text-sm text-zinc-400">
                 {options.length === 0 ? emptyText : "Sem resultados"}
@@ -182,7 +199,10 @@ export default function SearchableSelect({
                 return (
                   <button
                     key={(row.isClear ? "__clear__" : row.value) || `row-${i}`}
+                    id={`${listId}-opt-${i}`}
                     type="button"
+                    role="option"
+                    aria-selected={isSelected}
                     data-idx={i}
                     onMouseEnter={() => setActive(i)}
                     onMouseDown={(e) => { e.preventDefault(); commit(row.value); }}
