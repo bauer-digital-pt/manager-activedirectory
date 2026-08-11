@@ -14,6 +14,7 @@ import { adAPI } from "./adAPI";
 import { updatesAPI, getStartupInfo, type UpdateStatus } from "./lib/updates";
 import { getAuthStatus, logout, ping, type LoginResult } from "./lib/auth";
 import { getSettings, type AppSettings, DEFAULT_SETTINGS } from "./lib/appSettings";
+import { confirmNav } from "./lib/navGuard";
 import logo from "./assets/bauer-media-logo.svg";
 
 export type Page = "users" | "settings" | "console";
@@ -57,17 +58,26 @@ export default function App() {
 
   const reloadSettings = useCallback(() => { getSettings().then(setSettings); }, []);
 
+  // Central page switch: gives an in-progress flow (the create-user wizard) a
+  // chance to veto navigation that would discard unsaved data. Used by the
+  // sidebar, the number hotkeys, and the "open settings" entry points.
+  const navigate = useCallback((p: Page) => {
+    if (page === p) return;
+    if (!confirmNav()) return;
+    setPage(p);
+  }, [page]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if (e.key === "1") { e.preventDefault(); setPage("users"); }
-      if (e.key === "2") { e.preventDefault(); setPage("settings"); }
-      if (e.key === "3" && devMode) { e.preventDefault(); setPage("console"); }
+      if (e.key === "1") { e.preventDefault(); navigate("users"); }
+      if (e.key === "2") { e.preventDefault(); navigate("settings"); }
+      if (e.key === "3" && devMode) { e.preventDefault(); navigate("console"); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [devMode]);
+  }, [devMode, navigate]);
 
   // If dev mode is turned off while sitting on the Console, fall back to Users.
   useEffect(() => {
@@ -113,9 +123,25 @@ export default function App() {
     setRechecking(false);
   }, [checkModule]);
 
-  // Listen for auto-update status from the main process.
+  // Listen for auto-update status from the main process. A background update
+  // check that fails (no network, GitHub unreachable) emits state:"error" — but
+  // the user never asked for it, so don't turn that into a takeover. Only keep an
+  // error when an update flow was already visible on screen (available →
+  // downloading → downloaded → installing); otherwise fall back to "none".
   useEffect(() => {
-    const off = updatesAPI.onStatus((status) => setUpdate(status));
+    const off = updatesAPI.onStatus((status) => {
+      setUpdate((prev) => {
+        if (status.state === "error") {
+          const flowWasVisible =
+            prev.state === "available" ||
+            prev.state === "downloading" ||
+            prev.state === "downloaded" ||
+            prev.state === "installing";
+          if (!flowWasVisible) return { state: "none" };
+        }
+        return status;
+      });
+    });
     return off;
   }, []);
 
@@ -150,6 +176,8 @@ export default function App() {
   // return to a fresh login screen (not the relock flow) with the username kept
   // for convenience.
   const onLogout = useCallback(() => {
+    // A logout also throws away an unsaved wizard — let the guard confirm first.
+    if (!confirmNav()) return;
     logout();
     setAuthed(false);
     setLocked(false);
@@ -157,11 +185,26 @@ export default function App() {
     setPage("users");
   }, []);
 
-  // Live connection status dot: probe periodically while logged in.
+  // The manual-update modal lives in Settings and suppresses the full-screen
+  // update takeover while open; leaving Settings must clear that suppression so
+  // a ready update can still surface.
+  useEffect(() => {
+    if (page !== "settings") setSuppressTakeover(false);
+  }, [page]);
+
+  // Live connection status dot: probe periodically while logged in. Guard against
+  // overlap — a ping can take up to the runner timeout, longer than the interval.
   useEffect(() => {
     if (!authed) { setConnOk(null); return; }
     let alive = true;
-    const probe = () => ping().then((ok) => { if (alive) setConnOk(ok); });
+    let inFlight = false;
+    const probe = () => {
+      if (inFlight) return;
+      inFlight = true;
+      ping()
+        .then((ok) => { if (alive) setConnOk(ok); })
+        .finally(() => { inFlight = false; });
+    };
     probe();
     const id = window.setInterval(probe, 15000);
     return () => { alive = false; window.clearInterval(id); };
@@ -215,15 +258,30 @@ export default function App() {
       <UpdateAvailable status={update} onInstall={startInstall} onDismiss={() => {}} />
     );
   } else if (
+    !authed &&
     (update.state === "available" || update.state === "downloading" || update.state === "downloaded") &&
     !updateDismissed && !suppressTakeover
   ) {
-    // An update is downloading/ready and not dismissed — full-screen notice.
+    // Pre-login only: a full-screen notice while an update downloads/readies, so
+    // we don't yank a logged-in user out of their work. Once authed, a ready
+    // update is offered via the dismissable banner instead (see below).
     content = (
       <UpdateAvailable
         status={update}
         onInstall={startInstall}
         onDismiss={() => setUpdateDismissed(true)}
+      />
+    );
+  } else if (update.state === "error" && !suppressTakeover) {
+    // An update flow the user could see (download/install) failed — surface it on
+    // the branded screen instead of leaving them staring at a stalled takeover.
+    // Background-check errors were already filtered to "none" in onStatus, so this
+    // only fires for a flow that was actually visible. Dismiss returns to the app.
+    content = (
+      <UpdateAvailable
+        status={update}
+        onInstall={startInstall}
+        onDismiss={() => setUpdate({ state: "none" })}
       />
     );
   } else if (!authed) {
@@ -274,7 +332,7 @@ export default function App() {
         <div className="flex flex-1 overflow-hidden">
           <Sidebar
             active={page}
-            onNavigate={setPage}
+            onNavigate={navigate}
             devMode={devMode}
             userName={displayName || lastUsername}
             connOk={connOk}
@@ -284,7 +342,7 @@ export default function App() {
             {/* Keyed by page: a crash in one page shows a compact fallback (sidebar
                 stays), and navigating to another page remounts a fresh boundary. */}
             <ErrorBoundary key={page} compact>
-              {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => setPage("settings")} />}
+              {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => navigate("settings")} />}
               {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} />}
               {page === "console"  && devMode && <ConsolePage />}
             </ErrorBoundary>

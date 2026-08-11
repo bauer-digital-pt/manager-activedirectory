@@ -156,7 +156,12 @@ export function runPS(
   // on an unreachable network module path in a domain, or an unreachable DC)
   // never hangs the IPC — and therefore the UI — forever. The process is killed
   // and the call resolves with an actionable error the renderer already handles.
-  timeoutMs = 30000
+  timeoutMs = 30000,
+  // Extra environment variables for the script (e.g. a managed user's password).
+  // Passing secrets here instead of on `args` keeps them out of the process
+  // command line (visible to other users / Sysmon / EDR) — the env of a process
+  // is only readable by the owner and SYSTEM. These are never logged.
+  extraEnv?: Record<string, string>
 ): Promise<{ ok: boolean; data?: unknown; error?: string }> {
   if (MOCK_MODE) {
     const ts = Date.now();
@@ -199,6 +204,7 @@ export function runPS(
     if (conn?.server)   env.AD_SERVER   = conn.server;
     if (conn?.username) env.AD_USER     = conn.username;
     if (conn?.password) env.AD_PASSWORD = conn.password;
+    if (extraEnv) for (const [k, v] of Object.entries(extraEnv)) { if (v) env[k] = v; }
 
     execFile(
       "powershell.exe",

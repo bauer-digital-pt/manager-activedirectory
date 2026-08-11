@@ -40,6 +40,12 @@ export default function UsersPage({
   const PAGE = 40;
   const [visibleCount, setVisibleCount] = useState(PAGE);
 
+  // Keep the latest toast fns reachable without making the load callbacks depend
+  // on them (the parent may pass a fresh object each render, which would
+  // otherwise re-run the mount effect and re-fetch the whole directory).
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
   const loadAllUsers = useCallback(async (gs: ADGroup[]) => {
     setLoadingUsers(true);
     const results = await Promise.all(
@@ -47,16 +53,18 @@ export default function UsersPage({
         adAPI.getGroupMembers(g.Name).then((r) => {
           if (r.ok)
             // Same single-item serialization quirk as groups (one-member group).
-            return toArray<ADUser>(r.data).map((u) => ({ ...u, groupName: g.Name }));
-          return [] as UserWithGroup[];
+            return { failed: false, members: toArray<ADUser>(r.data).map((u) => ({ ...u, groupName: g.Name })) };
+          // A query failure (unreachable DC, bad credentials) must NOT silently
+          // look like an empty team — track it so we can warn the user.
+          return { failed: true, members: [] as UserWithGroup[] };
         })
       )
     );
     // Dedupe by SamAccountName, keeping first occurrence
     const seen = new Set<string>();
     const merged: UserWithGroup[] = [];
-    for (const group of results) {
-      for (const u of group) {
+    for (const { members } of results) {
+      for (const u of members) {
         if (!seen.has(u.SamAccountName)) {
           seen.add(u.SamAccountName);
           merged.push(u);
@@ -66,6 +74,15 @@ export default function UsersPage({
     setAllUsers(merged);
     setUsersCache({ users: merged, loaded: true });
     setLoadingUsers(false);
+
+    const failed = results.filter((r) => r.failed).length;
+    if (failed > 0) {
+      toastRef.current.error(
+        failed === gs.length
+          ? "Não foi possível carregar os utilizadores do Active Directory. Verifica a ligação."
+          : `Não foi possível carregar ${failed} de ${gs.length} grupos — a lista pode estar incompleta.`
+      );
+    }
   }, []);
 
   const loadGroups = useCallback(() => {
@@ -128,6 +145,9 @@ export default function UsersPage({
       // component's hooks keep running, so bail out or we'd fight the wizard's
       // own global key handlers and poke a now-unmounted search input.
       if (view !== "list") return;
+      // A per-row modal (reset / unblock / details) is open — don't steal its
+      // keystrokes into the search box hidden behind it.
+      if (document.querySelector('[role="dialog"]')) return;
       const tag = (e.target as HTMLElement).tagName;
       const inInput = tag === "INPUT" || tag === "TEXTAREA";
       if (inInput) return;

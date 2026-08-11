@@ -5,6 +5,7 @@ import { getGroupConfig, type GroupConfig } from "../../lib/groupsConfig";
 import { usersCache, usersInGroup } from "../../lib/usersCache";
 import SearchableSelect from "../../components/SearchableSelect";
 import { cn } from "../../lib/cn";
+import { setNavGuard } from "../../lib/navGuard";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -50,8 +51,12 @@ const EMPTY: Form = {
   postalCode: "1099-044",
   password: "Passw0rd#123",
   confirmPassword: "Passw0rd#123",
+  // These two are mutually exclusive (New-ADUser rejects both-true) and each
+  // CheckOption disables the other, so they must NOT both default to true —
+  // that left a fresh wizard with both locked and every submit failing with
+  // "ChangePasswordAtLogon and PasswordNeverExpires cannot both be true".
   changePasswordAtLogon: true,
-  passwordNeverExpires: true,
+  passwordNeverExpires: false,
 };
 
 const COMPANY = "Bauer Media Audio Portugal";
@@ -92,6 +97,22 @@ export default function CreateUserWizard({
   const [loadingTemplates, setLoadingTemplates] = useState(false);
 
   useEffect(() => { getGroupConfig().then(setGroupConfig_); }, []);
+
+  // Warn before a page switch / logout that would discard a half-filled wizard.
+  // "Dirty" = the user has picked a group or entered any identity field (the
+  // prefilled address/password defaults don't count). Cleared on unmount.
+  const dirty = !!(
+    form.groupName || form.firstName || form.lastName ||
+    form.username || form.email || form.jobTitle ||
+    form.department || form.copyFromUser
+  );
+  useEffect(() => {
+    if (!dirty) { setNavGuard(null); return; }
+    setNavGuard(() =>
+      window.confirm("Tens um utilizador por criar que ainda não foi guardado. Sair e perder os dados?")
+    );
+    return () => setNavGuard(null);
+  }, [dirty]);
 
   // When the category (OU) changes, offer its current users as "copy groups
   // from" templates. Served straight from the shared users cache — no refetch —
@@ -137,14 +158,18 @@ export default function CreateUserWizard({
     setForm((f) => ({
       ...f,
       username:   f.username   || (slug(f.firstName) && slug(f.lastName) ? `${slug(f.firstName)}.${slug(f.lastName)}` : f.username),
-      email:      buildEmail(f.firstName, f.lastName),
+      // Don't clobber an email the user typed (or one already derived) — only
+      // fill it when still empty, mirroring the username rule above.
+      email:      f.email      || buildEmail(f.firstName, f.lastName),
       department: f.department || groupConfig[f.groupName]?.department || "",
     }));
   };
 
   const canProceed = () => {
     if (step === "group")    return !!form.groupName;
-    if (step === "info")     return !!form.firstName && !!form.lastName && !!form.username;
+    // AD caps SamAccountName at 20 chars; block Continue rather than let the
+    // create fail at the very end with a cryptic AD error.
+    if (step === "info")     return !!form.firstName && !!form.lastName && !!form.username && form.username.length <= 20;
     if (step === "address")  return !!form.street && !!form.city && !!form.postalCode;
     if (step === "password") return form.password.length >= 8 && form.password === form.confirmPassword;
     return true;
@@ -170,6 +195,13 @@ export default function CreateUserWizard({
     if (step === "info")    firstNameRef.current?.focus();
     if (step === "address") streetRef.current?.focus();
   }, [step]);
+
+  // If the derived (or typed) logon name exceeds AD's 20-char limit, reveal the
+  // collapsed Login Info panel so the user can see and shorten it — otherwise
+  // Continue is disabled with no visible reason.
+  useEffect(() => {
+    if (form.username.length > 20) setLoginInfoOpen(true);
+  }, [form.username.length]);
 
   useEffect(() => {
     activeGroupRef.current?.scrollIntoView({ block: "nearest" });
@@ -305,8 +337,15 @@ export default function CreateUserWizard({
       email:                 form.email,
     });
     setSaving(false);
-    if (r.ok) { toast.success(`User ${form.username} created successfully`); onClose(); }
-    else toast.error(r.error ?? "Failed to create user");
+    if (r.ok) {
+      // The account was created; a warning means a best-effort follow-up (e.g.
+      // copying the template user's groups) didn't fully succeed — surface it
+      // so it isn't silently lost behind the success toast.
+      const warning = (r.data as { warning?: string } | undefined)?.warning;
+      toast.success(`User ${form.username} created successfully`);
+      if (warning) toast.error(warning);
+      onClose();
+    } else toast.error(r.error ?? "Failed to create user");
   };
 
   const jobTitleSuggestions = groupEntry?.jobTitles ?? [];
@@ -484,6 +523,11 @@ export default function CreateUserWizard({
                           onChange={(e) => set("username", deaccent(e.target.value).replace(/[^a-z0-9._-]/g, ""))}
                           placeholder="joao.silva" className={cn(inputCls, "flex-1")} />
                       </div>
+                      {form.username.length > 20 && (
+                        <p className="text-xs text-red-500">
+                          {form.username.length} caracteres — o máximo do Active Directory é 20. Encurta o nome de utilizador.
+                        </p>
+                      )}
                     </Field>
                     <Field label="Email">
                       <input ref={emailRef} value={form.email}

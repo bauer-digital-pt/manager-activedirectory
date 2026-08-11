@@ -223,6 +223,20 @@ function createWindow() {
   bindLogWindow(win);
   wireWindowLogging(win);
 
+  // Harden the renderer: it only ever loads our own bundle — the Vite dev server
+  // in dev, a file:// URL in production. Deny any window/popup the page tries to
+  // open, and block navigation away from that origin, so an injected link or
+  // redirect can't repoint the window at remote/attacker-controlled content
+  // (which would run with this app's Node/preload bridge and admin rights).
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  win.webContents.on("will-navigate", (e, url) => {
+    const devOk = !!VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL);
+    if (!devOk && !url.startsWith("file://")) {
+      e.preventDefault();
+      pushLog({ level: "warn", source: "window", label: "navigation-blocked", detail: url });
+    }
+  });
+
   // Pin the zoom to 100%. Running elevated (requireAdministrator) can drop the
   // app's per-monitor DPI awareness and render everything shrunk, and Chromium
   // otherwise persists any stray Ctrl+wheel zoom per origin. Reset it on every
@@ -554,8 +568,8 @@ function handle(
 // after a relock) `session` is null and cmdlets fall back to the local domain /
 // current Windows user — harmless because the login gate blocks the UI until a
 // session exists. Module/connection checks deliberately DON'T use this path.
-function ps(script: string, args: string[] = []) {
-  return runPS(script, args, emitLog, session ?? getConnection());
+function ps(script: string, args: string[] = [], extraEnv?: Record<string, string>) {
+  return runPS(script, args, emitLog, session ?? getConnection(), undefined, extraEnv);
 }
 
 handle("ad:get-groups", async () => {
@@ -572,7 +586,7 @@ handle("ad:create-user", async (_e, rawParams) => {
     params.firstName,
     params.lastName,
     params.username,
-    params.password,
+    "", // password travels via NEW_USER_PASSWORD env, not the command line
     params.groupName,
     params.description ?? "",
     params.street ?? "",
@@ -586,12 +600,13 @@ handle("ad:create-user", async (_e, rawParams) => {
     params.email ?? "",
     params.copyFromUser ?? "",
   ];
-  return ps("New-ADUser.ps1", args);
+  return ps("New-ADUser.ps1", args, { NEW_USER_PASSWORD: params.password ?? "" });
 });
 
 handle("ad:reset-password", async (_e, params) => {
   const p = params as { username: string; newPassword: string };
-  return ps("Reset-ADPassword.ps1", [p.username, p.newPassword]);
+  // Password via RESET_PASSWORD env, not the command line (kept off arg[1]).
+  return ps("Reset-ADPassword.ps1", [p.username, ""], { RESET_PASSWORD: p.newPassword });
 });
 
 handle("ad:unlock-user", async (_e, username) => {

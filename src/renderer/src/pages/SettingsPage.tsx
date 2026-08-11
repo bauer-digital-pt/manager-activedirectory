@@ -530,7 +530,14 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
               <p className="text-xs text-zinc-400 mt-0.5">Configure onboarding defaults for <span className="text-zinc-600 font-medium">{selected}</span></p>
             </div>
             <button
-              onClick={() => removeOnboardingGroup(selected)}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Remover a configuração de onboarding do grupo "${selected}"?\n\nIsto apaga apenas os valores por defeito guardados na app — não afeta o Active Directory.`
+                  )
+                )
+                  removeOnboardingGroup(selected);
+              }}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-colors flex-shrink-0"
             >
               <Trash2 size={11} />

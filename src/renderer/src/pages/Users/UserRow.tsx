@@ -170,6 +170,8 @@ export default function UserRow({
         <tr>
           <td colSpan={5} className="p-0 border-0">
             <div
+              role="dialog"
+              aria-modal="true"
               className="fixed inset-0 z-30 bg-black/30 backdrop-blur-sm flex items-center justify-center"
               onClick={() => setModal(null)}
             >

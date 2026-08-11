@@ -7,7 +7,12 @@
 # CRITICAL: Import-Module ActiveDirectory can emit a WARNING while auto-mounting
 # the AD: drive. If that text leaks to stdout it becomes the whole response and
 # the runner's JSON.parse fails -> empty list. So we silence the warning/progress
-# streams and ALWAYS emit a clean JSON array (empty on any error).
+# streams and emit a clean JSON array on success (empty when the OU has no members).
+#
+# A genuine QUERY failure (unreachable DC, bad credentials, module missing) must
+# NOT be swallowed into an empty array — that made a down DC look like an empty
+# team. On failure we emit { error } and exit 1 so the runner surfaces it and the
+# UI can warn instead of silently showing "no users".
 
 param([string]$GroupName)
 
@@ -49,6 +54,7 @@ try {
     ConvertTo-Json -InputObject $members -Compress
   }
 } catch {
-  # Never leak an error string to stdout — keep the array contract intact.
-  "[]"
+  # Surface the failure instead of masking it as an empty team.
+  @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
+  exit 1
 }

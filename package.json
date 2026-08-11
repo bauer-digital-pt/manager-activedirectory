@@ -1,11 +1,12 @@
 {
   "name": "admanager",
-  "version": "1.0.27",
+  "version": "1.0.28",
   "description": "Active Directory Onboarding Manager — Bauer Media Audio Portugal",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "dev:browser": "vite --config vite.browser.config.mts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "build": "tsc && vite build && electron-builder",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",

@@ -3,7 +3,7 @@ param(
   [string]$LastName,
   [string]$Username,
   [string]$Password,
-  [string]$GroupName,           # used for both OU path and Add-ADGroupMember (names are identical in this org)
+  [string]$GroupName,           # category OU Name under O365 (and template lookup)
   [string]$Description,
   [string]$Street,
   [string]$City,
@@ -16,9 +16,18 @@ param(
   [string]$Email,
   [string]$CopyFromUser        # optional: SamAccountName of a user in the OU to copy group memberships from
 )
+
+# The account password is passed via the environment (NEW_USER_PASSWORD), not on
+# the command line, so it never shows up in the process command line (visible to
+# Sysmon / EDR / other users). Fall back to the positional param for safety.
+if ($env:NEW_USER_PASSWORD) { $Password = $env:NEW_USER_PASSWORD }
+
 Import-Module ActiveDirectory -ErrorAction Stop
 . "$PSScriptRoot\_ADConn.ps1"
 $conn = Get-ADConn
+
+# Parent OU that holds the category folders. Kept in sync with Get-ADGroup-All.ps1.
+$BASE_OU = "OU=O365,OU=BMAP USERS,DC=bmap,DC=lis"
 
 $mustChange  = ($ChangePasswordAtLogon -eq "true")
 $neverExpire = ($PasswordNeverExpires  -eq "true")
@@ -28,8 +37,35 @@ if ($mustChange -and $neverExpire) {
   exit 1
 }
 
+# AD caps SamAccountName at 20 characters; a longer value fails deep inside
+# New-ADUser with a cryptic error, so reject it up front with a clear message.
+# (all strings ASCII-only: PowerShell 5.1 reads a BOM-less .ps1 as ANSI.)
+if ([string]::IsNullOrWhiteSpace($Username)) {
+  @{ success = $false; error = "O nome de utilizador (SamAccountName) e obrigatorio." } | ConvertTo-Json -Compress
+  exit 1
+}
+if ($Username.Length -gt 20) {
+  @{ success = $false; error = "O nome de utilizador (SamAccountName) nao pode ter mais de 20 caracteres." } | ConvertTo-Json -Compress
+  exit 1
+}
+
+# Resolve the target category OU by its Name under the O365 base instead of
+# string-building a DN from $GroupName. A name with a comma/quote/backslash would
+# otherwise corrupt the DN (and the Path binding); -Filter binds the value safely.
+try {
+  $ou = Get-ADOrganizationalUnit @conn -SearchBase $BASE_OU -SearchScope OneLevel `
+          -Filter 'Name -eq $GroupName' -ErrorAction Stop | Select-Object -First 1
+} catch {
+  @{ success = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
+  exit 1
+}
+if (-not $ou) {
+  @{ success = $false; error = "Nao foi encontrada a pasta (OU) '$GroupName' em O365." } | ConvertTo-Json -Compress
+  exit 1
+}
+$ouPath = $ou.DistinguishedName
+
 $securePass = ConvertTo-SecureString $Password -AsPlainText -Force
-$ouPath     = "OU=$GroupName,OU=O365,OU=BMAP USERS,DC=bmap,DC=lis"
 
 $newUserParams = @{
   GivenName             = $FirstName
@@ -59,28 +95,36 @@ if ($Department)  { $newUserParams.Department    = $Department }
 if ($Company)     { $newUserParams.Company       = $Company }
 if ($Email)       { $newUserParams.EmailAddress  = $Email }
 
+# Create the account first. Only a failure HERE is a creation failure.
 try {
   New-ADUser @newUserParams @conn -ErrorAction Stop
+} catch {
+  @{ success = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
+  exit 1
+}
 
-  # Copy the group memberships from a reference user in the same OU, if one was
-  # picked. This replaces the old "add to a group named like the OU" behaviour:
-  # categories are now OUs, so group membership is mirrored from a template user.
-  $copiedGroups = 0
-  if ($CopyFromUser) {
+# The account now exists. Copying group memberships from a template user is
+# best-effort: a failure here must NOT report the whole creation as failed —
+# that left an orphaned account behind, and the retry then hit "already exists".
+# Any problem is surfaced as a warning on an otherwise-successful result.
+$copiedGroups = 0
+$copyWarning  = $null
+if ($CopyFromUser) {
+  try {
     $tmpl = Get-ADUser @conn -Identity $CopyFromUser -Properties MemberOf -ErrorAction Stop
     foreach ($groupDN in @($tmpl.MemberOf)) {
       try {
         Add-ADGroupMember @conn -Identity $groupDN -Members $Username -ErrorAction Stop
         $copiedGroups++
       } catch {
-        # Skip groups we can't write to (e.g. built-in/primary) rather than failing
-        # the whole creation — the account already exists at this point.
+        # Skip groups we can't write to (built-in / primary) rather than failing.
       }
     }
+  } catch {
+    $copyWarning = "Conta criada, mas nao foi possivel copiar os grupos de '$CopyFromUser': " + $_.Exception.Message
   }
-
-  @{ success = $true; username = $Username; copiedGroups = $copiedGroups } | ConvertTo-Json -Compress
-} catch {
-  @{ success = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
-  exit 1
 }
+
+$result = @{ success = $true; username = $Username; copiedGroups = $copiedGroups }
+if ($copyWarning) { $result.warning = $copyWarning }
+$result | ConvertTo-Json -Compress
