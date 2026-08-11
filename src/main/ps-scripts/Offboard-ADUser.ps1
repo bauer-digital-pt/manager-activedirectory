@@ -26,8 +26,9 @@ $ProgressPreference    = "SilentlyContinue"
 
 function Out-Result($obj) { $obj | ConvertTo-Json -Compress }
 
-# Target OU for offboarded (disabled) accounts. Change here if the morgue moves.
-$MORGUE_OU = "OU=Morgue,DC=bmap,DC=lis"
+# Target OU for offboarded (disabled) accounts: the "Users" folder INSIDE the
+# Morgue (OU=Users,OU=Morgue). Change here if the morgue layout moves.
+$MORGUE_OU = "OU=Users,OU=Morgue,DC=bmap,DC=lis"
 
 if ([string]::IsNullOrWhiteSpace($Username)) {
   Out-Result @{ success = $false; error = "Username em falta." }
@@ -60,6 +61,21 @@ try {
 } catch {
   Out-Result @{ success = $false; error = "Nao foi possivel desativar a conta: " + $_.Exception.Message }
   exit 1
+}
+
+# Idempotency guard: if the account already lives in the morgue, skip the move.
+# Move-ADObject into an object's own container is a same-DN move that AD rejects
+# ("unwilling to perform"), which would otherwise report a false failure when
+# re-offboarding an already-offboarded user (e.g. from a stale cached list).
+if ($dn -like "*,$MORGUE_OU") {
+  Out-Result @{
+    success  = $true
+    username = $Username
+    disabled = $true
+    movedTo  = $MORGUE_OU
+    note     = "A conta ja estava na morgue; apenas foi garantida a desativacao."
+  }
+  exit 0
 }
 
 try {

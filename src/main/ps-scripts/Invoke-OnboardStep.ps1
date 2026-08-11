@@ -7,6 +7,8 @@
 #   anyconnect    install Cisco AnyConnect / Secure Client (silent)
 #   screenconnect install ScreenConnect (silent)
 #   update        install all pending Windows updates
+#   smlplayer     install SMLPlayer (silent), open+close it, copy Main.ini
+#   printers      run the RICOHPCL6 add<NAME>.cmd for each configured printer
 #   domain        join bmap.lis and rename to PT-LPT-<DEPT>-<NUMBER> (reboot)
 #
 # Contract with the runner (runPS): on success this prints a JSON object and
@@ -24,7 +26,18 @@ param(
   [string]$Step,
   [string]$NewName = "",
   [string]$AnyConnectSource = "",
-  [string]$ScreenConnectSource = ""
+  [string]$ScreenConnectSource = "",
+  # Name of the destination folder (a sub-OU under O365 in the BMAP Devices tree)
+  # the computer account should land in after the domain join. Empty = default
+  # location. Resolved by Name against $DEVICE_BASE so it can't corrupt the DN.
+  [string]$TargetOU = "",
+  # Comma-separated printer names to configure (printers step). Each name N runs
+  # <PrinterSource>\add<N>.cmd. PrinterSource is the RICOHPCL6 folder.
+  [string]$Printers = "",
+  [string]$PrinterSource = "",
+  # SMLPlayer installer + the Main.ini copied into %APPDATA%\SMLPlayer7 (smlplayer step).
+  [string]$SmlPlayerSource = "",
+  [string]$SmlPlayerIni = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -120,10 +133,19 @@ switch ($Step) {
       }
       $downloader = $session.CreateUpdateDownloader()
       $downloader.Updates = $toDownload
-      $downloader.Download() | Out-Null
+      $dr = $downloader.Download()
 
       $toInstall = New-Object -ComObject Microsoft.Update.UpdateColl
       foreach ($u in $result.Updates) { if ($u.IsDownloaded) { $toInstall.Add($u) | Out-Null } }
+      # Download() does NOT throw when an individual update fails to download (a
+      # transient network / WSUS soft error); it reports the aggregate via
+      # ResultCode and leaves that update with IsDownloaded=$false. Those would be
+      # silently skipped by the filter above, so a partial download must fail
+      # loudly rather than masquerade as a fully-updated machine (mirrors the
+      # install-side ResultCode guard below).
+      if ($toInstall.Count -lt $toDownload.Count) {
+        Fail ("Falha ao descarregar as atualizacoes do Windows (codigo " + [int]$dr.ResultCode + "): " + $toInstall.Count + " de " + $toDownload.Count + " descarregadas.")
+      }
       $installer = $session.CreateUpdateInstaller()
       $installer.Updates = $toInstall
       $ir = $installer.Install()
@@ -146,6 +168,94 @@ switch ($Step) {
     exit 0
   }
 
+  "smlplayer" {
+    $path = Resolve-Installer $SmlPlayerSource "SMLPlayer"
+    # SMLPlayer ships an Inno Setup style installer (SMLPlayer-<ver>-Install.exe);
+    # /VERYSILENT installs with no UI. Adjust these switches here if the vendor
+    # ever changes packagers. 3010 = installed, reboot pending.
+    try {
+      $ip = Start-Process -FilePath $path -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") -Wait -PassThru
+    } catch { Fail ("Falha a instalar o SMLPlayer: " + $_.Exception.Message) }
+    if ($ip.ExitCode -ne 0 -and $ip.ExitCode -ne 3010 -and $ip.ExitCode -ne $null) {
+      Fail ("O instalador do SMLPlayer terminou com o codigo " + $ip.ExitCode + ".")
+    }
+
+    # A) Open then close the app once so it materialises its default per-user
+    # profile (%APPDATA%\SMLPlayer7) BEFORE the managed Main.ini is dropped in.
+    # Best-effort: if the executable can't be located we warn but still copy.
+    $launched = $false
+    $warning  = $null
+    try {
+      $exe   = $null
+      $roots = @(${env:ProgramFiles(x86)}, $env:ProgramFiles) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+      foreach ($root in $roots) {
+        $dir = Get-ChildItem -LiteralPath $root -Directory -Filter "SMLPlayer*" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($dir) {
+          $exe = Get-ChildItem -LiteralPath $dir.FullName -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Name -match "SMLPlayer" } | Select-Object -First 1
+          if ($exe) { break }
+        }
+      }
+      if ($exe) {
+        $sp = Start-Process -FilePath $exe.FullName -PassThru
+        Start-Sleep -Seconds 8
+        try { if ($sp -and -not $sp.HasExited) { $sp.CloseMainWindow() | Out-Null } } catch { }
+        Start-Sleep -Seconds 2
+        Get-Process -Name $exe.BaseName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $launched = $true
+      } else {
+        $warning = "Nao foi possivel localizar o executavel do SMLPlayer para o abrir; o Main.ini foi aplicado na mesma."
+      }
+    } catch {
+      $warning = "Falha ao abrir/fechar o SMLPlayer (" + $_.Exception.Message + "); o Main.ini foi aplicado na mesma."
+    }
+
+    # B) Copy the managed Main.ini into %APPDATA%\SMLPlayer7 (per-user Roaming).
+    if (-not $SmlPlayerIni) { Fail "O caminho do Main.ini do SMLPlayer nao esta configurado." }
+    $ini = $SmlPlayerIni -replace "/", "\"
+    if (-not (Test-Path -LiteralPath $ini)) { Fail ("Main.ini do SMLPlayer nao encontrado em: " + $ini) }
+    $destDir = Join-Path $env:APPDATA "SMLPlayer7"
+    try {
+      if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+      Copy-Item -LiteralPath $ini -Destination (Join-Path $destDir "Main.ini") -Force -ErrorAction Stop
+    } catch { Fail ("Falha a copiar o Main.ini para " + $destDir + ": " + $_.Exception.Message) }
+
+    $res = @{ success = $true; step = "smlplayer"; launched = $launched; message = "SMLPlayer instalado e Main.ini aplicado." }
+    if ($warning) { $res.warning = $warning }
+    Out-Result $res
+    exit 0
+  }
+
+  "printers" {
+    # Comma-separated names -> <PrinterSource>\add<NAME>.cmd, run one at a time.
+    $names = @()
+    if ($Printers) { $names = $Printers.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ } }
+    if ($names.Count -eq 0) {
+      Out-Result @{ success = $true; step = "printers"; installed = 0; message = "Nenhuma impressora configurada para este departamento." }
+      exit 0
+    }
+    if (-not $PrinterSource) { Fail "A pasta das impressoras (RICOHPCL6) nao esta configurada." }
+    $base = $PrinterSource -replace "/", "\"
+    if (-not (Test-Path -LiteralPath $base)) { Fail ("Pasta das impressoras nao encontrada: " + $base) }
+
+    # Names/paths here contain no spaces (RICOHPCL6 share + add<NAME>.cmd), so the
+    # full path can be handed to cmd.exe /c without the batch quote-stripping trap.
+    $done = @()
+    foreach ($n in $names) {
+      $cmd = Join-Path $base ("add" + $n + ".cmd")
+      if (-not (Test-Path -LiteralPath $cmd)) { Fail ("Script da impressora nao encontrado: " + $cmd) }
+      try {
+        $pp = Start-Process -FilePath $env:ComSpec -ArgumentList @("/c", $cmd) -Wait -PassThru -WindowStyle Hidden
+      } catch { Fail ("Falha a executar " + $cmd + ": " + $_.Exception.Message) }
+      if ($pp.ExitCode -ne 0 -and $pp.ExitCode -ne $null) {
+        Fail ("O script da impressora '" + $n + "' terminou com o codigo " + $pp.ExitCode + ".")
+      }
+      $done += $n
+    }
+    Out-Result @{ success = $true; step = "printers"; installed = $done.Count; message = ("Impressoras configuradas: " + ($done -join ", ") + ".") }
+    exit 0
+  }
+
   "domain" {
     $deptAlt = "ADM|RCM|CDD|MKT|NWS|RTO|COM|DIG|EVT|HR|IT|LEG"
     if ($NewName -notmatch "^PT-LPT-($deptAlt)-\d+$") {
@@ -157,19 +267,70 @@ switch ($Step) {
     $sec = ConvertTo-SecureString $pw -AsPlainText -Force
     $cred = New-Object System.Management.Automation.PSCredential($u, $sec)
 
+    # Resolve the destination OU DN from the folder Name (a sub-OU under O365 in the
+    # BMAP Devices tree). Matched by -Filter on Name so a folder name with a space /
+    # comma / quote can never corrupt the DN. Resolution failure is a WARNING, not a
+    # fatal error: the computer still needs to be joined, just in the default spot.
+    $DEVICE_BASE = "OU=O365,OU=BMAP Devices,DC=bmap,DC=lis"
+    $ouDn      = $null
+    $ouWarning = $null
+    $adConn    = $null
+    if ($TargetOU) {
+      try {
+        Import-Module ActiveDirectory -ErrorAction Stop -WarningAction SilentlyContinue
+        . "$PSScriptRoot\_ADConn.ps1"
+        $adConn = Get-ADConn
+        $ou = Get-ADOrganizationalUnit @adConn -SearchBase $DEVICE_BASE -SearchScope OneLevel `
+                -Filter 'Name -eq $TargetOU' -ErrorAction Stop | Select-Object -First 1
+        if ($ou) { $ouDn = $ou.DistinguishedName }
+        else { $ouWarning = "A pasta de destino '$TargetOU' nao foi encontrada em BMAP Devices -> O365; o computador fica no local por defeito." }
+      } catch {
+        $ouWarning = "Nao foi possivel resolver a pasta de destino '$TargetOU' (" + $_.Exception.Message + "); o computador fica no local por defeito."
+      }
+    }
+
     $partOfDomain = $false
     try { $partOfDomain = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain } catch { }
+    $oldName = $env:COMPUTERNAME
 
     try {
       if ($partOfDomain) {
-        # Already joined: just rename with domain credentials.
+        # Already joined: rename with domain credentials, then (best-effort) move
+        # the computer account into the target OU. Rename-Computer updates the AD
+        # object immediately, so we can locate it by the new name (falling back to
+        # the pre-reboot name just in case).
         Rename-Computer -NewName $NewName -DomainCredential $cred -Force -ErrorAction Stop
+        if ($ouDn) {
+          try {
+            $comp = $null
+            try { $comp = Get-ADComputer @adConn -Identity $NewName -ErrorAction Stop } catch { }
+            if (-not $comp -and $oldName) { try { $comp = Get-ADComputer @adConn -Identity $oldName -ErrorAction Stop } catch { } }
+            if ($comp) {
+              if ($comp.DistinguishedName -notmatch [regex]::Escape("," + $ouDn) + "$") {
+                Move-ADObject @adConn -Identity $comp.DistinguishedName -TargetPath $ouDn -ErrorAction Stop
+              }
+            } else {
+              $ouWarning = "Renomeado, mas nao foi possivel localizar a conta de computador para a mover para '$TargetOU'."
+            }
+          } catch {
+            $ouWarning = "Renomeado, mas a movimentacao para '$TargetOU' falhou: " + $_.Exception.Message
+          }
+        }
       } else {
-        # Join and rename in one shot.
-        Add-Computer -DomainName "bmap.lis" -NewName $NewName -Credential $cred -Options JoinWithNewName,AccountCreate -Force -ErrorAction Stop
+        # Fresh join + rename in one shot. When the target OU is known we create the
+        # account directly there via -OUPath (no follow-up move needed).
+        if ($ouDn) {
+          Add-Computer -DomainName "bmap.lis" -NewName $NewName -Credential $cred -OUPath $ouDn -Options JoinWithNewName,AccountCreate -Force -ErrorAction Stop
+        } else {
+          Add-Computer -DomainName "bmap.lis" -NewName $NewName -Credential $cred -Options JoinWithNewName,AccountCreate -Force -ErrorAction Stop
+        }
       }
     } catch { Fail ("Falha a juntar ao dominio / renomear: " + $_.Exception.Message) }
-    Out-Result @{ success = $true; step = "domain"; newName = $NewName; rebootRequired = $true; message = "Juntado ao dominio bmap.lis e renomeado. E necessario reiniciar." }
+
+    $res = @{ success = $true; step = "domain"; newName = $NewName; rebootRequired = $true; message = "Juntado ao dominio bmap.lis e renomeado. E necessario reiniciar." }
+    if ($ouDn)      { $res.targetOU = $TargetOU }
+    if ($ouWarning) { $res.warning  = $ouWarning }
+    Out-Result $res
     exit 0
   }
 

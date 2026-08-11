@@ -1,3 +1,5 @@
+import type { DeviceConfig } from "./deviceConfig";
+
 export interface GroupEntry {
   adGroups:   string[];
   jobTitles:  string[];
@@ -42,6 +44,8 @@ declare global {
       setConnection(conn: { server: string; username: string; password?: string }): Promise<void>;
       getSettings(): Promise<AppSettings>;
       setSettings(settings: Partial<AppSettings>): Promise<AppSettings>;
+      getDeviceConfig(): Promise<DeviceConfig>;
+      setDeviceConfig(config: Partial<DeviceConfig>): Promise<DeviceConfig>;
     };
     authAPI?: {
       login(creds: { username: string; password: string }): Promise<{ ok: boolean; username?: string; displayName?: string; domain?: string; dc?: string; error?: string }>;

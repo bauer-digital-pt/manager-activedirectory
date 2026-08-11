@@ -42,10 +42,13 @@ try {
     return
   }
 
+  # Title / Department / employeeType are pulled so the create-user wizard can
+  # base its job-title, department and employee-type suggestions on the people
+  # already living in this OU (not just the static per-group config).
   $members = @(
     Get-ADUser @conn -SearchBase $ou.DistinguishedName -SearchScope Subtree -Filter * `
-      -Properties DisplayName, EmailAddress, Enabled, LockedOut -WarningAction SilentlyContinue |
-      Select-Object SamAccountName, DisplayName, EmailAddress, Enabled, LockedOut
+      -Properties DisplayName, EmailAddress, Enabled, LockedOut, Title, Department, employeeType -WarningAction SilentlyContinue |
+      Select-Object SamAccountName, DisplayName, EmailAddress, Enabled, LockedOut, Title, Department, employeeType
   )
 
   if ($members.Count -eq 0) {

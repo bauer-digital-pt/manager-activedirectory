@@ -176,6 +176,162 @@ function writeSettings(next: AppSettings): void {
   writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), "utf8");
 }
 
+// --- Device onboarding config (device-config.json) ---
+// Maps each department code to the destination folder (a sub-OU under O365 in the
+// BMAP Devices tree) a freshly-onboarded PC should land in, plus the shared
+// installer sources. Non-secret: stored in clear (paths/URLs, no credentials).
+const DEVICE_CONFIG_PATH = join(app.getPath("userData"), "device-config.json");
+
+interface DeviceConfig {
+  ouMap: Record<string, string>; // dept code -> destination OU folder Name
+  anyConnectSource: string;
+  screenConnectSource: string;
+  printerMap: Record<string, string[]>; // dept code -> printer names (add<NAME>.cmd)
+  printerSource: string;                 // RICOHPCL6 base folder
+  smlPlayerSource: string;               // SMLPlayer installer
+  smlPlayerIni: string;                  // Main.ini copied into %APPDATA%\SMLPlayer7
+}
+
+const DEFAULT_DEVICE_CONFIG: DeviceConfig = {
+  ouMap: {}, anyConnectSource: "", screenConnectSource: "",
+  printerMap: {}, printerSource: "", smlPlayerSource: "", smlPlayerIni: "",
+};
+
+// Coerce a dept -> printer-names map, dropping non-string / empty entries.
+function normalizePrinterMap(raw: unknown): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (raw && typeof raw === "object") {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (Array.isArray(v)) {
+        const list = v.filter((x): x is string => typeof x === "string" && !!x);
+        if (list.length) out[k] = list;
+      }
+    }
+  }
+  return out;
+}
+
+function readDeviceConfig(): DeviceConfig {
+  try {
+    if (existsSync(DEVICE_CONFIG_PATH)) {
+      const raw = JSON.parse(readFileSync(DEVICE_CONFIG_PATH, "utf8"));
+      return {
+        ouMap: raw.ouMap && typeof raw.ouMap === "object" ? (raw.ouMap as Record<string, string>) : {},
+        anyConnectSource: typeof raw.anyConnectSource === "string" ? raw.anyConnectSource : "",
+        screenConnectSource: typeof raw.screenConnectSource === "string" ? raw.screenConnectSource : "",
+        printerMap: normalizePrinterMap(raw.printerMap),
+        printerSource: typeof raw.printerSource === "string" ? raw.printerSource : "",
+        smlPlayerSource: typeof raw.smlPlayerSource === "string" ? raw.smlPlayerSource : "",
+        smlPlayerIni: typeof raw.smlPlayerIni === "string" ? raw.smlPlayerIni : "",
+      };
+    }
+  } catch { /* fall through */ }
+  return { ...DEFAULT_DEVICE_CONFIG };
+}
+
+function writeDeviceConfig(config: DeviceConfig): void {
+  writeFileSync(DEVICE_CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+}
+
+// --- PC onboarding state (onboard-state.json) ---
+// Persists the in-progress "fully automatic" onboarding wizard across the reboot
+// that the domain-join step forces. When a run is active the app is registered to
+// start on boot (setLoginItemSettings) so the operator only has to log back into
+// Windows + the app; the renderer then resumes from `completed`. Non-secret: it
+// holds the target name/OU/dept and which steps finished — NEVER a password.
+const ONBOARD_STATE_PATH = join(app.getPath("userData"), "onboard-state.json");
+
+interface OnboardState {
+  active: boolean;
+  dept: string;
+  targetName: string;
+  targetOU: string;
+  anyConnectSource: string;
+  screenConnectSource: string;
+  printers: string[];       // printer names to configure (add<NAME>.cmd)
+  printerSource: string;    // RICOHPCL6 base folder
+  smlPlayerSource: string;  // SMLPlayer installer
+  smlPlayerIni: string;     // Main.ini source
+  completed: string[]; // step keys already done (regional/update/anyconnect/screenconnect/smlplayer/printers/domain)
+  startedAt: number;
+  updatedAt: number;
+}
+
+function readOnboardState(): OnboardState | null {
+  try {
+    if (existsSync(ONBOARD_STATE_PATH)) {
+      const raw = JSON.parse(readFileSync(ONBOARD_STATE_PATH, "utf8"));
+      // Sanitise on read too, not just on write: a corrupt or hand-edited file
+      // with valid JSON but wrong-typed fields (e.g. completed as a string)
+      // would otherwise reach the renderer and throw on completed.map(...),
+      // wedging resume with no in-app recovery. normalizeOnboardState coerces
+      // every field and returns null when the run isn't active.
+      return normalizeOnboardState(raw);
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
+// Coerce an arbitrary renderer payload into a well-formed state (or null when the
+// run isn't active), so a malformed message can never poison the persisted file.
+function normalizeOnboardState(raw: unknown): OnboardState | null {
+  const p = (raw ?? {}) as Partial<OnboardState>;
+  if (!p || !p.active) return null;
+  const now = Date.now();
+  return {
+    active: true,
+    dept: typeof p.dept === "string" ? p.dept : "",
+    targetName: typeof p.targetName === "string" ? p.targetName : "",
+    targetOU: typeof p.targetOU === "string" ? p.targetOU : "",
+    anyConnectSource: typeof p.anyConnectSource === "string" ? p.anyConnectSource : "",
+    screenConnectSource: typeof p.screenConnectSource === "string" ? p.screenConnectSource : "",
+    printers: Array.isArray(p.printers) ? p.printers.filter((s): s is string => typeof s === "string" && !!s) : [],
+    printerSource: typeof p.printerSource === "string" ? p.printerSource : "",
+    smlPlayerSource: typeof p.smlPlayerSource === "string" ? p.smlPlayerSource : "",
+    smlPlayerIni: typeof p.smlPlayerIni === "string" ? p.smlPlayerIni : "",
+    completed: Array.isArray(p.completed) ? p.completed.filter((s): s is string => typeof s === "string") : [],
+    startedAt: typeof p.startedAt === "number" ? p.startedAt : now,
+    updatedAt: now,
+  };
+}
+
+function writeOnboardState(state: OnboardState | null): void {
+  try {
+    if (!state || !state.active) { clearOnboardState(); return; }
+    writeFileSync(ONBOARD_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+  } catch { /* best-effort */ }
+}
+
+function clearOnboardState(): void {
+  try { writeFileSync(ONBOARD_STATE_PATH, JSON.stringify({ active: false }), "utf8"); } catch { /* best-effort */ }
+}
+
+// Keep the OS "start on boot" flag in lock-step with an active onboarding run, so
+// a mid-flow reboot relaunches the app to resume — and nothing lingers after the
+// run ends. Linux has no login-item support in Electron, so skip it there.
+function syncLoginItem(active: boolean) {
+  try {
+    if (process.platform === "linux") return;
+    app.setLoginItemSettings({ openAtLogin: active });
+  } catch (e) {
+    pushLog({ level: "warn", source: "app", label: "onboard", detail: "Nao foi possivel definir o arranque automatico: " + (e instanceof Error ? e.message : String(e)) });
+  }
+}
+
+// Reboots this machine (Windows only) to complete the domain-join step. Detached
+// so it survives the app quitting; the app is already registered to start on boot.
+function rebootMachine() {
+  if (process.platform !== "win32") {
+    pushLog({ level: "warn", source: "app", label: "onboard", detail: "Reinicio automatico so esta disponivel no Windows." });
+    return;
+  }
+  try {
+    spawn("shutdown.exe", ["/r", "/t", "0"], { windowsHide: true, detached: true }).unref();
+  } catch (e) {
+    pushLog({ level: "error", source: "app", label: "onboard", detail: "Falha a reiniciar: " + (e instanceof Error ? e.message : String(e)) });
+  }
+}
+
 // --- In-memory login session (NEVER persisted) ---
 // The credentials the user typed at the login screen become the credentials all
 // AD operations run with, for this run only. Password lives here and nowhere on
@@ -306,6 +462,10 @@ app.whenReady().then(() => {
   installAppMenu();
   createWindow();
   setupAutoUpdates();
+  // Reconcile the start-on-boot flag with the persisted onboarding state: if a run
+  // was interrupted by the reboot, stay registered so it can resume; otherwise
+  // make sure a stale flag from a finished run isn't left enabled.
+  syncLoginItem(!!readOnboardState());
 });
 
 // One-time migration: earlier builds persisted the AD password (safeStorage) in
@@ -599,6 +759,7 @@ handle("ad:create-user", async (_e, rawParams) => {
     params.company ?? "",
     params.email ?? "",
     params.copyFromUser ?? "",
+    params.employeeType ?? "",
   ];
   return ps("New-ADUser.ps1", args, { NEW_USER_PASSWORD: params.password ?? "" });
 });
@@ -648,10 +809,24 @@ handle("ad:offboard-user", async (_e, rawParams) => {
 
 // --- PC onboarding (the machine this app is running on) ---
 
+// The PC status probe (esp. the Windows Update COM search) is slow and, by
+// design, stable within a session: onboarding actions change AD/registry state
+// that only fully reflects after a reboot ("se nao reinicia tambem nao atualiza").
+// So we memoize the last successful snapshot for the whole process lifetime and
+// only re-probe when the caller forces it (the manual refresh button). A reboot
+// restarts the process and naturally clears this — exactly the desired cadence.
+let pcStatusCache: Awaited<ReturnType<typeof runPS>> | null = null;
+
 // Read-only snapshot of the LOCAL machine's onboarding state. The Windows Update
 // COM probe can be slow, so this gets a longer ceiling than a normal AD call.
-handle("ad:pc-status", async () => {
-  return runPS("Get-PCStatus.ps1", [], emitLog, session ?? getConnection(), 90000);
+handle("ad:pc-status", async (_e, rawParams) => {
+  const p = (rawParams ?? {}) as { force?: boolean };
+  if (!p.force && pcStatusCache) return pcStatusCache;
+  const r = await runPS("Get-PCStatus.ps1", [], emitLog, session ?? getConnection(), 90000);
+  // Cache only a successful probe, so a transient failure isn't pinned until the
+  // next reboot; the next call re-probes.
+  if (r.ok) pcStatusCache = r;
+  return r;
 });
 
 // Executes ONE onboarding step on the local machine. Steps have very different
@@ -664,6 +839,11 @@ handle("ad:onboard-step", async (_e, rawParams) => {
     newName?: string;
     anyConnectSource?: string;
     screenConnectSource?: string;
+    targetOU?: string;
+    printers?: string[];
+    printerSource?: string;
+    smlPlayerSource?: string;
+    smlPlayerIni?: string;
   };
   const step = (p.step ?? "").trim().toLowerCase();
   if (!step) return { ok: false, error: "Passo em falta." };
@@ -673,6 +853,8 @@ handle("ad:onboard-step", async (_e, rawParams) => {
     anyconnect: 10 * 60_000,
     screenconnect: 10 * 60_000,
     update: 30 * 60_000,
+    smlplayer: 15 * 60_000,
+    printers: 10 * 60_000,
     domain: 3 * 60_000,
   };
   if (!(step in TIMEOUTS)) return { ok: false, error: `Passo desconhecido: ${step}` };
@@ -683,7 +865,22 @@ handle("ad:onboard-step", async (_e, rawParams) => {
     return { ok: false, error: "Sessão expirada. Volta a iniciar sessão e tenta de novo." };
   }
 
-  const args = [step, p.newName ?? "", p.anyConnectSource ?? "", p.screenConnectSource ?? ""];
+  // Printer names are a comma-joined ASCII list (e.g. "ADM,COM1"); paths carry no
+  // secrets. Positional order MUST match Invoke-OnboardStep.ps1's param() block.
+  const printers = Array.isArray(p.printers)
+    ? p.printers.filter((s) => typeof s === "string" && s.trim()).join(",")
+    : "";
+  const args = [
+    step,
+    p.newName ?? "",
+    p.anyConnectSource ?? "",
+    p.screenConnectSource ?? "",
+    p.targetOU ?? "",
+    printers,
+    p.printerSource ?? "",
+    p.smlPlayerSource ?? "",
+    p.smlPlayerIni ?? "",
+  ];
   return runPS("Invoke-OnboardStep.ps1", args, emitLog, session ?? getConnection(), TIMEOUTS[step]);
 });
 
@@ -780,6 +977,9 @@ handle("auth:login", async (_e, rawPayload) => {
   // Get-AD* call fail with ADServerDownException. Only fall back to the
   // discovered DC when no server was configured (pure auto-discovery).
   session = { server: server || data.dc || "", username, password };
+  // A new session may see different AD state than the pre-login probe did; start
+  // the PC status cache fresh so the onboarding checklist reflects this login.
+  pcStatusCache = null;
 
   // Remember only the username (non-secret) for pre-fill next time.
   const settings = readSettings();
@@ -791,6 +991,7 @@ handle("auth:login", async (_e, rawPayload) => {
 
 handle("auth:logout", () => {
   session = null;
+  pcStatusCache = null;
   pushLog({ level: "info", source: "app", label: "auth", detail: "Logout / sessão terminada" });
   return { ok: true };
 });
@@ -898,6 +1099,59 @@ handle("ad:test-connection", async (_e, rawOverride) => {
     return { ok: false, error: data.error ?? "Não foi possível ligar ao AD." };
   }
   return r;
+});
+
+// --- Device onboarding config IPC ---
+handle("config:get-device-config", () => readDeviceConfig());
+handle("config:set-device-config", (_e, rawPayload) => {
+  const p = (rawPayload ?? {}) as Partial<DeviceConfig>;
+  const current = readDeviceConfig();
+  const next: DeviceConfig = {
+    ouMap: p.ouMap && typeof p.ouMap === "object" ? (p.ouMap as Record<string, string>) : current.ouMap,
+    anyConnectSource: p.anyConnectSource !== undefined ? String(p.anyConnectSource) : current.anyConnectSource,
+    screenConnectSource: p.screenConnectSource !== undefined ? String(p.screenConnectSource) : current.screenConnectSource,
+    printerMap: p.printerMap !== undefined ? normalizePrinterMap(p.printerMap) : current.printerMap,
+    printerSource: p.printerSource !== undefined ? String(p.printerSource) : current.printerSource,
+    smlPlayerSource: p.smlPlayerSource !== undefined ? String(p.smlPlayerSource) : current.smlPlayerSource,
+    smlPlayerIni: p.smlPlayerIni !== undefined ? String(p.smlPlayerIni) : current.smlPlayerIni,
+  };
+  writeDeviceConfig(next);
+  return next;
+});
+
+// Lists the destination folders (sub-OUs under O365 in the BMAP Devices tree) so
+// Settings can offer them as options for the department -> OU map.
+handle("ad:device-ous", async () => {
+  return ps("Get-DeviceOU-All.ps1");
+});
+
+// Computes the next available PT-LPT-<DEPT>-<NN> name (lowest free number).
+handle("ad:next-device-name", async (_e, dept) => {
+  return ps("Get-NextDeviceName.ps1", [String(dept ?? "")]);
+});
+
+// --- PC onboarding state IPC ---
+// The renderer owns the wizard; main just persists its state across the domain
+// reboot and keeps start-on-boot in sync so the run can resume automatically.
+handle("onboard:get-state", () => readOnboardState());
+handle("onboard:set-state", (_e, rawPayload) => {
+  const next = normalizeOnboardState(rawPayload);
+  writeOnboardState(next);
+  syncLoginItem(!!next?.active);
+  return next;
+});
+handle("onboard:clear-state", () => {
+  clearOnboardState();
+  syncLoginItem(false);
+  // The run is over; let the next status call re-probe from scratch.
+  pcStatusCache = null;
+  return { ok: true };
+});
+handle("onboard:reboot", () => {
+  pushLog({ level: "info", source: "app", label: "onboard", detail: "A reiniciar para concluir o onboarding…" });
+  // Give the renderer a beat to finish persisting state / painting before we go.
+  setTimeout(() => rebootMachine(), 500);
+  return { ok: true };
 });
 
 // --- Console / activity log IPC ---

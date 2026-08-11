@@ -248,7 +248,16 @@ export function runPS(
           const parsed = parseJsonLoose(stdout ?? "") as { error?: string } | null;
           errorMessage = parsed?.error ?? undefined;
         } catch { /* ignore */ }
-        resolve({ ok: false, error: friendlyError(errorMessage ?? (stderr || err.message)) });
+        // Fall back through the most useful signal, in order: the script's JSON
+        // error, its stderr, its raw stdout — and only then a generic message.
+        // We deliberately do NOT surface err.message: for a plain non-zero exit
+        // it's Node's "Command failed: powershell.exe …<full command line>",
+        // which is useless to the operator and leaks the args (e.g. a username).
+        const fallback =
+          (stderr && stderr.trim()) ||
+          (stdout && stdout.trim()) ||
+          `O comando (${script}) terminou com o código ${exitCode ?? "desconhecido"}.`;
+        resolve({ ok: false, error: friendlyError(errorMessage ?? fallback) });
         return;
       }
 

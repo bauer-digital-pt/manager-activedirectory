@@ -22,7 +22,7 @@ export default function AuthShell({ eyebrow = "AD Manager", children }: AuthShel
       {/* Coloured panel, rounded on the right edge over the photo. Kept a touch
           translucent so the photo bleeds through softly. */}
       <aside
-        className="relative z-10 flex h-full w-full flex-col overflow-hidden rounded-r-[2.5rem] shadow-2xl backdrop-blur-sm md:w-[56%] lg:w-[52%] xl:w-[48%]"
+        className="relative z-10 flex h-full w-full flex-col overflow-hidden rounded-r-[2.5rem] shadow-2xl backdrop-blur-sm md:w-[48%] lg:w-[44%] xl:w-[41%]"
         style={{
           background:
             "linear-gradient(152deg, rgba(87,19,189,0.86) 0%, rgba(71,0,163,0.88) 52%, rgba(55,0,125,0.90) 100%)",

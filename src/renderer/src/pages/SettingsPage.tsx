@@ -1,22 +1,24 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Trash2, X, Settings2, Layers, Server, Loader2, CheckCircle2, XCircle, SlidersHorizontal, RefreshCw } from "lucide-react";
+import { Plus, Trash2, X, Settings2, Layers, Server, Loader2, CheckCircle2, XCircle, SlidersHorizontal, RefreshCw, MonitorSmartphone } from "lucide-react";
 import { getGroupConfig, setGroupConfig, DEFAULT_GROUPS, type GroupConfig } from "../lib/groupsConfig";
 import { getConnection, setConnection, type ConnectionInfo } from "../lib/connectionConfig";
 import { getSettings, setSettings, type AppSettings } from "../lib/appSettings";
+import { getDeviceConfig, setDeviceConfig, DEVICE_DEPARTMENTS, AVAILABLE_PRINTERS, EMPTY_DEVICE_CONFIG, type DeviceConfig } from "../lib/deviceConfig";
 import { getAppVersion } from "../lib/updates";
 import UpdateCheckModal from "../components/UpdateCheckModal";
-import { adAPI, type ADUser, type ADGroup } from "../adAPI";
+import { adAPI, type ADUser, type ADGroup, type DeviceOU } from "../adAPI";
 import { usersCache, usersInGroup } from "../lib/usersCache";
 import SearchableSelect from "../components/SearchableSelect";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
-type Tab = "general" | "groups" | "connection";
+type Tab = "general" | "groups" | "devices" | "connection";
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "groups", label: "Onboarding Groups", icon: Layers },
+  { id: "devices", label: "Dispositivos", icon: MonitorSmartphone },
   { id: "connection", label: "AD Connection", icon: Server },
 ];
 
@@ -26,10 +28,12 @@ interface SettingsPageProps {
   onSettingsChange?: () => void;
   /** Toggled while the update-check modal is open (suppresses full-screen takeover). */
   onUpdateModal?: (open: boolean) => void;
+  /** Tab to open on. Defaults to "general". Used to deep-link from Devices. */
+  initialTab?: Tab;
 }
 
-export default function SettingsPage({ toast, onSettingsChange, onUpdateModal }: SettingsPageProps) {
-  const [tab, setTab] = useState<Tab>("general");
+export default function SettingsPage({ toast, onSettingsChange, onUpdateModal, initialTab = "general" }: SettingsPageProps) {
+  const [tab, setTab] = useState<Tab>(initialTab);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -57,6 +61,7 @@ export default function SettingsPage({ toast, onSettingsChange, onUpdateModal }:
       </div>
       {tab === "general" && <GeneralTab toast={toast} onSettingsChange={onSettingsChange} onUpdateModal={onUpdateModal} />}
       {tab === "groups" && <GroupsTab toast={toast} />}
+      {tab === "devices" && <DevicesTab toast={toast} />}
       {tab === "connection" && <ConnectionTab toast={toast} />}
     </div>
   );
@@ -303,6 +308,222 @@ function ConnectionTab({ toast }: { toast: { success: ToastFn; error: ToastFn } 
             Clear
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
+  const [config, setConfig] = useState<DeviceConfig>(EMPTY_DEVICE_CONFIG);
+  const [ous, setOUs] = useState<DeviceOU[]>([]);
+  const [loadingOUs, setLoadingOUs] = useState(true);
+  const [ouError, setOUError] = useState<string | null>(null);
+
+  useEffect(() => { getDeviceConfig().then(setConfig); }, []);
+
+  // Load the destination folders (sub-OUs under BMAP Devices → O365) once.
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingOUs(true);
+    adAPI.getDeviceOUs().then((r) => {
+      if (cancelled) return;
+      if (r.ok && Array.isArray(r.data)) {
+        setOUs(r.data as DeviceOU[]);
+        setOUError(null);
+      } else {
+        setOUs([]);
+        setOUError(r.error ?? "Não foi possível carregar as pastas de dispositivos.");
+      }
+      setLoadingOUs(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Persist the whole config. Selects call this directly; text inputs update
+  // local state on change and only persist on blur (one write per edit, not per
+  // keystroke). setDeviceConfig normalizes, so empty values are dropped safely.
+  const persist = async (next: DeviceConfig) => {
+    setConfig(next);
+    await setDeviceConfig(next);
+  };
+
+  const setOU = (dept: string, value: string) => {
+    const ouMap = { ...config.ouMap };
+    if (value) ouMap[dept] = value;
+    else delete ouMap[dept];
+    persist({ ...config, ouMap });
+  };
+
+  const togglePrinter = (dept: string, printer: string) => {
+    const current = config.printerMap?.[dept] ?? [];
+    const next = current.includes(printer)
+      ? current.filter((p) => p !== printer)
+      : [...current, printer];
+    const printerMap = { ...(config.printerMap ?? {}) };
+    if (next.length) printerMap[dept] = next;
+    else delete printerMap[dept];
+    persist({ ...config, printerMap });
+  };
+
+  const inputCls =
+    "w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all placeholder:text-zinc-300";
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="px-8 py-6 space-y-8 max-w-xl">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-900">Pastas de dispositivos por departamento</h2>
+          <p className="text-xs text-zinc-400 mt-0.5">
+            Quando um PC entra no domínio fica na pasta errada. Aqui defines em que pasta
+            (uma sub-OU de <span className="font-medium text-zinc-500">BMAP Devices → O365</span>) os
+            computadores de cada departamento devem ficar. O onboarding move o computador para lá automaticamente.
+          </p>
+        </div>
+
+        {ouError && (
+          <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border bg-amber-50 border-amber-200 text-amber-700">
+            <XCircle size={15} className="flex-shrink-0" />
+            <span>{ouError}</span>
+          </div>
+        )}
+
+        <section className="space-y-2">
+          {DEVICE_DEPARTMENTS.map((dept) => {
+            const stored = config.ouMap[dept] ?? "";
+            const missing = stored && !ous.some((o) => o.Name === stored);
+            const options = [
+              ...(missing ? [{ value: stored, label: `${stored} (não encontrada)` }] : []),
+              ...ous.map((o) => ({ value: o.Name, label: o.Name })),
+            ];
+            return (
+              <div key={dept} className="flex items-center gap-3">
+                <span className="w-14 flex-shrink-0 text-xs font-semibold text-zinc-600 tabular-nums">{dept}</span>
+                <div className="flex-1 min-w-0">
+                  <SearchableSelect
+                    value={stored}
+                    onChange={(v) => setOU(dept, v)}
+                    options={options}
+                    disabled={loadingOUs}
+                    clearable
+                    clearLabel="Sem pasta (localização por defeito)"
+                    placeholder={loadingOUs ? "A carregar pastas…" : "Sem pasta definida"}
+                    searchPlaceholder="Procurar pasta…"
+                    emptyText="Nenhuma pasta encontrada"
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </section>
+
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Impressoras por departamento</h3>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              Durante o onboarding, cada PC recebe as impressoras selecionadas para o seu departamento —
+              cada uma instalada pelo script <span className="font-mono text-zinc-500">add&lt;NOME&gt;.cmd</span> em RICOHPCL6.
+              Sem seleção, o passo das impressoras é ignorado.
+            </p>
+          </div>
+          <div className="space-y-3">
+            {DEVICE_DEPARTMENTS.map((dept) => {
+              const selected = config.printerMap?.[dept] ?? [];
+              return (
+                <div key={dept} className="flex items-start gap-3">
+                  <span className="w-14 flex-shrink-0 pt-1 text-xs font-semibold text-zinc-600 tabular-nums">{dept}</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {AVAILABLE_PRINTERS.map((p) => {
+                      const on = selected.includes(p);
+                      return (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => togglePrinter(dept, p)}
+                          aria-pressed={on}
+                          className={cn(
+                            "px-2 py-1 text-xs font-medium rounded-md border transition-colors",
+                            on
+                              ? "bg-violet-600 border-violet-600 text-white hover:bg-violet-700"
+                              : "bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300 hover:text-zinc-700"
+                          )}
+                        >
+                          {p}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Instaladores</h3>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              Caminho de rede (NAS) ou URL para os instaladores executados durante o onboarding automático.
+              Deixa em branco para usar os caminhos NAS por defeito.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Cisco AnyConnect</label>
+            <input
+              value={config.anyConnectSource}
+              onChange={(e) => setConfig((c) => ({ ...c, anyConnectSource: e.target.value }))}
+              onBlur={() => persist(config)}
+              placeholder="ex: \\pt-srv-nas\Software\AnyConnect.msi"
+              className={inputCls}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">ScreenConnect</label>
+            <input
+              value={config.screenConnectSource}
+              onChange={(e) => setConfig((c) => ({ ...c, screenConnectSource: e.target.value }))}
+              onBlur={() => persist(config)}
+              placeholder="ex: \\pt-srv-nas\Software\ScreenConnect.msi"
+              className={inputCls}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Impressoras (pasta RICOHPCL6)</label>
+            <input
+              value={config.printerSource}
+              onChange={(e) => setConfig((c) => ({ ...c, printerSource: e.target.value }))}
+              onBlur={() => persist(config)}
+              placeholder="ex: \\pt-srv-nas\IT\Software\Printers\RICOHPCL6"
+              className={inputCls}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">SMLPlayer (instalador)</label>
+            <input
+              value={config.smlPlayerSource}
+              onChange={(e) => setConfig((c) => ({ ...c, smlPlayerSource: e.target.value }))}
+              onBlur={() => persist(config)}
+              placeholder="ex: \\pt-srv-nas\IT\Software\SMLPlayer\SMLPlayer-7.11.9357-Install.exe"
+              className={inputCls}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">SMLPlayer (Main.ini)</label>
+            <input
+              value={config.smlPlayerIni}
+              onChange={(e) => setConfig((c) => ({ ...c, smlPlayerIni: e.target.value }))}
+              onBlur={() => persist(config)}
+              placeholder="ex: \\pt-srv-nas\IT\Software\SMLPlayer\Main.ini"
+              className={inputCls}
+            />
+            <p className="text-[11px] text-zinc-400">Copiado para %APPDATA%\SMLPlayer7 depois de abrir/fechar a aplicação.</p>
+          </div>
+          <button
+            onClick={async () => { await persist(config); toast.success("Definições de dispositivos guardadas"); }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
+          >
+            Guardar
+          </button>
+        </section>
       </div>
     </div>
   );

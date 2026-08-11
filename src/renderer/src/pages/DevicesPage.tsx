@@ -2,42 +2,63 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Laptop, RefreshCw, Check, AlertTriangle, ServerCrash, Loader2, Play,
   RotateCcw, CheckCircle2, Languages, DownloadCloud, ShieldCheck, Monitor, Network,
+  Power, X, FolderCog, Building2, Printer, AppWindow,
 } from "lucide-react";
 import type { ExternalToast } from "sonner";
-import { adAPI, type PCStatus, type OnboardStep } from "../adAPI";
+import { adAPI, isBrowserMock, type PCStatus, type OnboardStep, type OnboardState } from "../adAPI";
+import { getDeviceConfig, EMPTY_DEVICE_CONFIG, type DeviceConfig } from "../lib/deviceConfig";
+import { setNavGuard } from "../lib/navGuard";
 import { cn } from "../lib/cn";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
-// UNC installer sources live on the NAS (\\pt-srv-nas\<pasta>\<instalador>).
-// They rarely change, so remember them locally between visits — pre-filled with
-// the current known locations so the operator normally doesn't touch them.
-const LS_ANY = "admanager.onboard.anyConnectSource";
-const LS_SCR = "admanager.onboard.screenConnectSource";
-const NAS_HINT = "\\\\pt-srv-nas\\";
+// Fallback installer sources — used when Settings → Dispositivos leaves them
+// blank, so the automatic run always has something to install from.
 const DEFAULT_ANYCONNECT = "\\\\pt-srv-nas\\IT\\Software\\Cisco Anyconnect\\anyconnect-win-4.10.08029-core-vpn-webdeploy-k9.msi";
 const DEFAULT_SCREENCONNECT = "\\\\pt-srv-nas\\IT\\Software\\ScreenConnect\\ScreenConnect.ClientSetup.msi";
+const DEFAULT_PRINTER_SOURCE = "\\\\pt-srv-nas\\IT\\Software\\Printers\\RICOHPCL6";
+const DEFAULT_SMLPLAYER = "\\\\pt-srv-nas\\IT\\Software\\SMLPlayer\\SMLPlayer-7.11.9357-Install.exe";
+const DEFAULT_SMLPLAYER_INI = "\\\\pt-srv-nas\\IT\\Software\\SMLPlayer\\Main.ini";
+
+// Grace period before the single end-of-run reboot fires automatically.
+const REBOOT_SECONDS = 30;
 
 interface StepDef {
   key: OnboardStep;
   label: string;
   desc: string;
   icon: React.ElementType;
-  needsName?: boolean;
-  needsSource?: "anyConnect" | "screenConnect";
 }
 
-// Execution order for "Executar tudo": regional + update + installs first, then
-// the domain join/rename last because it forces a reboot.
+// Execution order: everything that doesn't force a reboot first (regional +
+// updates + installs), then the domain join/rename/move last — the machine
+// reboots ONCE at the very end so all pending reboots collapse into one.
 const STEPS: StepDef[] = [
-  { key: "regional",      label: "Definições regionais", desc: "SO em inglês, região Portugal, teclado português", icon: Languages },
-  { key: "update",        label: "Windows Update",       desc: "Instalar todas as atualizações pendentes",         icon: DownloadCloud },
-  { key: "anyconnect",    label: "Cisco AnyConnect",     desc: "Instalação silenciosa a partir do NAS",            icon: ShieldCheck,  needsSource: "anyConnect" },
-  { key: "screenconnect", label: "ScreenConnect",        desc: "Instalação silenciosa a partir do NAS",            icon: Monitor,      needsSource: "screenConnect" },
-  { key: "domain",        label: "Domínio + nome do PC", desc: "Juntar a bmap.lis e renomear (requer reinício)",   icon: Network,      needsName: true },
+  { key: "regional",      label: "Definições regionais",   desc: "SO em inglês, região Portugal, teclado português",          icon: Languages },
+  { key: "update",        label: "Windows Update",         desc: "Instalar todas as atualizações pendentes",                  icon: DownloadCloud },
+  { key: "anyconnect",    label: "Cisco AnyConnect",       desc: "Instalação silenciosa a partir do NAS",                     icon: ShieldCheck },
+  { key: "screenconnect", label: "ScreenConnect",          desc: "Instalação silenciosa a partir do NAS",                     icon: Monitor },
+  { key: "smlplayer",     label: "SMLPlayer",              desc: "Instalar, abrir/fechar e aplicar o Main.ini",               icon: AppWindow },
+  { key: "printers",      label: "Impressoras",            desc: "Configurar as impressoras do departamento (RICOHPCL6)",     icon: Printer },
+  { key: "domain",        label: "Domínio + nome + pasta", desc: "Juntar a bmap.lis, renomear e mover para a pasta correta",  icon: Network },
 ];
 
+// The printers step is only relevant when the machine's department has printers
+// selected in Settings; otherwise it's dropped from the run and the checklist.
+function applicableSteps(printerCount: number): StepDef[] {
+  return printerCount > 0 ? STEPS : STEPS.filter((s) => s.key !== "printers");
+}
+
+type Phase = "idle" | "running" | "paused" | "reboot" | "rebooting" | "done";
 type StepState = { state: "idle" | "running" | "done" | "error"; message?: string };
+
+// A run drives REAL, irreversible PowerShell against this machine (domain join,
+// silent installs, Windows Update). This module-level flag guarantees only ONE
+// onboarding loop is ever in flight — even across a remount. A per-instance ref
+// can't do this: navigating away (ErrorBoundary is keyed by page) unmounts the
+// component and React StrictMode double-mounts in dev, both of which would give
+// a fresh ref that's blind to the previous instance's still-running loop.
+let runInFlight = false;
 
 // Whether a dimension is already satisfied on the live machine.
 function stepDone(status: PCStatus | null, key: OnboardStep): boolean {
@@ -47,136 +68,344 @@ function stepDone(status: PCStatus | null, key: OnboardStep): boolean {
     case "update":        return status.windowsUpdate.upToDate;
     case "anyconnect":    return status.software.anyConnect;
     case "screenconnect": return status.software.screenConnect;
+    // No reliable per-machine compliance probe for these: they always run (once
+    // per onboarding, tracked via the persisted `completed` list, not status).
+    case "smlplayer":     return false;
+    case "printers":      return false;
     case "domain":        return status.domain.compliant && status.name.compliant;
   }
 }
 
 export default function DevicesPage({
   toast,
+  onOpenDeviceSettings,
 }: {
   toast: { success: ToastFn; error: ToastFn };
+  /** Opens Settings on the "Dispositivos" tab (to fix a missing OU mapping). */
+  onOpenDeviceSettings?: () => void;
 }) {
   const [status, setStatus] = useState<PCStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [config, setConfig] = useState<DeviceConfig>(EMPTY_DEVICE_CONFIG);
 
-  // Target name config (PT-LPT-<DEPT>-<NUMBER>).
+  const [phase, setPhase] = useState<Phase>("idle");
   const [dept, setDept] = useState("");
-  const [num, setNum] = useState("");
-
-  // Installer UNC sources, remembered locally.
-  const [anyConnectSource, setAnyConnectSource] = useState(() => localStorage.getItem(LS_ANY) ?? DEFAULT_ANYCONNECT);
-  const [screenConnectSource, setScreenConnectSource] = useState(() => localStorage.getItem(LS_SCR) ?? DEFAULT_SCREENCONNECT);
-  useEffect(() => { localStorage.setItem(LS_ANY, anyConnectSource); }, [anyConnectSource]);
-  useEffect(() => { localStorage.setItem(LS_SCR, screenConnectSource); }, [screenConnectSource]);
-
+  const [activeState, setActiveState] = useState<OnboardState | null>(null);
   const [results, setResults] = useState<Record<string, StepState>>({});
-  const [runningAll, setRunningAll] = useState(false);
-  const [rebootNeeded, setRebootNeeded] = useState(false);
+  const [currentStep, setCurrentStep] = useState<OnboardStep | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [rebootCountdown, setRebootCountdown] = useState<number | null>(null);
 
+  // Set to abort the auto-run between steps (Cancelar). A ref so the running
+  // loop sees the latest value without being restarted.
+  const cancelRef = useRef(false);
+  // Whether THIS instance is still mounted. The loop checks it so a run left in
+  // flight when the page unmounts (navigation, relock, StrictMode) stops after
+  // its current step instead of driving PowerShell from a dead instance.
+  const mountedRef = useRef(true);
   const toastRef = useRef(toast);
   toastRef.current = toast;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const busy = phase === "running" || phase === "rebooting" || starting;
+
+  const finalizeDone = useCallback(async (hadActiveState: boolean) => {
+    // Onboarding complete — drop the persisted state (this also disables the
+    // start-on-boot login item in main) so the machine won't try to resume.
+    if (hadActiveState) await adAPI.clearOnboardState();
+    setActiveState(null);
+    setRebootCountdown(null);
+    setCurrentStep(null);
+    setPhase("done");
+  }, []);
+
+  // Runs the given steps in order, persisting progress after each one so a
+  // reboot (or a crash) can resume exactly where it stopped. Stops on the first
+  // failure (→ "paused", operator can retry) and enters the reboot phase once
+  // every step is done. No cross-step re-probe: "se não reinicia, não atualiza".
+  const runSteps = useCallback(async (state: OnboardState, steps: StepDef[]) => {
+    // Never start a second loop over the same machine (remount / StrictMode).
+    if (runInFlight) return;
+    runInFlight = true;
+    cancelRef.current = false;
+    setPhase("running");
     try {
-      const r = await adAPI.getPCStatus();
-      if (r.ok && r.data) {
-        setStatus(r.data);
-        // Default the department dropdown to the first known code once.
-        setDept((d) => d || r.data!.departments[0] || "");
-      } else {
-        setError(r.error ?? "Não foi possível obter o estado deste PC.");
+      let current = state;
+      for (const s of steps) {
+        if (!mountedRef.current) return;                                   // unmounted: stop, release lock
+        if (cancelRef.current) { setCurrentStep(null); setPhase("paused"); return; }
+        setCurrentStep(s.key);
+        setResults((r) => ({ ...r, [s.key]: { state: "running" } }));
+        let res: Awaited<ReturnType<typeof adAPI.onboardStep>>;
+        try {
+          res = await adAPI.onboardStep({
+            step: s.key,
+            newName: s.key === "domain" ? current.targetName : undefined,
+            targetOU: s.key === "domain" ? current.targetOU : undefined,
+            anyConnectSource: current.anyConnectSource,
+            screenConnectSource: current.screenConnectSource,
+            printers: s.key === "printers" ? current.printers : undefined,
+            printerSource: s.key === "printers" ? current.printerSource : undefined,
+            smlPlayerSource: s.key === "smlplayer" ? current.smlPlayerSource : undefined,
+            smlPlayerIni: s.key === "smlplayer" ? current.smlPlayerIni : undefined,
+          });
+        } catch (e) {
+          res = { ok: false, error: e instanceof Error ? e.message : "Falhou." };
+        }
+        if (!res.ok) {
+          const err = res.error ?? "Falhou.";
+          setResults((r) => ({ ...r, [s.key]: { state: "error", message: err } }));
+          setCurrentStep(null);
+          setPhase("paused");
+          toastRef.current.error(`${s.label}: ${err}`);
+          return;
+        }
+        const msg = res.data?.message ?? "Concluído.";
+        setResults((r) => ({ ...r, [s.key]: { state: "done", message: msg } }));
+        const completed = current.completed.includes(s.key) ? current.completed : [...current.completed, s.key];
+        const nextState: OnboardState = { ...current, completed, updatedAt: Date.now() };
+        const saved = await adAPI.setOnboardState(nextState);
+        current = saved ?? nextState;
+        setActiveState(current);
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Não foi possível obter o estado deste PC.");
+      // The loop only checks cancel/mount at the top of each iteration, so a
+      // Cancelar (or an unmount) that lands DURING the final step would otherwise
+      // be dropped and the auto-reboot armed anyway. Re-check before arming it.
+      if (!mountedRef.current) return;
+      if (cancelRef.current) { setCurrentStep(null); setPhase("paused"); return; }
+      // Every step done → the machine needs exactly one reboot to apply the domain
+      // join / rename / regional settings. Arm the auto-reboot countdown.
+      setCurrentStep(null);
+      setPhase("reboot");
+      setRebootCountdown(REBOOT_SECONDS);
     } finally {
-      setLoading(false);
+      runInFlight = false;
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(async (force = false) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [sRes, state, cfg] = await Promise.all([
+        adAPI.getPCStatus(force),
+        adAPI.getOnboardState(),
+        getDeviceConfig(),
+      ]);
+      setConfig(cfg);
+      if (!sRes.ok || !sRes.data) {
+        setError(sRes.error ?? "Não foi possível obter o estado deste PC.");
+        setLoading(false);
+        return;
+      }
+      const st = sRes.data;
+      setStatus(st);
+      setLoading(false);
+
+      if (state?.active) {
+        // Resume an onboarding that was in progress (typically after the reboot).
+        setActiveState(state);
+        setDept(state.dept);
+        setResults(Object.fromEntries(state.completed.map((k) => [k, { state: "done" as const }])));
+        const remaining = applicableSteps(state.printers?.length ?? 0)
+          .filter((s) => !state.completed.includes(s.key) && !stepDone(st, s.key));
+        if (remaining.length > 0) {
+          // A previous instance's loop may still hold the module lock while it
+          // finishes its current (un-cancelable) PowerShell step — e.g. the
+          // operator confirmed the navGuard and left mid-step, then came back.
+          // Show progress immediately (never fall back to the idle picker, whose
+          // live "Iniciar" button would let them kick off a second, conflicting
+          // run) and take over as soon as the lock frees, so the run genuinely
+          // "retoma quando voltares" instead of stalling.
+          setPhase("running");
+          void (async () => {
+            while (runInFlight) {
+              if (!mountedRef.current) return;
+              await new Promise((r) => setTimeout(r, 250));
+            }
+            if (mountedRef.current) void runSteps(state, remaining);
+          })();
+        } else if (st.onboarded) {
+          await finalizeDone(true);
+          toastRef.current.success("Onboarding concluído — este PC está pronto.");
+        } else {
+          // Every step recorded but the machine isn't compliant yet: a reboot is
+          // still pending. Offer it manually (don't surprise-reboot on launch).
+          setPhase("reboot");
+          setRebootCountdown(null);
+        }
+      } else {
+        setDept((d) => d || st.departments[0] || "");
+        setPhase(st.onboarded ? "done" : "idle");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Não foi possível obter o estado deste PC.");
+      setLoading(false);
+    }
+  }, [runSteps, finalizeDone]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  // On unmount, tell any in-flight run to stop after its current step. The step
+  // itself can't be aborted mid-PowerShell, but this prevents a dead instance
+  // from marching on to the next step (and lets the module lock be released).
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; cancelRef.current = true; };
+  }, []);
+
+  // Warn before a sidebar navigation or logout unmounts this page, in two cases:
+  //  • a run is in flight — the state is persisted and resumes on return, but
+  //    "app assume o controlo" means it shouldn't be interrupted by accident;
+  //  • the auto-reboot countdown is armed — leaving clears the timer, so the
+  //    promised automatic reboot would silently never fire (it drops to manual).
+  // Not guarded once the reboot is deferred (countdown null) or while idle/paused,
+  // where leaving loses nothing time-sensitive. Cleared on unmount.
+  const rebootArmed = phase === "reboot" && rebootCountdown !== null;
+  const guardNav = busy || rebootArmed;
+  useEffect(() => {
+    if (!guardNav) { setNavGuard(null); return; }
+    setNavGuard(() =>
+      window.confirm(
+        rebootArmed
+          ? "Este PC vai reiniciar automaticamente para concluir o onboarding. Se saíres agora, o reinício automático é cancelado (podes reiniciar manualmente ao voltar). Sair mesmo assim?"
+          : "O onboarding automático está a decorrer. Sair desta página não o cancela — retoma quando voltares. Sair mesmo assim?"
+      )
+    );
+    return () => setNavGuard(null);
+  }, [guardNav, rebootArmed]);
+
+  // Auto-reboot countdown. Fires the reboot at zero; a null countdown means the
+  // reboot is armed but manual (operator deferred it, or a resume found it pending).
+  const doReboot = useCallback(async () => {
+    setRebootCountdown(null);
+    setPhase("rebooting");
+    await adAPI.reboot();
+    // On a real machine the OS is going down now; the app relaunches at next
+    // login and resumes via load(). In the browser mock the process survives —
+    // simulate the post-reboot resume so the flow is verifiable end-to-end.
+    if (isBrowserMock) {
+      await new Promise((r) => setTimeout(r, 800));
+      const [sRes, state] = await Promise.all([adAPI.getPCStatus(true), adAPI.getOnboardState()]);
+      if (sRes.ok && sRes.data) setStatus(sRes.data);
+      if (sRes.ok && sRes.data?.onboarded) {
+        await finalizeDone(!!state?.active);
+        toastRef.current.success("Onboarding concluído — este PC está pronto.");
+      } else {
+        setPhase("paused");
+      }
+    }
+  }, [finalizeDone]);
+
+  useEffect(() => {
+    if (phase !== "reboot" || rebootCountdown === null) return;
+    if (rebootCountdown <= 0) { void doReboot(); return; }
+    const t = window.setTimeout(() => setRebootCountdown((c) => (c === null ? null : c - 1)), 1000);
+    return () => window.clearTimeout(t);
+  }, [phase, rebootCountdown, doReboot]);
 
   const departments = status?.departments ?? [];
-  const numClean = num.replace(/\D/g, "");
-  const nameValid = !!dept && /^\d+$/.test(numClean);
-  const newName = nameValid ? `PT-LPT-${dept}-${numClean}` : "";
+  const ouForDept = dept ? (config.ouMap[dept] ?? "") : "";
+  const mappingMissing = !!dept && !ouForDept;
 
-  // A step is runnable only when its prerequisites are met.
-  const canRunStep = useCallback(
-    (key: OnboardStep): boolean => {
-      if (key === "domain") return nameValid;
-      if (key === "anyconnect") return anyConnectSource.trim().length > 0 && anyConnectSource.trim() !== NAS_HINT;
-      if (key === "screenconnect") return screenConnectSource.trim().length > 0 && screenConnectSource.trim() !== NAS_HINT;
-      return true;
-    },
-    [nameValid, anyConnectSource, screenConnectSource]
-  );
+  // Printers for the machine's department drive whether the "Impressoras" step is
+  // shown/run: an active run's captured list wins; otherwise the current config
+  // for the selected department (so the checklist reacts to the dropdown).
+  const printersForDept = activeState
+    ? (activeState.printers ?? [])
+    : (dept ? (config.printerMap?.[dept] ?? []) : []);
+  const visibleSteps = applicableSteps(printersForDept.length);
 
-  const busy = runningAll || Object.values(results).some((r) => r.state === "running");
-
-  // Runs a single step and refreshes the machine status afterwards. Returns
-  // false if it failed (so "run all" can stop the chain).
-  const runStep = useCallback(
-    async (key: OnboardStep): Promise<boolean> => {
-      setResults((r) => ({ ...r, [key]: { state: "running" } }));
-      try {
-        const res = await adAPI.onboardStep({
-          step: key,
-          newName: key === "domain" ? newName : undefined,
-          anyConnectSource: anyConnectSource.trim(),
-          screenConnectSource: screenConnectSource.trim(),
-        });
-        if (res.ok) {
-          const msg = res.data?.message ?? "Concluído.";
-          setResults((r) => ({ ...r, [key]: { state: "done", message: msg } }));
-          if (res.data?.rebootRequired) setRebootNeeded(true);
-          toastRef.current.success(msg);
-          return true;
-        }
-        const err = res.error ?? "Falhou.";
-        setResults((r) => ({ ...r, [key]: { state: "error", message: err } }));
-        toastRef.current.error(err);
-        return false;
-      } catch (e) {
-        const err = e instanceof Error ? e.message : "Falhou.";
-        setResults((r) => ({ ...r, [key]: { state: "error", message: err } }));
-        toastRef.current.error(err);
-        return false;
-      }
-    },
-    [newName, anyConnectSource, screenConnectSource]
-  );
-
-  const runOne = useCallback(
-    async (key: OnboardStep) => {
-      if (busy) return;
-      await runStep(key);
-      // Re-read the live state so the checklist reflects reality.
-      const r = await adAPI.getPCStatus();
-      if (r.ok && r.data) setStatus(r.data);
-    },
-    [busy, runStep]
-  );
-
-  const pending = STEPS.filter((s) => !stepDone(status, s.key));
-  const missingPrereqs = pending.filter((s) => !canRunStep(s.key));
-
-  const runAll = useCallback(async () => {
-    if (busy || pending.length === 0 || missingPrereqs.length > 0) return;
-    setRunningAll(true);
-    try {
-      for (const s of pending) {
-        const ok = await runStep(s.key);
-        if (!ok) break; // stop the chain on the first failure
-      }
-    } finally {
-      setRunningAll(false);
-      const r = await adAPI.getPCStatus();
-      if (r.ok && r.data) setStatus(r.data);
+  const startOnboarding = async () => {
+    if (!dept || busy) return;
+    const targetOU = config.ouMap[dept] ?? "";
+    if (!targetOU) {
+      toastRef.current.error(`O departamento ${dept} não tem pasta definida. Configura em Definições → Dispositivos.`);
+      return;
     }
-  }, [busy, pending, missingPrereqs.length, runStep]);
+    setStarting(true);
+    try {
+      // Number is looked up from AD — the lowest free slot (01, 02, 03…).
+      const nameRes = await adAPI.getNextDeviceName(dept);
+      if (!nameRes.ok || !nameRes.data) {
+        toastRef.current.error(nameRes.error ?? "Não foi possível obter o número disponível na AD.");
+        return;
+      }
+      const targetName = nameRes.data.name;
+      const now = Date.now();
+      const printers = config.printerMap?.[dept] ?? [];
+      const applicable = applicableSteps(printers.length);
+      const preDone = applicable.filter((s) => stepDone(status, s.key)).map((s) => s.key);
+      const state: OnboardState = {
+        active: true,
+        dept,
+        targetName,
+        targetOU,
+        anyConnectSource: config.anyConnectSource || DEFAULT_ANYCONNECT,
+        screenConnectSource: config.screenConnectSource || DEFAULT_SCREENCONNECT,
+        printers,
+        printerSource: config.printerSource || DEFAULT_PRINTER_SOURCE,
+        smlPlayerSource: config.smlPlayerSource || DEFAULT_SMLPLAYER,
+        smlPlayerIni: config.smlPlayerIni || DEFAULT_SMLPLAYER_INI,
+        completed: preDone,
+        startedAt: now,
+        updatedAt: now,
+      };
+      const saved = await adAPI.setOnboardState(state); // persists + enables start-on-boot
+      const effective = saved ?? state;
+      setActiveState(effective);
+      setResults(Object.fromEntries(preDone.map((k) => [k, { state: "done" as const }])));
+      const remaining = applicable.filter((s) => !preDone.includes(s.key));
+      if (remaining.length === 0) {
+        if (status?.onboarded) {
+          await finalizeDone(true);
+          toastRef.current.success("Este PC já cumpre todos os requisitos.");
+        } else {
+          setPhase("reboot");
+          setRebootCountdown(REBOOT_SECONDS);
+        }
+        return;
+      }
+      await runSteps(effective, remaining);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const continueOnboarding = async () => {
+    if (!activeState || busy) return;
+    const remaining = applicableSteps(activeState.printers?.length ?? 0)
+      .filter((s) => !activeState.completed.includes(s.key) && !stepDone(status, s.key));
+    if (remaining.length === 0) { setPhase("reboot"); setRebootCountdown(REBOOT_SECONDS); return; }
+    await runSteps(activeState, remaining);
+  };
+
+  const cancelRun = () => { cancelRef.current = true; };
+
+  const cancelOnboarding = async () => {
+    if (!window.confirm("Cancelar o onboarding automático deste PC? O progresso já aplicado mantém-se, mas a app deixa de retomar sozinha.")) return;
+    cancelRef.current = true;
+    await adAPI.clearOnboardState();
+    setActiveState(null);
+    setRebootCountdown(null);
+    setResults({});
+    setCurrentStep(null);
+    const r = await adAPI.getPCStatus(true);
+    if (r.ok && r.data) { setStatus(r.data); setPhase(r.data.onboarded ? "done" : "idle"); }
+    else setPhase("idle");
+    toastRef.current.success("Onboarding automático cancelado.");
+  };
+
+  // Per-step display state derived from the live status + this run's results.
+  const displayState = (key: OnboardStep): StepState["state"] => {
+    const r = results[key]?.state;
+    if (r === "error") return "error";
+    if (currentStep === key && phase === "running") return "running";
+    if (r === "done" || stepDone(status, key)) return "done";
+    return "idle";
+  };
+
+  const doneCount = visibleSteps.filter((s) => displayState(s.key) === "done").length;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -192,7 +421,7 @@ export default function DevicesPage({
           </div>
         </div>
         <button
-          onClick={load}
+          onClick={() => load(true)}
           disabled={loading || busy}
           title="Reavaliar este PC"
           className="inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
@@ -210,7 +439,7 @@ export default function DevicesPage({
             ))}
           </div>
         ) : error ? (
-          <StatusError message={error} onRetry={load} />
+          <StatusError message={error} onRetry={() => load(true)} />
         ) : status ? (
           <div className="max-w-3xl space-y-5">
             {/* Machine identity + verdict */}
@@ -224,9 +453,13 @@ export default function DevicesPage({
                       : "Fora do domínio"}
                   </p>
                 </div>
-                {status.onboarded ? (
+                {phase === "done" ? (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
-                    <CheckCircle2 size={13} /> Já onboarded
+                    <CheckCircle2 size={13} /> Onboarded
+                  </span>
+                ) : activeState ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-3 py-1 text-xs font-medium text-violet-700 ring-1 ring-violet-200">
+                    <Loader2 size={13} className={cn(phase === "running" && "animate-spin")} /> Em curso
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
@@ -234,112 +467,195 @@ export default function DevicesPage({
                   </span>
                 )}
               </div>
-              {status.onboarded && (
+              {phase === "done" && (
                 <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-                  Este PC cumpre todos os requisitos de onboarding. Não há nada a fazer — o resumo
-                  abaixo confirma cada verificação.
+                  Este PC cumpre todos os requisitos de onboarding. O resumo abaixo confirma cada verificação.
                 </p>
               )}
             </div>
 
-            {/* Configuration (only relevant while there's still work to do) */}
-            {!status.onboarded && (
-              <div className="rounded-xl border border-zinc-200 p-4 space-y-4">
-                <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Configuração</p>
-
-                {/* Target name */}
+            {/* ── IDLE: pick the department, then one button does everything ── */}
+            {phase === "idle" && (
+              <div className="rounded-xl border border-zinc-200 p-5 space-y-5">
                 <div>
-                  <label className="text-sm font-medium text-zinc-700">Nome do PC</label>
-                  <p className="text-xs text-zinc-400 mb-2">Padrão PT-LPT-&lt;DEPARTAMENTO&gt;-&lt;NÚMERO&gt;</p>
-                  <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-zinc-900">Onboarding automático</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+                    A app trata de tudo: definições regionais, Windows Update, Cisco AnyConnect,
+                    ScreenConnect e, por fim, junta o PC ao domínio, renomeia-o e move-o para a pasta
+                    correta. No final o PC <strong>reinicia sozinho</strong>. Depois do reinício, basta
+                    voltar a iniciar sessão no Windows e na app — o resto continua automaticamente.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Departamento</label>
+                  <div className="flex flex-wrap items-center gap-2">
                     <select
                       value={dept}
                       onChange={(e) => setDept(e.target.value)}
                       className="px-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
                     >
+                      {departments.length === 0 && <option value="">—</option>}
                       {departments.map((d) => <option key={d} value={d}>{d}</option>)}
                     </select>
-                    <input
-                      inputMode="numeric"
-                      placeholder="Nº"
-                      value={numClean}
-                      onChange={(e) => setNum(e.target.value)}
-                      className="w-20 px-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
-                    />
                     <span className="text-sm text-zinc-400">→</span>
-                    <code className={cn(
-                      "px-2.5 py-1.5 text-sm rounded-md font-mono",
-                      nameValid ? "bg-violet-50 text-violet-700" : "bg-zinc-100 text-zinc-400"
-                    )}>
-                      {newName || "PT-LPT-…"}
+                    <code className="px-2.5 py-1.5 text-sm rounded-md font-mono bg-zinc-100 text-zinc-500">
+                      PT-LPT-{dept || "…"}-<span className="text-zinc-400">nº automático</span>
                     </code>
                   </div>
+                  <p className="text-xs text-zinc-400">
+                    O número é o mais baixo disponível na AD (01, 02, 03…) — atribuído no arranque.
+                  </p>
                 </div>
 
-                {/* Installer sources */}
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <SourceField
-                    label="Instalador AnyConnect"
-                    value={anyConnectSource}
-                    onChange={setAnyConnectSource}
-                  />
-                  <SourceField
-                    label="Instalador ScreenConnect"
-                    value={screenConnectSource}
-                    onChange={setScreenConnectSource}
-                  />
+                {/* Destination folder (OU) from the device config map. */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Pasta de destino</label>
+                  {mappingMissing ? (
+                    <div className="flex items-start gap-2.5 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5 text-sm text-amber-800">
+                      <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+                      <div className="flex-1">
+                        <p>O departamento <strong>{dept}</strong> ainda não tem pasta definida.</p>
+                        {onOpenDeviceSettings && (
+                          <button
+                            onClick={onOpenDeviceSettings}
+                            className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-amber-900 underline underline-offset-2 hover:text-amber-950"
+                          >
+                            <FolderCog size={13} /> Abrir Definições → Dispositivos
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="inline-flex items-center gap-2 rounded-lg bg-zinc-50 border border-zinc-200 px-3 py-2 text-sm text-zinc-700">
+                      <Building2 size={14} className="text-zinc-400" />
+                      <span className="font-medium">{ouForDept}</span>
+                      <span className="text-zinc-400">· BMAP Devices → O365</span>
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={startOnboarding}
+                  disabled={!dept || mappingMissing || busy}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-violet-600"
+                >
+                  {starting ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                  {starting ? "A consultar número disponível…" : "Iniciar onboarding automático"}
+                </button>
+              </div>
+            )}
+
+            {/* ── REBOOT: all steps done, machine needs a single reboot ── */}
+            {phase === "reboot" && (
+              <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-5 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-600 text-white flex-shrink-0">
+                    <Power size={18} />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-zinc-900">
+                      {rebootCountdown === null ? "Reinício pendente" : "Tudo pronto — reinício necessário"}
+                    </h3>
+                    <p className="mt-1 text-xs leading-relaxed text-zinc-600">
+                      Os passos foram aplicados. O PC precisa de reiniciar para concluir a junção ao
+                      domínio e a renomeação. Depois do reinício, inicia sessão no Windows e na app e o
+                      onboarding termina automaticamente.
+                    </p>
+                    {rebootCountdown !== null && (
+                      <p className="mt-2 text-sm font-medium text-violet-700">
+                        A reiniciar automaticamente em {rebootCountdown}s…
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={doReboot}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
+                  >
+                    <Power size={15} /> Reiniciar agora
+                  </button>
+                  {rebootCountdown !== null && (
+                    <button
+                      onClick={() => setRebootCountdown(null)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-white transition-colors"
+                    >
+                      Adiar reinício
+                    </button>
+                  )}
+                  <button
+                    onClick={cancelOnboarding}
+                    className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-zinc-400 hover:text-red-500 transition-colors"
+                  >
+                    <X size={13} /> Cancelar onboarding
+                  </button>
                 </div>
               </div>
             )}
 
-            {/* Checklist / summary */}
+            {/* ── PAUSED: a step failed or the run was cancelled mid-way ── */}
+            {phase === "paused" && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-5 space-y-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle size={18} className="mt-0.5 flex-shrink-0 text-amber-600" />
+                  <div>
+                    <h3 className="text-sm font-semibold text-zinc-900">Onboarding em pausa</h3>
+                    <p className="mt-1 text-xs leading-relaxed text-zinc-600">
+                      Um passo não terminou. Corrige o que for preciso e continua — os passos já
+                      concluídos não voltam a correr.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={continueOnboarding}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors disabled:opacity-50"
+                  >
+                    <Play size={15} /> Continuar
+                  </button>
+                  <button
+                    onClick={cancelOnboarding}
+                    className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-zinc-400 hover:text-red-500 transition-colors"
+                  >
+                    <X size={13} /> Cancelar onboarding
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Checklist / progress / summary */}
             <div className="rounded-xl border border-zinc-200 overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-100">
                 <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                  {status.onboarded ? "Resumo" : "Passos"}
+                  {phase === "done" ? "Resumo" : "Progresso"}
                 </p>
-                {!status.onboarded && (
-                  <button
-                    onClick={runAll}
-                    disabled={busy || pending.length === 0 || missingPrereqs.length > 0}
-                    title={
-                      missingPrereqs.length > 0
-                        ? `Em falta: ${missingPrereqs.map((s) => s.label).join(", ")}`
-                        : undefined
-                    }
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-violet-600 text-white rounded-md hover:bg-violet-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-violet-600"
-                  >
-                    {runningAll ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                    Executar tudo
-                  </button>
-                )}
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-medium text-zinc-400 tabular-nums">{doneCount}/{visibleSteps.length}</span>
+                  {phase === "running" && (
+                    <button
+                      onClick={cancelRun}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50 transition-colors"
+                    >
+                      <X size={12} /> Cancelar
+                    </button>
+                  )}
+                </div>
               </div>
               <ul className="divide-y divide-zinc-50">
-                {STEPS.map((s) => (
+                {visibleSteps.map((s) => (
                   <StepRow
                     key={s.key}
                     def={s}
-                    done={stepDone(status, s.key)}
-                    detail={stepDetail(status, s.key, newName)}
-                    result={results[s.key]}
-                    canRun={canRunStep(s.key)}
-                    busy={busy}
-                    onboarded={status.onboarded}
-                    onRun={() => runOne(s.key)}
+                    state={displayState(s.key)}
+                    detail={stepDetail(status, s.key, activeState?.targetName ?? "", printersForDept)}
+                    message={results[s.key]?.message}
+                    targetOU={s.key === "domain" ? activeState?.targetOU : undefined}
                   />
                 ))}
               </ul>
             </div>
-
-            {rebootNeeded && (
-              <div className="flex items-start gap-2.5 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
-                <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
-                <span>
-                  Um ou mais passos exigem <strong>reinício</strong> para ficarem totalmente aplicados
-                  (definições regionais e/ou a junção ao domínio). Reinicia o PC quando terminares.
-                </span>
-              </div>
-            )}
           </div>
         ) : null}
       </div>
@@ -350,7 +666,7 @@ export default function DevicesPage({
 /* -------------------------------------------------------------------------- */
 
 // A one-line description of the current state of a dimension, shown under its label.
-function stepDetail(status: PCStatus, key: OnboardStep, targetName: string): string {
+function stepDetail(status: PCStatus, key: OnboardStep, targetName: string, printers: string[]): string {
   switch (key) {
     case "regional": {
       const r = status.regional;
@@ -365,6 +681,10 @@ function stepDetail(status: PCStatus, key: OnboardStep, targetName: string): str
       return status.software.anyConnect ? "Instalado" : "Não instalado";
     case "screenconnect":
       return status.software.screenConnect ? "Instalado" : "Não instalado";
+    case "smlplayer":
+      return "Instalar, abrir/fechar e aplicar o Main.ini";
+    case "printers":
+      return printers.length ? printers.join(", ") : "Sem impressoras configuradas";
     case "domain": {
       const okDomain = status.domain.compliant;
       const okName = status.name.compliant;
@@ -378,32 +698,36 @@ function stepDetail(status: PCStatus, key: OnboardStep, targetName: string): str
 }
 
 function StepRow({
-  def, done, detail, result, canRun, busy, onboarded, onRun,
+  def, state, detail, message, targetOU,
 }: {
   def: StepDef;
-  done: boolean;
+  state: StepState["state"];
   detail: string;
-  result?: StepState;
-  canRun: boolean;
-  busy: boolean;
-  onboarded: boolean;
-  onRun: () => void;
+  message?: string;
+  targetOU?: string;
 }) {
   const Icon = def.icon;
-  const running = result?.state === "running";
-  const errored = result?.state === "error";
+  const done = state === "done";
+  const running = state === "running";
+  const errored = state === "error";
   return (
     <li className="flex items-center gap-3 px-4 py-3">
       <div className={cn(
         "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg",
-        done ? "bg-emerald-50 text-emerald-600" : errored ? "bg-red-50 text-red-500" : "bg-zinc-100 text-zinc-500"
+        done ? "bg-emerald-50 text-emerald-600" :
+        errored ? "bg-red-50 text-red-500" :
+        running ? "bg-violet-50 text-violet-600" :
+        "bg-zinc-100 text-zinc-500"
       )}>
-        {done ? <Check size={16} /> : <Icon size={16} />}
+        {done ? <Check size={16} /> : running ? <Loader2 size={16} className="animate-spin" /> : <Icon size={16} />}
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-zinc-800">{def.label}</p>
+        <p className="text-sm font-medium text-zinc-800">
+          {def.label}
+          {targetOU && <span className="ml-1.5 text-xs font-normal text-zinc-400">→ {targetOU}</span>}
+        </p>
         <p className={cn("text-xs truncate", errored ? "text-red-500" : "text-zinc-400")}>
-          {errored ? result?.message : done ? detail : def.desc}
+          {errored ? (message ?? "Falhou.") : done ? (message ?? detail) : running ? "A executar…" : def.desc}
         </p>
       </div>
       <div className="flex-shrink-0">
@@ -411,49 +735,19 @@ function StepRow({
           <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
             <Check size={13} /> Concluído
           </span>
-        ) : onboarded ? null : running ? (
+        ) : running ? (
           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-600">
             <Loader2 size={13} className="animate-spin" /> A executar…
           </span>
+        ) : errored ? (
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-red-500">
+            <RotateCcw size={13} /> Repetir ao continuar
+          </span>
         ) : (
-          <button
-            onClick={onRun}
-            disabled={busy || !canRun}
-            title={canRun ? undefined : "Preenche a configuração necessária primeiro"}
-            className={cn(
-              "inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-              errored
-                ? "border-red-200 text-red-600 hover:bg-red-50"
-                : "border-zinc-200 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-800"
-            )}
-          >
-            {errored ? <RotateCcw size={12} /> : <Play size={12} />}
-            {errored ? "Tentar de novo" : "Executar"}
-          </button>
+          <span className="text-xs text-zinc-300">Em espera</span>
         )}
       </div>
     </li>
-  );
-}
-
-function SourceField({
-  label, value, onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <label className="block">
-      <span className="text-sm font-medium text-zinc-700">{label}</span>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={`${NAS_HINT}pasta\\instalador.msi`}
-        spellCheck={false}
-        className="mt-1 w-full px-3 py-1.5 text-sm font-mono bg-zinc-50 border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
-      />
-    </label>
   );
 }
 

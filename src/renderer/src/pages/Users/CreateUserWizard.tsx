@@ -28,6 +28,7 @@ interface Form {
   email: string;
   jobTitle: string;
   department: string;
+  employeeType: string;
   street: string;
   city: string;
   postalCode: string;
@@ -46,6 +47,7 @@ const EMPTY: Form = {
   email: "",
   jobTitle: "",
   department: "",
+  employeeType: "",
   street: "Rua Sampaio e Pina nº24",
   city: "Lisboa",
   postalCode: "1099-044",
@@ -76,6 +78,21 @@ const buildEmail = (first: string, last: string) => {
   return f && l ? `${f}.${l}@bauermedia.pt` : "";
 };
 
+// Distinct non-empty values of a field across the OU's current members, ordered
+// most-common first. Drives job-title / department / employee-type suggestions
+// from real neighbours in the same OU rather than only the static group config.
+const freqValues = (users: ADUser[], pick: (u: ADUser) => string | undefined): string[] => {
+  const counts = new Map<string, number>();
+  for (const u of users) {
+    const v = (pick(u) ?? "").trim();
+    if (v) counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([v]) => v);
+};
+
+// De-duplicate while preserving first-seen order (OU-derived values come first).
+const dedupeStrings = (arr: string[]): string[] => [...new Set(arr.filter(Boolean))];
+
 export default function CreateUserWizard({
   groups,
   toast,
@@ -90,11 +107,21 @@ export default function CreateUserWizard({
   const [saving, setSaving] = useState(false);
   const [jobTitleFocused, setJobTitleFocused]   = useState(false);
   const [deptFocused, setDeptFocused]           = useState(false);
+  const [empTypeFocused, setEmpTypeFocused]     = useState(false);
   const [loginInfoOpen, setLoginInfoOpen]       = useState(false);
   const [groupConfig, setGroupConfig_]        = useState<GroupConfig>({});
   // Users already living in the selected OU — offered as "copy groups from" templates.
   const [templateUsers, setTemplateUsers]     = useState<ADUser[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
+  // The Department / Employee type we last auto-filled from an OU. Lets an OU
+  // switch REFRESH those fields (they'd otherwise keep the first OU's values,
+  // since the prefill only fills blanks) — but never clobber a value the
+  // operator typed, which won't match what we recorded here.
+  const autoFilledRef = useRef<{ department: string; employeeType: string }>({ department: "", employeeType: "" });
+  // Latest committed form, readable inside effects that must decide from current
+  // field values without re-running on every keystroke (the OU prefill below).
+  const formRef = useRef(form);
+  formRef.current = form;
 
   useEffect(() => { getGroupConfig().then(setGroupConfig_); }, []);
 
@@ -149,20 +176,67 @@ export default function CreateUserWizard({
     return () => { cancelled = true; };
   }, [form.groupName, groupConfig]);
 
+  // Whenever the OU's members change (including an OU *switch*), seed Department
+  // / Employee type from what they actually use. Kept separate from the name-blur
+  // suggestDefaults() so it fires even if the operator never touches the name
+  // fields (e.g. jumps straight to Job title). A field is ours to (re)fill when
+  // it's blank or still holds the value we auto-filled from the previous OU;
+  // once the operator types something else it's left untouched.
+  useEffect(() => {
+    const dept = freqValues(templateUsers, (u) => u.Department)[0] ?? "";
+    const emp  = freqValues(templateUsers, (u) => u.employeeType)[0] ?? "";
+    const f = formRef.current;
+    const ownsDept = !f.department   || f.department   === autoFilledRef.current.department;
+    const ownsEmp  = !f.employeeType || f.employeeType === autoFilledRef.current.employeeType;
+    const nextDept = ownsDept ? dept : f.department;
+    const nextEmp  = ownsEmp  ? emp  : f.employeeType;
+    // Record what we own now so the next OU switch can replace it. Done in the
+    // effect body, NOT inside the setForm updater: an updater must be pure, and
+    // StrictMode double-invokes it — a ref mutated on the first (discarded) pass
+    // would flip the ownership check on the second pass and silently drop the
+    // refresh (and corrupt the ref for good).
+    autoFilledRef.current = {
+      department:   ownsDept ? nextDept : autoFilledRef.current.department,
+      employeeType: ownsEmp  ? nextEmp  : autoFilledRef.current.employeeType,
+    };
+    if (nextDept === f.department && nextEmp === f.employeeType) return;
+    setForm((prev) => ({ ...prev, department: nextDept, employeeType: nextEmp }));
+  }, [templateUsers]);
+
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
   const stepIdx = STEPS.findIndex((s) => s.id === step);
 
   const groupEntry = groupConfig[form.groupName];
 
+  // Titles / departments / employee types actually in use by the OU's current
+  // members, most-common first. These drive the suggestions (and the prefill)
+  // so a new hire inherits what their real colleagues have, per the request:
+  // "Jobtitle suggestions deve ser com base nos outros users desse OU. Same for
+  // Department." — employeeType likewise (it was never being filled at all).
+  const ouTitles   = freqValues(templateUsers, (u) => u.Title);
+  const ouDepts    = freqValues(templateUsers, (u) => u.Department);
+  const ouEmpTypes = freqValues(templateUsers, (u) => u.employeeType);
+
   const suggestDefaults = () => {
-    setForm((f) => ({
-      ...f,
-      username:   f.username   || (slug(f.firstName) && slug(f.lastName) ? `${slug(f.firstName)}.${slug(f.lastName)}` : f.username),
-      // Don't clobber an email the user typed (or one already derived) — only
-      // fill it when still empty, mirroring the username rule above.
-      email:      f.email      || buildEmail(f.firstName, f.lastName),
-      department: f.department || groupConfig[f.groupName]?.department || "",
-    }));
+    setForm((f) => {
+      // Prefer what the OU's members actually have; fall back to the static
+      // group config, then leave blank.
+      const department   = f.department   || ouDepts[0]    || groupConfig[f.groupName]?.department || "";
+      const employeeType = f.employeeType || ouEmpTypes[0] || "";
+      // Record anything we auto-filled so a later OU switch can refresh it (the
+      // prefill effect keys off this ref to tell auto-filled from operator-typed).
+      if (!f.department   && department)   autoFilledRef.current.department   = department;
+      if (!f.employeeType && employeeType) autoFilledRef.current.employeeType = employeeType;
+      return {
+        ...f,
+        username:   f.username   || (slug(f.firstName) && slug(f.lastName) ? `${slug(f.firstName)}.${slug(f.lastName)}` : f.username),
+        // Don't clobber an email the user typed (or one already derived) — only
+        // fill it when still empty, mirroring the username rule above.
+        email:      f.email      || buildEmail(f.firstName, f.lastName),
+        department,
+        employeeType,
+      };
+    });
   };
 
   const canProceed = () => {
@@ -186,6 +260,7 @@ export default function CreateUserWizard({
   const emailRef       = useRef<HTMLInputElement>(null);
   const jobTitleRef    = useRef<HTMLInputElement>(null);
   const departmentRef  = useRef<HTMLInputElement>(null);
+  const empTypeRef     = useRef<HTMLInputElement>(null);
   const streetRef      = useRef<HTMLInputElement>(null);
   const cityRef        = useRef<HTMLInputElement>(null);
   const postalCodeRef  = useRef<HTMLInputElement>(null);
@@ -275,11 +350,15 @@ export default function CreateUserWizard({
         } else {
           const t = e.target as HTMLInputElement;
           if (t === firstNameRef.current)       { suggestDefaults(); lastNameRef.current?.focus(); }
-          else if (t === lastNameRef.current)   { suggestDefaults(); usernameRef.current?.focus(); }
+          // The username/email inputs live inside the collapsed "Login Info"
+          // panel, so their refs are null while it's closed (the default). Skip
+          // straight to Job title in that case, otherwise Enter dead-ends here.
+          else if (t === lastNameRef.current)   { suggestDefaults(); (loginInfoOpen ? usernameRef.current : jobTitleRef.current)?.focus(); }
           else if (t === usernameRef.current)   { emailRef.current?.focus(); }
           else if (t === emailRef.current)      { jobTitleRef.current?.focus(); }
           else if (t === jobTitleRef.current)   { departmentRef.current?.focus(); }
-          else if (t === departmentRef.current) { if (canProceed()) next(); }
+          else if (t === departmentRef.current) { empTypeRef.current?.focus(); }
+          else if (t === empTypeRef.current)    { if (canProceed()) next(); }
         }
         return;
       }
@@ -313,8 +392,9 @@ export default function CreateUserWizard({
     return () => window.removeEventListener("keydown", handler);
     // groupConfig is read via suggestDefaults() inside this handler; without it
     // an Enter pressed before the next form/step change would run against a
-    // stale (empty) config and skip the department default.
-  }, [step, groups, form, saving, groupConfig]);
+    // stale (empty) config and skip the department default. loginInfoOpen gates
+    // the Enter focus chain (skips the hidden username/email inputs when closed).
+  }, [step, groups, form, saving, groupConfig, loginInfoOpen]);
 
   const submit = async () => {
     setSaving(true);
@@ -333,6 +413,7 @@ export default function CreateUserWizard({
       passwordNeverExpires:  String(form.passwordNeverExpires),
       jobTitle:              form.jobTitle,
       department:            form.department,
+      employeeType:          form.employeeType,
       company:               COMPANY,
       email:                 form.email,
     });
@@ -348,10 +429,14 @@ export default function CreateUserWizard({
     } else toast.error(r.error ?? "Failed to create user");
   };
 
-  const jobTitleSuggestions = groupEntry?.jobTitles ?? [];
+  // Suggestions lead with what the OU's members actually have (ouTitles/…),
+  // then fall back to the static group config, de-duplicated.
+  const jobTitleSuggestions = dedupeStrings([...ouTitles, ...(groupEntry?.jobTitles ?? [])]);
   const filteredJobTitles   = jobTitleSuggestions.filter((s) => s.toLowerCase().includes(form.jobTitle.toLowerCase()));
-  const allDepartments      = [...new Set(Object.values(groupConfig).map((e) => e.department).filter(Boolean))];
+  const allDepartments      = dedupeStrings([...ouDepts, ...Object.values(groupConfig).map((e) => e.department)]);
   const filteredDepts       = allDepartments.filter((d) => d.toLowerCase().includes(form.department.toLowerCase()));
+  // Employee type has no static config source — it's purely OU-derived.
+  const filteredEmpTypes    = ouEmpTypes.filter((t) => t.toLowerCase().includes(form.employeeType.toLowerCase()));
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -561,11 +646,27 @@ export default function CreateUserWizard({
                     onChange={(e) => set("department", e.target.value)}
                     onFocus={() => setDeptFocused(true)}
                     onBlur={() => setTimeout(() => setDeptFocused(false), 150)}
-                    placeholder={groupEntry?.department ?? "Ex: Redação"}
+                    placeholder={ouDepts[0] ?? groupEntry?.department ?? "Ex: Redação"}
                     className={inputCls} />
                   {deptFocused && filteredDepts.length > 0 && (
                     <Dropdown items={filteredDepts} selected={form.department}
                       onSelect={(s) => { set("department", s); setDeptFocused(false); }} />
+                  )}
+                </div>
+              </Field>
+
+              {/* Employee type — suggestions come from the OU's current members. */}
+              <Field label="Employee type">
+                <div className="relative">
+                  <input ref={empTypeRef} value={form.employeeType}
+                    onChange={(e) => set("employeeType", e.target.value)}
+                    onFocus={() => setEmpTypeFocused(true)}
+                    onBlur={() => setTimeout(() => setEmpTypeFocused(false), 150)}
+                    placeholder={ouEmpTypes[0] ?? "Ex: Efetivo"}
+                    className={inputCls} />
+                  {empTypeFocused && filteredEmpTypes.length > 0 && (
+                    <Dropdown items={filteredEmpTypes} selected={form.employeeType}
+                      onSelect={(s) => { set("employeeType", s); setEmpTypeFocused(false); }} />
                   )}
                 </div>
               </Field>
@@ -654,8 +755,9 @@ export default function CreateUserWizard({
                     ["Full name",  `${form.firstName} ${form.lastName}`],
                     ["Username",   `BMAP\\${form.username}`],
                     ["Email",      form.email],
-                    ...(form.jobTitle  ? [["Job title",  form.jobTitle]]   : []),
-                    ...(form.department? [["Department", form.department]] : []),
+                    ...(form.jobTitle    ? [["Job title",     form.jobTitle]]    : []),
+                    ...(form.department  ? [["Department",    form.department]]  : []),
+                    ...(form.employeeType? [["Employee type", form.employeeType]]: []),
                     ["Address",    `${form.street}, ${form.postalCode} ${form.city}`],
                     ["Password",   "••••••••"],
                   ] as [string, string][]

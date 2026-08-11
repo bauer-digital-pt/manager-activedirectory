@@ -14,7 +14,8 @@ param(
   [string]$Department,
   [string]$Company,
   [string]$Email,
-  [string]$CopyFromUser        # optional: SamAccountName of a user in the OU to copy group memberships from
+  [string]$CopyFromUser,       # optional: SamAccountName of a user in the OU to copy group memberships from
+  [string]$EmployeeType        # AD 'employeeType' attribute (kept LAST so the positional args in main.ts stay stable)
 )
 
 # The account password is passed via the environment (NEW_USER_PASSWORD), not on
@@ -94,6 +95,9 @@ if ($JobTitle)    { $newUserParams.Title         = $JobTitle }
 if ($Department)  { $newUserParams.Department    = $Department }
 if ($Company)     { $newUserParams.Company       = $Company }
 if ($Email)       { $newUserParams.EmailAddress  = $Email }
+# employeeType has no dedicated New-ADUser parameter; it goes through
+# -OtherAttributes (alongside co/countryCode set above).
+if ($EmployeeType) { $newUserParams.OtherAttributes['employeeType'] = $EmployeeType }
 
 # Create the account first. Only a failure HERE is a creation failure.
 try {

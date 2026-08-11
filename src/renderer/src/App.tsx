@@ -22,6 +22,10 @@ export type Page = "users" | "devices" | "settings" | "console";
 
 export default function App() {
   const [page, setPage] = useState<Page>("users");
+  // Which Settings tab to open on. Devices deep-links to "devices" to fix an OU
+  // mapping; reset to "general" whenever we leave Settings so a plain sidebar
+  // click always lands on the first tab.
+  const [settingsTab, setSettingsTab] = useState<"general" | "groups" | "devices" | "connection">("general");
   // null = still checking; true = RSAT module missing; false = available.
   const [moduleMissing, setModuleMissing] = useState<boolean | null>(null);
   const [continueAnyway, setContinueAnyway] = useState(false);
@@ -167,12 +171,23 @@ export default function App() {
   }, []);
 
   const onLoginSuccess = useCallback((res: LoginResult) => {
+    // An inactivity relock reuses this same handler; only a FRESH login (not an
+    // unlock) should reposition the user — otherwise every relock yanks them
+    // back to Devices no matter where they were working.
+    const wasRelock = locked;
     setAuthed(true);
     setLocked(false);
     if (res.username) setLastUsername(res.username);
     setDisplayName(res.displayName || res.username || "");
     setConnOk(true);
-  }, []);
+    // Resume an interrupted PC onboarding: if the domain-join reboot dropped us
+    // here mid-run, jump straight to Devices so the wizard picks up automatically.
+    // Skip it on a relock — the run is persisted and DevicesPage resumes on its
+    // own if the user was already there.
+    if (!wasRelock) {
+      adAPI.getOnboardState().then((s) => { if (s?.active) setPage("devices"); }).catch(() => {});
+    }
+  }, [locked]);
 
   // Explicit sign-out from the sidebar: drop the session (main process too) and
   // return to a fresh login screen (not the relock flow) with the username kept
@@ -191,7 +206,7 @@ export default function App() {
   // update takeover while open; leaving Settings must clear that suppression so
   // a ready update can still surface.
   useEffect(() => {
-    if (page !== "settings") setSuppressTakeover(false);
+    if (page !== "settings") { setSuppressTakeover(false); setSettingsTab("general"); }
   }, [page]);
 
   // Live connection status dot: probe periodically while logged in. Guard against
@@ -345,8 +360,8 @@ export default function App() {
                 stays), and navigating to another page remounts a fresh boundary. */}
             <ErrorBoundary key={page} compact>
               {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => navigate("settings")} />}
-              {page === "devices"  && <DevicesPage  toast={toast} />}
-              {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} />}
+              {page === "devices"  && <DevicesPage  toast={toast} onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }} />}
+              {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} initialTab={settingsTab} />}
               {page === "console"  && devMode && <ConsolePage />}
             </ErrorBoundary>
           </main>

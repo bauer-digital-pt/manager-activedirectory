@@ -20,6 +20,7 @@ export interface ADUser {
   Surname?: string;
   Title?: string;
   Department?: string;
+  employeeType?: string;
   Company?: string;
   Description?: string;
   StreetAddress?: string;
@@ -37,7 +38,8 @@ interface PSResult<T = unknown> {
 }
 
 // --- PC onboarding (the machine the app is running on) ---
-export type OnboardStep = "regional" | "anyconnect" | "screenconnect" | "update" | "domain";
+export type OnboardStep =
+  | "regional" | "anyconnect" | "screenconnect" | "update" | "smlplayer" | "printers" | "domain";
 
 // Read-only snapshot of the local machine's onboarding state (Get-PCStatus.ps1).
 export interface PCStatus {
@@ -65,6 +67,48 @@ export interface OnboardStepParams {
   newName?: string;
   anyConnectSource?: string;
   screenConnectSource?: string;
+  // Destination folder Name (a sub-OU under O365 in the BMAP Devices tree) the
+  // domain step should place the computer in. Empty = default location.
+  targetOU?: string;
+  // Printer names to configure (printers step) + the base folder holding the
+  // add<NAME>.cmd scripts (RICOHPCL6).
+  printers?: string[];
+  printerSource?: string;
+  // SMLPlayer installer + the Main.ini copied into %APPDATA%\SMLPlayer7 (smlplayer step).
+  smlPlayerSource?: string;
+  smlPlayerIni?: string;
+}
+
+// Destination folder options for the device OU map. Get-DeviceOU-All.ps1 mirrors
+// the ADGroup shape (Name/Description/DistinguishedName), so we reuse the type.
+export type DeviceOU = ADGroup;
+
+// Result of the next-available-name lookup (Get-NextDeviceName.ps1).
+export interface NextDeviceName {
+  dept: string;
+  number: string;
+  name: string;
+}
+
+// The "fully automatic" PC onboarding wizard state, persisted by main across the
+// domain-join reboot so the run can resume on next launch. Never holds a password.
+export interface OnboardState {
+  active: boolean;
+  dept: string;
+  targetName: string;
+  targetOU: string;
+  anyConnectSource: string;
+  screenConnectSource: string;
+  // Printers to configure on this machine (its department's selection) + the
+  // RICOHPCL6 base folder and SMLPlayer sources — captured at start so the run
+  // resumes with the same inputs even if Settings change mid-flow.
+  printers: string[];
+  printerSource: string;
+  smlPlayerSource: string;
+  smlPlayerIni: string;
+  completed: string[]; // step keys already done
+  startedAt: number;
+  updatedAt: number;
 }
 
 // Streamed progress while installing the RSAT ActiveDirectory module.
@@ -96,8 +140,17 @@ declare global {
       addGroupPermission(params: { groupName: string; description: string }): Promise<PSResult>;
       removeGroup(groupName: string): Promise<PSResult>;
       // PC onboarding: read the local machine's state, then run steps one at a time.
-      getPCStatus(): Promise<PSResult<PCStatus>>;
+      // Status is cached in main for the whole process life; pass force to re-probe.
+      getPCStatus(force?: boolean): Promise<PSResult<PCStatus>>;
       onboardStep(params: OnboardStepParams): Promise<PSResult<OnboardStepData>>;
+      // Destination folders for the device OU map, and the next free PC name.
+      getDeviceOUs(): Promise<PSResult<DeviceOU[]>>;
+      getNextDeviceName(dept: string): Promise<PSResult<NextDeviceName>>;
+      // Persisted auto-onboarding wizard state (survives the domain reboot).
+      getOnboardState(): Promise<OnboardState | null>;
+      setOnboardState(state: OnboardState | null): Promise<OnboardState | null>;
+      clearOnboardState(): Promise<{ ok: boolean }>;
+      reboot(): Promise<{ ok: boolean }>;
       testConnection(override?: { server: string; username: string; password?: string }): Promise<PSResult>;
       checkModule(): Promise<PSResult<{ available: boolean }>>;
       installModule(): Promise<InstallResult>;
@@ -117,16 +170,16 @@ import { getGroupConfig } from "./lib/groupsConfig";
 
 const MOCK_USERS: Record<string, ADUser[]> = {
   IT: [
-    { SamAccountName: "jsilva",    DisplayName: "João Silva",     EmailAddress: "jsilva@empresa.pt",    Enabled: true,  LockedOut: false },
-    { SamAccountName: "mcosta",    DisplayName: "Maria Costa",    EmailAddress: "mcosta@empresa.pt",    Enabled: true,  LockedOut: true  },
-    { SamAccountName: "aferreira", DisplayName: "Ana Ferreira",   EmailAddress: "aferreira@empresa.pt", Enabled: false, LockedOut: false },
+    { SamAccountName: "jsilva",    DisplayName: "João Silva",     EmailAddress: "jsilva@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Técnico de Sistemas",    Department: "IT",        employeeType: "Efetivo" },
+    { SamAccountName: "mcosta",    DisplayName: "Maria Costa",    EmailAddress: "mcosta@empresa.pt",    Enabled: true,  LockedOut: true,  Title: "Técnico de Sistemas",    Department: "IT",        employeeType: "Efetivo" },
+    { SamAccountName: "aferreira", DisplayName: "Ana Ferreira",   EmailAddress: "aferreira@empresa.pt", Enabled: false, LockedOut: false, Title: "Administrador de Redes", Department: "IT",        employeeType: "Prestador" },
   ],
   REDACAO: [
-    { SamAccountName: "psousa",    DisplayName: "Pedro Sousa",    EmailAddress: "psousa@empresa.pt",    Enabled: true,  LockedOut: false },
-    { SamAccountName: "rlopes",    DisplayName: "Rita Lopes",     EmailAddress: "rlopes@empresa.pt",    Enabled: true,  LockedOut: false },
+    { SamAccountName: "psousa",    DisplayName: "Pedro Sousa",    EmailAddress: "psousa@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Jornalista",            Department: "Redação",   employeeType: "Efetivo" },
+    { SamAccountName: "rlopes",    DisplayName: "Rita Lopes",     EmailAddress: "rlopes@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Jornalista",            Department: "Redação",   employeeType: "Efetivo" },
   ],
   MARKETING: [
-    { SamAccountName: "tgomes",    DisplayName: "Tiago Gomes",    EmailAddress: "tgomes@empresa.pt",    Enabled: true,  LockedOut: false },
+    { SamAccountName: "tgomes",    DisplayName: "Tiago Gomes",    EmailAddress: "tgomes@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Gestor de Marca",       Department: "Marketing", employeeType: "Efetivo" },
   ],
 };
 
@@ -173,6 +226,41 @@ function buildMockPCStatus(): PCStatus {
   };
 }
 
+// --- Mock device OUs + onboarding state (browser preview only) ---
+// Destination folders under BMAP Devices → O365 that Settings maps departments to.
+const MOCK_DEVICE_OUS: DeviceOU[] = [
+  "ADMINISTRACAO", "MARKETING", "REDACAO", "COMERCIAL", "DIGITAL", "IT", "EVENTOS", "RECURSOS HUMANOS",
+].map((n) => ({
+  Name: n, Description: "", GroupCategory: "OU", GroupScope: "",
+  DistinguishedName: `OU=${n},OU=O365,OU=BMAP Devices,DC=bmap,DC=lis`,
+}));
+
+// Persisted across reloads so the resume-on-launch path is testable in the browser.
+// ?resume seeds an in-progress run (regional+update done) to exercise resume.
+const MOCK_ONBOARD_KEY = "mock.onboardState";
+function mockReadOnboardState(): OnboardState | null {
+  try {
+    const raw = localStorage.getItem(MOCK_ONBOARD_KEY);
+    if (raw) { const s = JSON.parse(raw); return s && s.active ? (s as OnboardState) : null; }
+  } catch { /* ignore */ }
+  if (new URLSearchParams(location.search).has("resume")) {
+    return {
+      active: true, dept: "MKT", targetName: "PT-LPT-MKT-02", targetOU: "MARKETING",
+      anyConnectSource: "", screenConnectSource: "",
+      printers: ["MRK", "COM1"], printerSource: "", smlPlayerSource: "", smlPlayerIni: "",
+      completed: ["regional", "update"],
+      startedAt: Date.now(), updatedAt: Date.now(),
+    };
+  }
+  return null;
+}
+function mockWriteOnboardState(state: OnboardState | null): void {
+  try {
+    if (!state || !state.active) localStorage.removeItem(MOCK_ONBOARD_KEY);
+    else localStorage.setItem(MOCK_ONBOARD_KEY, JSON.stringify(state));
+  } catch { /* ignore */ }
+}
+
 // --- Mock install state (browser preview only) ---
 // Force the setup screen with ?setup, force a failed install with ?setupfail.
 const installListeners = new Set<(s: InstallProgress) => void>();
@@ -208,7 +296,11 @@ const mockAPI: Window["adAPI"] = {
   createUser: async (p) => {
     await delay(900);
     if (!MOCK_USERS[p.groupName]) MOCK_USERS[p.groupName] = [];
-    MOCK_USERS[p.groupName].push({ SamAccountName: p.username, DisplayName: `${p.firstName} ${p.lastName}`, EmailAddress: "", Enabled: true, LockedOut: false });
+    MOCK_USERS[p.groupName].push({
+      SamAccountName: p.username, DisplayName: `${p.firstName} ${p.lastName}`, EmailAddress: p.email ?? "",
+      Enabled: true, LockedOut: false, Title: p.jobTitle || undefined, Department: p.department || undefined,
+      employeeType: p.employeeType || undefined,
+    });
     return { ok: true };
   },
   resetPassword: async () => { await delay(); return { ok: true }; },
@@ -234,7 +326,7 @@ const mockAPI: Window["adAPI"] = {
   },
   addGroupPermission: async () => { await delay(); return { ok: true }; },
   removeGroup: async () => { await delay(); return { ok: true }; },
-  getPCStatus: async () => {
+  getPCStatus: async (_force) => {
     await delay(500);
     const q = new URLSearchParams(location.search);
     if (q.has("pcfail")) return { ok: false, error: "Não foi possível obter o estado do PC." };
@@ -255,7 +347,7 @@ const mockAPI: Window["adAPI"] = {
     }
     return { ok: true, data: buildMockPCStatus() };
   },
-  onboardStep: async ({ step, newName }) => {
+  onboardStep: async ({ step, newName, targetOU }) => {
     await delay(1200);
     if (new URLSearchParams(location.search).has("stepfail")) {
       return { ok: false, error: "Falha simulada ao executar este passo." };
@@ -273,13 +365,35 @@ const mockAPI: Window["adAPI"] = {
       case "update":
         mockPC.wuPending = 0;
         return { ok: true, data: { success: true, step, installed: 14, rebootRequired: true, message: "Atualizações instaladas." } };
+      case "smlplayer":
+        return { ok: true, data: { success: true, step, message: "SMLPlayer instalado; aberto/fechado e Main.ini aplicado." } };
+      case "printers":
+        return { ok: true, data: { success: true, step, message: "Impressoras configuradas." } };
       case "domain":
         if (!newName) return { ok: false, error: "Nome em falta." };
         mockPC.domainJoined = true; mockPC.domainName = "bmap.lis"; mockPC.hostname = newName;
-        return { ok: true, data: { success: true, step, newName, rebootRequired: true, message: "Juntado ao domínio bmap.lis e renomeado." } };
+        return { ok: true, data: { success: true, step, newName, rebootRequired: true, message: `Juntado ao domínio bmap.lis e renomeado${targetOU ? ` (pasta ${targetOU})` : ""}.` } };
       default:
         return { ok: false, error: `Passo desconhecido: ${step}` };
     }
+  },
+  getDeviceOUs: async () => { await delay(400); return { ok: true, data: MOCK_DEVICE_OUS }; },
+  getNextDeviceName: async (dept) => {
+    await delay(400);
+    const d = (dept || "").trim().toUpperCase();
+    if (!MOCK_DEPARTMENTS.includes(d)) return { ok: false, error: `Departamento inválido: ${d}.` };
+    // No AD in the browser mock: the lowest free slot is simply 01.
+    return { ok: true, data: { dept: d, number: "01", name: `PT-LPT-${d}-01` } };
+  },
+  getOnboardState: async () => { await delay(120); return mockReadOnboardState(); },
+  setOnboardState: async (state) => { await delay(120); mockWriteOnboardState(state); return state; },
+  clearOnboardState: async () => { await delay(120); mockWriteOnboardState(null); return { ok: true }; },
+  reboot: async () => {
+    await delay(120);
+    // No real reboot in the browser: simulate the post-reboot machine so a resume
+    // sees the domain join / rename that the domain step applied.
+    mockPC.domainJoined = true; mockPC.domainName = "bmap.lis";
+    return { ok: true };
   },
   testConnection: async (override) => {
     await delay(700);
@@ -317,6 +431,10 @@ const mockAPI: Window["adAPI"] = {
   },
 };
 
+// True when running outside Electron (the browser preview uses the mock above).
+// Detected via the config bridge, which only the preload injects.
+export const isBrowserMock = typeof window.configAPI === "undefined";
+
 if (!window.adAPI) {
   (window as Window).adAPI = mockAPI;
 }
@@ -330,8 +448,14 @@ export const adAPI = {
   offboardUser:         (p: { username: string; confirmUsername: string; adminPassword: string }) => window.adAPI.offboardUser(p),
   addGroupPermission:   (p: { groupName: string; description: string }) => window.adAPI.addGroupPermission(p),
   removeGroup:          (g: string) => window.adAPI.removeGroup(g),
-  getPCStatus:          () => window.adAPI.getPCStatus(),
+  getPCStatus:          (force?: boolean) => window.adAPI.getPCStatus(force),
   onboardStep:          (p: OnboardStepParams) => window.adAPI.onboardStep(p),
+  getDeviceOUs:         () => window.adAPI.getDeviceOUs(),
+  getNextDeviceName:    (dept: string) => window.adAPI.getNextDeviceName(dept),
+  getOnboardState:      () => window.adAPI.getOnboardState(),
+  setOnboardState:      (s: OnboardState | null) => window.adAPI.setOnboardState(s),
+  clearOnboardState:    () => window.adAPI.clearOnboardState(),
+  reboot:               () => window.adAPI.reboot(),
   testConnection:       (o?: { server: string; username: string; password?: string }) => window.adAPI.testConnection(o),
   checkModule:          () => window.adAPI.checkModule(),
   installModule:        () => window.adAPI.installModule(),

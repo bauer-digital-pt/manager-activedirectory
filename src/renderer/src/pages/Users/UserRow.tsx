@@ -92,8 +92,15 @@ export default function UserRow({
     setBusy(true);
     const r = await adAPI.resetPassword({ username: user.SamAccountName, newPassword: DEFAULT_PASSWORD });
     setBusy(false);
-    if (r.ok) { toast.success(`Password reset for ${user.SamAccountName}`); setModal(null); }
-    else toast.error(r.error ?? "Failed to reset password");
+    if (r.ok) {
+      // The reset can succeed while a secondary step (force change at next logon)
+      // is skipped — e.g. on a PasswordNeverExpires account. The script reports
+      // that via `warning`; surface it so the operator isn't told it fully worked.
+      const warning = (r.data as { warning?: string } | undefined)?.warning;
+      if (warning) toast.success(`Password reset for ${user.SamAccountName} — ${warning}`);
+      else toast.success(`Password reset for ${user.SamAccountName}`);
+      setModal(null);
+    } else toast.error(r.error ?? "Failed to reset password");
   };
 
   const doUnlock = async () => {

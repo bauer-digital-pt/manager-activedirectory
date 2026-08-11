@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("configAPI", {
   setConnection: (conn: unknown) => ipcRenderer.invoke("config:set-connection", conn),
   getSettings: () => ipcRenderer.invoke("config:get-settings"),
   setSettings: (settings: unknown) => ipcRenderer.invoke("config:set-settings", settings),
+  getDeviceConfig: () => ipcRenderer.invoke("config:get-device-config"),
+  setDeviceConfig: (config: unknown) => ipcRenderer.invoke("config:set-device-config", config),
 });
 
 contextBridge.exposeInMainWorld("authAPI", {
@@ -55,13 +57,24 @@ contextBridge.exposeInMainWorld("adAPI", {
   addGroupPermission: (params: { groupName: string; description: string }) =>
     ipcRenderer.invoke("ad:add-group-permission", params),
   removeGroup: (groupName: string) => ipcRenderer.invoke("ad:remove-group", groupName),
-  getPCStatus: () => ipcRenderer.invoke("ad:pc-status"),
+  getPCStatus: (force?: boolean) => ipcRenderer.invoke("ad:pc-status", { force: !!force }),
   onboardStep: (params: {
     step: string;
     newName?: string;
     anyConnectSource?: string;
     screenConnectSource?: string;
+    targetOU?: string;
+    printers?: string[];
+    printerSource?: string;
+    smlPlayerSource?: string;
+    smlPlayerIni?: string;
   }) => ipcRenderer.invoke("ad:onboard-step", params),
+  getDeviceOUs: () => ipcRenderer.invoke("ad:device-ous"),
+  getNextDeviceName: (dept: string) => ipcRenderer.invoke("ad:next-device-name", dept),
+  getOnboardState: () => ipcRenderer.invoke("onboard:get-state"),
+  setOnboardState: (state: unknown) => ipcRenderer.invoke("onboard:set-state", state),
+  clearOnboardState: () => ipcRenderer.invoke("onboard:clear-state"),
+  reboot: () => ipcRenderer.invoke("onboard:reboot"),
   testConnection: (override?: unknown) => ipcRenderer.invoke("ad:test-connection", override),
   checkModule: () => ipcRenderer.invoke("ad:check-module"),
   installModule: () => ipcRenderer.invoke("ad:install-module"),
