@@ -82,6 +82,12 @@ try {
 #
 # FALLBACK: GetAuthorizationGroups(), but enumerated defensively so a single bad
 # SID skips instead of aborting the whole check.
+#
+# TEMPORARY (v1.0.29): the Domain Admins restriction is DISABLED by request, so
+# ANY account whose password validated in Step 1 may log in. To RE-ENABLE the
+# gate, flip $EnforceDomainAdmin to $true below -- the original check is intact.
+$EnforceDomainAdmin = $false
+if ($EnforceDomainAdmin) {
 $diag = ""
 try {
   $up = [System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($ctx, $sam)
@@ -147,6 +153,7 @@ try {
   Out-Result @{ success = $false; error = "Nao foi possivel validar as permissoes de administrador de dominio. Tenta novamente." }
   return
 }
+}  # end if ($EnforceDomainAdmin)
 
 # --- Step 2: credentials are valid -> fetch domain info + display name. ---
 # A failure here does not undo the validated password: let the user in with

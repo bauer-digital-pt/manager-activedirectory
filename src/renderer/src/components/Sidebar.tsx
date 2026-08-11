@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { Users, Settings, Terminal, User, LogOut } from "lucide-react";
+import { Users, Laptop, Settings, Terminal, User, LogOut } from "lucide-react";
 import { cn } from "../lib/cn";
 import type { Page } from "../App";
 import { initials } from "../lib/initials";
 import brandFull from "../assets/logo_1.png";
 
 const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean }[] = [
-  { id: "users",    label: "Users",    icon: Users,    bind: "1" },
-  { id: "settings", label: "Settings", icon: Settings, bind: "2" },
-  { id: "console",  label: "Console",  icon: Terminal, bind: "3", dev: true },
+  { id: "users",    label: "Users",         icon: Users,    bind: "1" },
+  { id: "devices",  label: "Onboarding PC", icon: Laptop,   bind: "2" },
+  { id: "settings", label: "Settings",      icon: Settings, bind: "3" },
+  { id: "console",  label: "Console",       icon: Terminal, bind: "4", dev: true },
 ];
 
 interface SidebarProps {

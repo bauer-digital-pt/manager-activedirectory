@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Lock, Unlock, KeyRound, MoreHorizontal, X, User } from "lucide-react";
+import { Lock, Unlock, KeyRound, MoreHorizontal, X, User, UserMinus, AlertTriangle } from "lucide-react";
 import { adAPI, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
 import type { ExternalToast } from "sonner";
@@ -20,9 +20,20 @@ export default function UserRow({
   onRefresh: () => void;
 }) {
   const [menu, setMenu]   = useState(false);
-  const [modal, setModal] = useState<"reset" | "unblock" | "details" | null>(null);
+  const [modal, setModal] = useState<"reset" | "unblock" | "details" | "offboard" | null>(null);
   const [busy, setBusy]   = useState(false);
+  // Offboard confirmation inputs (re-typed username + re-confirmed admin password).
+  const [confirmName, setConfirmName] = useState("");
+  const [adminPw, setAdminPw]         = useState("");
   const menuRef           = useRef<HTMLDivElement>(null);
+
+  const canOffboard = confirmName.trim() === user.SamAccountName && adminPw.length > 0 && !busy;
+
+  // Clear the offboard inputs whenever we leave that modal (don't keep a typed
+  // password around).
+  useEffect(() => {
+    if (modal !== "offboard") { setConfirmName(""); setAdminPw(""); }
+  }, [modal]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -43,6 +54,7 @@ export default function UserRow({
       if (k === "o") { e.preventDefault(); setMenu(false); setModal("details"); }
       if (k === "r") { e.preventDefault(); setMenu(false); setModal("reset"); }
       if (k === "u" && user.LockedOut) { e.preventDefault(); setMenu(false); setModal("unblock"); }
+      if (k === "f") { e.preventDefault(); setMenu(false); setModal("offboard"); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -90,6 +102,22 @@ export default function UserRow({
     setBusy(false);
     if (r.ok) { toast.success(`${user.SamAccountName} unlocked`); setModal(null); onRefresh(); }
     else toast.error(r.error ?? "Failed to unlock account");
+  };
+
+  const doOffboard = async () => {
+    if (!canOffboard) return;
+    setBusy(true);
+    const r = await adAPI.offboardUser({
+      username: user.SamAccountName,
+      confirmUsername: confirmName.trim(),
+      adminPassword: adminPw,
+    });
+    setBusy(false);
+    if (r.ok) {
+      toast.success(`${user.SamAccountName} offboarded — conta desativada e movida para a morgue`);
+      setModal(null);
+      onRefresh();
+    } else toast.error(r.error ?? "Não foi possível dar offboard.");
   };
 
   const statusBadge = () => {
@@ -159,6 +187,14 @@ export default function UserRow({
                   disabled={!user.LockedOut}
                   onClick={() => { setMenu(false); setModal("unblock"); }}
                 />
+                <div className="border-t border-zinc-100" />
+                <MenuItem
+                  icon={<UserMinus size={13} />}
+                  label="Offboard"
+                  bind="F"
+                  danger
+                  onClick={() => { setMenu(false); setModal("offboard"); }}
+                />
               </div>
             )}
           </div>
@@ -216,6 +252,58 @@ export default function UserRow({
                       <Bind label="↵" />
                       <button onClick={doUnlock} disabled={busy} className="px-4 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors">
                         {busy ? "Unlocking…" : "Unlock"}
+                      </button>
+                    </ModalFooter>
+                  </>
+                )}
+
+                {/* Offboard */}
+                {modal === "offboard" && (
+                  <>
+                    <ModalHeader icon={<UserMinus size={15} />} title="Offboard user" subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
+                    <div className="px-6 py-5 space-y-4">
+                      <div className="flex items-start gap-2.5 rounded-lg bg-red-50 border border-red-200 px-3 py-2.5 text-sm text-red-700">
+                        <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
+                        <span>
+                          Vai <strong>desativar</strong> a conta <span className="font-medium">{user.SamAccountName}</span> e <strong>movê-la para a OU morgue</strong>. Confirma os dois campos para continuar.
+                        </span>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-500 mb-1">
+                          Escreve o username para confirmar
+                        </label>
+                        <input
+                          value={confirmName}
+                          onChange={(e) => setConfirmName(e.target.value)}
+                          autoFocus
+                          autoComplete="off"
+                          spellCheck={false}
+                          placeholder={user.SamAccountName}
+                          className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                        />
+                        {confirmName.length > 0 && confirmName.trim() !== user.SamAccountName && (
+                          <p className="mt-1 text-xs text-red-500">Não corresponde a <span className="font-medium">{user.SamAccountName}</span>.</p>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-500 mb-1">
+                          Re-confirma a tua palavra-passe de administrador
+                        </label>
+                        <input
+                          type="password"
+                          value={adminPw}
+                          onChange={(e) => setAdminPw(e.target.value)}
+                          autoComplete="off"
+                          placeholder="Palavra-passe"
+                          className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                        />
+                      </div>
+                    </div>
+                    <ModalFooter>
+                      <Bind label="Esc" />
+                      <button onClick={() => setModal(null)} className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors">Cancelar</button>
+                      <button onClick={doOffboard} disabled={!canOffboard} className="px-4 py-2 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                        {busy ? "A dar offboard…" : "Offboard"}
                       </button>
                     </ModalFooter>
                   </>
@@ -281,15 +369,18 @@ export default function UserRow({
   );
 }
 
-function MenuItem({ icon, label, bind, disabled, onClick }: { icon: React.ReactNode; label: string; bind: string; disabled?: boolean; onClick: () => void }) {
+function MenuItem({ icon, label, bind, disabled, danger, onClick }: { icon: React.ReactNode; label: string; bind: string; disabled?: boolean; danger?: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className="w-full flex items-center justify-between px-3.5 py-2.5 text-sm text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      className={cn(
+        "w-full flex items-center justify-between px-3.5 py-2.5 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-colors",
+        danger ? "text-red-600 hover:bg-red-50" : "text-zinc-700 hover:bg-zinc-50",
+      )}
     >
       <span className="flex items-center gap-2.5">
-        <span className="text-zinc-400">{icon}</span>
+        <span className={danger ? "text-red-400" : "text-zinc-400"}>{icon}</span>
         {label}
       </span>
       <kbd className="text-xs font-mono bg-zinc-100 text-zinc-400 px-1.5 py-0.5 rounded border border-zinc-200">{bind}</kbd>

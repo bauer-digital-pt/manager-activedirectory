@@ -50,9 +50,18 @@ contextBridge.exposeInMainWorld("adAPI", {
   resetPassword: (params: { username: string; newPassword: string }) =>
     ipcRenderer.invoke("ad:reset-password", params),
   unlockUser: (username: string) => ipcRenderer.invoke("ad:unlock-user", username),
+  offboardUser: (params: { username: string; confirmUsername: string; adminPassword: string }) =>
+    ipcRenderer.invoke("ad:offboard-user", params),
   addGroupPermission: (params: { groupName: string; description: string }) =>
     ipcRenderer.invoke("ad:add-group-permission", params),
   removeGroup: (groupName: string) => ipcRenderer.invoke("ad:remove-group", groupName),
+  getPCStatus: () => ipcRenderer.invoke("ad:pc-status"),
+  onboardStep: (params: {
+    step: string;
+    newName?: string;
+    anyConnectSource?: string;
+    screenConnectSource?: string;
+  }) => ipcRenderer.invoke("ad:onboard-step", params),
   testConnection: (override?: unknown) => ipcRenderer.invoke("ad:test-connection", override),
   checkModule: () => ipcRenderer.invoke("ad:check-module"),
   installModule: () => ipcRenderer.invoke("ad:install-module"),

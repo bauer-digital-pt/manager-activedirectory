@@ -8,6 +8,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import SetupRequired from "./components/SetupRequired";
 import UpdateAvailable from "./components/UpdateAvailable";
 import UsersPage from "./pages/Users/UsersPage";
+import DevicesPage from "./pages/DevicesPage";
 import SettingsPage from "./pages/SettingsPage";
 import ConsolePage from "./pages/ConsolePage";
 import { adAPI } from "./adAPI";
@@ -17,7 +18,7 @@ import { getSettings, type AppSettings, DEFAULT_SETTINGS } from "./lib/appSettin
 import { confirmNav } from "./lib/navGuard";
 import logo from "./assets/bauer-media-logo.svg";
 
-export type Page = "users" | "settings" | "console";
+export type Page = "users" | "devices" | "settings" | "console";
 
 export default function App() {
   const [page, setPage] = useState<Page>("users");
@@ -72,8 +73,9 @@ export default function App() {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (e.key === "1") { e.preventDefault(); navigate("users"); }
-      if (e.key === "2") { e.preventDefault(); navigate("settings"); }
-      if (e.key === "3" && devMode) { e.preventDefault(); navigate("console"); }
+      if (e.key === "2") { e.preventDefault(); navigate("devices"); }
+      if (e.key === "3") { e.preventDefault(); navigate("settings"); }
+      if (e.key === "4" && devMode) { e.preventDefault(); navigate("console"); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -343,6 +345,7 @@ export default function App() {
                 stays), and navigating to another page remounts a fresh boundary. */}
             <ErrorBoundary key={page} compact>
               {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => navigate("settings")} />}
+              {page === "devices"  && <DevicesPage  toast={toast} />}
               {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} />}
               {page === "console"  && devMode && <ConsolePage />}
             </ErrorBoundary>

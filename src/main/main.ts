@@ -622,6 +622,71 @@ handle("ad:remove-group", async (_e, groupName) => {
   return ps("Remove-ADGroup.ps1", [groupName as string]);
 });
 
+// Offboard = disable the account + move it to the morgue OU. Two safety gates are
+// enforced HERE, before any AD change: (1) the operator must re-type the exact
+// username, and (2) re-confirm the admin password. The password is checked
+// against the in-memory session (what they logged in with) — it never reaches
+// PowerShell, the command line, or the log (redact() masks the "adminPassword"
+// key). This makes an accidental or unattended offboard much harder.
+handle("ad:offboard-user", async (_e, rawParams) => {
+  const p = (rawParams ?? {}) as { username?: string; confirmUsername?: string; adminPassword?: string };
+  const username = (p.username ?? "").trim();
+  const confirmUsername = (p.confirmUsername ?? "").trim();
+  const adminPassword = p.adminPassword ?? "";
+
+  if (!username) return { ok: false, error: "Utilizador em falta." };
+  if (!session) return { ok: false, error: "Sessão expirada. Volta a iniciar sessão e tenta de novo." };
+  if (confirmUsername !== username) {
+    return { ok: false, error: "O username de confirmação não corresponde ao utilizador a dar offboard." };
+  }
+  if (!adminPassword || adminPassword !== session.password) {
+    return { ok: false, error: "Palavra-passe de administrador incorreta." };
+  }
+
+  return ps("Offboard-ADUser.ps1", [username]);
+});
+
+// --- PC onboarding (the machine this app is running on) ---
+
+// Read-only snapshot of the LOCAL machine's onboarding state. The Windows Update
+// COM probe can be slow, so this gets a longer ceiling than a normal AD call.
+handle("ad:pc-status", async () => {
+  return runPS("Get-PCStatus.ps1", [], emitLog, session ?? getConnection(), 90000);
+});
+
+// Executes ONE onboarding step on the local machine. Steps have very different
+// runtimes (a Windows Update pass or a large installer can take many minutes),
+// so each gets its own timeout. The domain-join step reuses the session
+// credentials (passed as AD_USER/AD_PASSWORD by runPS) for Add-Computer.
+handle("ad:onboard-step", async (_e, rawParams) => {
+  const p = (rawParams ?? {}) as {
+    step?: string;
+    newName?: string;
+    anyConnectSource?: string;
+    screenConnectSource?: string;
+  };
+  const step = (p.step ?? "").trim().toLowerCase();
+  if (!step) return { ok: false, error: "Passo em falta." };
+
+  const TIMEOUTS: Record<string, number> = {
+    regional: 60_000,
+    anyconnect: 10 * 60_000,
+    screenconnect: 10 * 60_000,
+    update: 30 * 60_000,
+    domain: 3 * 60_000,
+  };
+  if (!(step in TIMEOUTS)) return { ok: false, error: `Passo desconhecido: ${step}` };
+
+  // The domain step needs the operator's AD credentials; without a session the
+  // join would fall back to the local Windows user and fail confusingly.
+  if (step === "domain" && !session) {
+    return { ok: false, error: "Sessão expirada. Volta a iniciar sessão e tenta de novo." };
+  }
+
+  const args = [step, p.newName ?? "", p.anyConnectSource ?? "", p.screenConnectSource ?? ""];
+  return runPS("Invoke-OnboardStep.ps1", args, emitLog, session ?? getConnection(), TIMEOUTS[step]);
+});
+
 // Reports whether the RSAT ActiveDirectory module is installed on this machine.
 handle("ad:check-module", async () => {
   return ps("Check-ADModule.ps1");
@@ -747,7 +812,13 @@ handle("auth:ping", async () => {
   // This AD can take ~7s per call, so an 8s ceiling was borderline. Give the
   // probe generous headroom so a slow-but-healthy DC doesn't flap the dot red.
   const r = await runPS("Test-ADConnection.ps1", [], undefined, session, 20000);
-  return { ok: r.ok, error: r.error };
+  if (!r.ok) return { ok: false, error: r.error };
+  // Test-ADConnection.ps1 always exits 0 and signals failure via data.success
+  // (a non-zero exit would lose the real reason). So the exit code alone isn't
+  // enough — a broken AD (RSAT missing, bad creds, fast DC error) would keep the
+  // liveness dot green. Key the dot on the actual result.
+  const data = (r.data ?? {}) as { success?: boolean; error?: string };
+  return { ok: data.success !== false, error: data.error };
 });
 
 // --- Settings IPC ---
@@ -805,7 +876,7 @@ handle("config:set-connection", (_e, rawPayload) => {
 
 // Runs a test using the given values (if provided) instead of the saved ones,
 // so the user can verify before saving. Falls back to saved config otherwise.
-handle("ad:test-connection", (_e, rawOverride) => {
+handle("ad:test-connection", async (_e, rawOverride) => {
   const override = rawOverride as { server: string; username: string; password?: string } | undefined;
   let conn = getConnection();
   if (override) {
@@ -817,7 +888,16 @@ handle("ad:test-connection", (_e, rawOverride) => {
         : conn.password,
     };
   }
-  return runPS("Test-ADConnection.ps1", [], emitLog, conn);
+  const r = await runPS("Test-ADConnection.ps1", [], emitLog, conn);
+  if (!r.ok) return r;
+  // The script always exits 0 and reports failure via data.success — so a wrong
+  // password, missing RSAT, or a fast DC error would otherwise show "Connection
+  // successful". Translate a false result into a real error (mirrors auth:login).
+  const data = (r.data ?? {}) as { success?: boolean; error?: string };
+  if (data.success === false) {
+    return { ok: false, error: data.error ?? "Não foi possível ligar ao AD." };
+  }
+  return r;
 });
 
 // --- Console / activity log IPC ---

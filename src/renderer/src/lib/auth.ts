@@ -41,11 +41,12 @@ export async function login(username: string, password: string): Promise<LoginRe
     return window.authAPI.login({ username: u, password });
   }
 
-  // Browser mock. Password "wrong" fails auth; a username containing "noadmin"
-  // simulates a non-Domain-Admin account being rejected by the access gate.
+  // Browser mock. Password "wrong" fails auth.
+  // NOTE (v1.0.29): the Domain Admins access gate is temporarily disabled, so the
+  // old `noadmin` rejection is gone too — any valid password logs in, matching
+  // Test-ADCredential.ps1 ($EnforceDomainAdmin = $false).
   await new Promise((r) => setTimeout(r, 500));
   if (password === "wrong") return { ok: false, error: "Credenciais inválidas." };
-  if (/noadmin/i.test(u)) return { ok: false, error: "Acesso restrito a administradores de domínio." };
   localStorage.setItem(LS_LAST_USER, u);
   return { ok: true, username: u, displayName: mockDisplayName(u), domain: "bmap.lis", dc: "dc01.bmap.lis" };
 }
