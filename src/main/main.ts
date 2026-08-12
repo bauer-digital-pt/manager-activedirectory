@@ -28,24 +28,39 @@ process.on("unhandledRejection", (reason) => {
   pushLog({ level: "error", source: "app", label: "unhandledRejection", detail: reason instanceof Error ? reason.message : String(reason), data: { stack: reason instanceof Error ? reason.stack : undefined } });
 });
 
-const CONFIG_PATH = join(app.getPath("userData"), "groups.json");
+// A small JSON-file store under the app's userData dir. Centralizes the
+// resilient read (missing or corrupt file -> a normalized default, never a
+// throw) and the pretty-printed write that every persisted config shares. Each
+// store keeps its own `normalize`, so a malformed or older-shaped file can never
+// reach the rest of the app. By contract `normalize(undefined)` yields the default.
+function makeJsonStore<T>(filename: string, normalize: (raw: unknown) => T) {
+  const path = join(app.getPath("userData"), filename);
+  return {
+    path,
+    read(): T {
+      try {
+        if (existsSync(path)) return normalize(JSON.parse(readFileSync(path, "utf8")));
+      } catch { /* fall through to default */ }
+      return normalize(undefined);
+    },
+    write(value: T): void {
+      writeFileSync(path, JSON.stringify(value, null, 2), "utf8");
+    },
+  };
+}
+
 type GroupConfig = Record<string, unknown>;
 
-function readGroups(): GroupConfig {
-  try {
-    if (existsSync(CONFIG_PATH)) return JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-  } catch { /* fall through */ }
-  return {};
-}
-
-function writeGroups(config: GroupConfig): void {
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
-}
+const groupsStore = makeJsonStore<GroupConfig>("groups.json", (raw) =>
+  raw && typeof raw === "object" ? (raw as GroupConfig) : {},
+);
+function readGroups(): GroupConfig { return groupsStore.read(); }
+function writeGroups(config: GroupConfig): void { groupsStore.write(config); }
 
 // --- Remote AD connection config ---
 // Stored in connection.json. The password is encrypted at rest with Electron's
 // safeStorage (OS keychain) and is never sent back to the renderer in clear text.
-const CONN_PATH = join(app.getPath("userData"), "connection.json");
+// The file lives at connectionStore.path (defined below).
 
 // DEFAULT_DC (the fallback domain controller) is defined in src/shared/constants.ts.
 
@@ -68,19 +83,16 @@ interface StoredConnection {
   password: string; // base64 of safeStorage-encrypted bytes ("" when unset)
 }
 
-function readStoredConnection(): StoredConnection {
-  try {
-    if (existsSync(CONN_PATH)) {
-      const raw = JSON.parse(readFileSync(CONN_PATH, "utf8"));
-      return {
-        server: migrateServer(raw.server),
-        username: raw.username ?? "",
-        password: raw.password ?? "",
-      };
-    }
-  } catch { /* fall through */ }
-  return { server: DEFAULT_DC, username: "", password: "" };
-}
+const connectionStore = makeJsonStore<StoredConnection>("connection.json", (raw) => {
+  const r = (raw ?? {}) as Partial<StoredConnection>;
+  return {
+    // migrateServer("") returns DEFAULT_DC, so a missing/blank server self-heals.
+    server: migrateServer(typeof r.server === "string" ? r.server : ""),
+    username: typeof r.username === "string" ? r.username : "",
+    password: typeof r.password === "string" ? r.password : "",
+  };
+});
+function readStoredConnection(): StoredConnection { return connectionStore.read(); }
 
 function decryptPassword(encoded: string): string {
   if (!encoded) return "";
@@ -117,7 +129,7 @@ function getConnection(): ADConnection {
 // General preferences, separate from AD group config and the AD connection.
 // Non-secret: stored in clear. lastUsername is remembered to pre-fill the login
 // screen; the login PASSWORD is never persisted (session-only, see `session`).
-const SETTINGS_PATH = join(app.getPath("userData"), "settings.json");
+// The file lives at settingsStore.path (defined below).
 
 // Remembers the version this profile last ran, so the next launch can tell
 // whether we just came back from an (auto-)update and greet the user.
@@ -148,35 +160,21 @@ function computeStartupInfo() {
 
 const DEFAULT_SETTINGS: AppSettings = { devMode: false, loginTimeoutMin: 30, lastUsername: "" };
 
-function readSettings(): AppSettings {
-  try {
-    if (existsSync(SETTINGS_PATH)) {
-      const raw = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
-      return {
-        devMode: !!raw.devMode,
-        loginTimeoutMin: Math.min(60, Math.max(5, Number(raw.loginTimeoutMin) || 30)),
-        lastUsername: typeof raw.lastUsername === "string" ? raw.lastUsername : "",
-      };
-    }
-  } catch { /* fall through */ }
-  return { ...DEFAULT_SETTINGS };
-}
-
-function writeSettings(next: AppSettings): void {
-  writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), "utf8");
-}
+const settingsStore = makeJsonStore<AppSettings>("settings.json", (raw) => {
+  const r = (raw ?? {}) as Partial<AppSettings>;
+  return {
+    devMode: !!r.devMode,
+    loginTimeoutMin: Math.min(60, Math.max(5, Number(r.loginTimeoutMin) || DEFAULT_SETTINGS.loginTimeoutMin)),
+    lastUsername: typeof r.lastUsername === "string" ? r.lastUsername : DEFAULT_SETTINGS.lastUsername,
+  };
+});
+function readSettings(): AppSettings { return settingsStore.read(); }
+function writeSettings(next: AppSettings): void { settingsStore.write(next); }
 
 // --- Device onboarding config (device-config.json) ---
 // Maps each department code to the destination folder (a sub-OU under O365 in the
 // BMAP Devices tree) a freshly-onboarded PC should land in, plus the shared
 // installer sources. Non-secret: stored in clear (paths/URLs, no credentials).
-const DEVICE_CONFIG_PATH = join(app.getPath("userData"), "device-config.json");
-
-const DEFAULT_DEVICE_CONFIG: DeviceConfig = {
-  ouMap: {}, anyConnectSource: "", screenConnectSource: "",
-  printerMap: {}, printerSource: "", smlPlayerSource: "", smlPlayerIni: "",
-};
-
 // Coerce a dept -> printer-names map, dropping non-string / empty entries.
 function normalizePrinterMap(raw: unknown): Record<string, string[]> {
   const out: Record<string, string[]> = {};
@@ -191,27 +189,20 @@ function normalizePrinterMap(raw: unknown): Record<string, string[]> {
   return out;
 }
 
-function readDeviceConfig(): DeviceConfig {
-  try {
-    if (existsSync(DEVICE_CONFIG_PATH)) {
-      const raw = JSON.parse(readFileSync(DEVICE_CONFIG_PATH, "utf8"));
-      return {
-        ouMap: raw.ouMap && typeof raw.ouMap === "object" ? (raw.ouMap as Record<string, string>) : {},
-        anyConnectSource: typeof raw.anyConnectSource === "string" ? raw.anyConnectSource : "",
-        screenConnectSource: typeof raw.screenConnectSource === "string" ? raw.screenConnectSource : "",
-        printerMap: normalizePrinterMap(raw.printerMap),
-        printerSource: typeof raw.printerSource === "string" ? raw.printerSource : "",
-        smlPlayerSource: typeof raw.smlPlayerSource === "string" ? raw.smlPlayerSource : "",
-        smlPlayerIni: typeof raw.smlPlayerIni === "string" ? raw.smlPlayerIni : "",
-      };
-    }
-  } catch { /* fall through */ }
-  return { ...DEFAULT_DEVICE_CONFIG };
-}
-
-function writeDeviceConfig(config: DeviceConfig): void {
-  writeFileSync(DEVICE_CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
-}
+const deviceConfigStore = makeJsonStore<DeviceConfig>("device-config.json", (raw) => {
+  const r = (raw ?? {}) as Partial<DeviceConfig>;
+  return {
+    ouMap: r.ouMap && typeof r.ouMap === "object" ? (r.ouMap as Record<string, string>) : {},
+    anyConnectSource: typeof r.anyConnectSource === "string" ? r.anyConnectSource : "",
+    screenConnectSource: typeof r.screenConnectSource === "string" ? r.screenConnectSource : "",
+    printerMap: normalizePrinterMap(r.printerMap),
+    printerSource: typeof r.printerSource === "string" ? r.printerSource : "",
+    smlPlayerSource: typeof r.smlPlayerSource === "string" ? r.smlPlayerSource : "",
+    smlPlayerIni: typeof r.smlPlayerIni === "string" ? r.smlPlayerIni : "",
+  };
+});
+function readDeviceConfig(): DeviceConfig { return deviceConfigStore.read(); }
+function writeDeviceConfig(config: DeviceConfig): void { deviceConfigStore.write(config); }
 
 // --- PC onboarding state (onboard-state.json) ---
 // Persists the in-progress "fully automatic" onboarding wizard across the reboot
@@ -219,22 +210,13 @@ function writeDeviceConfig(config: DeviceConfig): void {
 // start on boot (setLoginItemSettings) so the operator only has to log back into
 // Windows + the app; the renderer then resumes from `completed`. Non-secret: it
 // holds the target name/OU/dept and which steps finished — NEVER a password.
-const ONBOARD_STATE_PATH = join(app.getPath("userData"), "onboard-state.json");
-
-function readOnboardState(): OnboardState | null {
-  try {
-    if (existsSync(ONBOARD_STATE_PATH)) {
-      const raw = JSON.parse(readFileSync(ONBOARD_STATE_PATH, "utf8"));
-      // Sanitise on read too, not just on write: a corrupt or hand-edited file
-      // with valid JSON but wrong-typed fields (e.g. completed as a string)
-      // would otherwise reach the renderer and throw on completed.map(...),
-      // wedging resume with no in-app recovery. normalizeOnboardState coerces
-      // every field and returns null when the run isn't active.
-      return normalizeOnboardState(raw);
-    }
-  } catch { /* fall through */ }
-  return null;
-}
+// Sanitise on read too, not just on write: a corrupt or hand-edited file with
+// valid JSON but wrong-typed fields (e.g. completed as a string) would otherwise
+// reach the renderer and throw on completed.map(...), wedging resume with no
+// in-app recovery. normalizeOnboardState coerces every field and returns null
+// when the run isn't active (also what a missing file yields via normalize(undefined)).
+const onboardStateStore = makeJsonStore<OnboardState | null>("onboard-state.json", normalizeOnboardState);
+function readOnboardState(): OnboardState | null { return onboardStateStore.read(); }
 
 // Coerce an arbitrary renderer payload into a well-formed state (or null when the
 // run isn't active), so a malformed message can never poison the persisted file.
@@ -267,12 +249,14 @@ function normalizeOnboardState(raw: unknown): OnboardState | null {
 function writeOnboardState(state: OnboardState | null): void {
   try {
     if (!state || !state.active) { clearOnboardState(); return; }
-    writeFileSync(ONBOARD_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+    onboardStateStore.write(state);
   } catch { /* best-effort */ }
 }
 
 function clearOnboardState(): void {
-  try { writeFileSync(ONBOARD_STATE_PATH, JSON.stringify({ active: false }), "utf8"); } catch { /* best-effort */ }
+  // Compact inactive marker (not the store's pretty write) — readOnboardState
+  // normalizes any {active:false} back to null, so the exact shape is moot.
+  try { writeFileSync(onboardStateStore.path, JSON.stringify({ active: false }), "utf8"); } catch { /* best-effort */ }
 }
 
 // Keep the OS "start on boot" flag in lock-step with an active onboarding run, so
@@ -444,11 +428,7 @@ function clearLegacyStoredPassword() {
   try {
     const stored = readStoredConnection();
     if (stored.password) {
-      writeFileSync(
-        CONN_PATH,
-        JSON.stringify({ server: stored.server, username: stored.username, password: "" }, null, 2),
-        "utf8",
-      );
+      connectionStore.write({ server: stored.server, username: stored.username, password: "" });
       pushLog({ level: "info", source: "app", label: "auth", detail: "Legacy stored AD password cleared" });
     }
   } catch { /* best-effort */ }
@@ -697,8 +677,11 @@ function handle(
 // after a relock) `session` is null and cmdlets fall back to the local domain /
 // current Windows user — harmless because the login gate blocks the UI until a
 // session exists. Module/connection checks deliberately DON'T use this path.
-function ps(script: string, args: string[] = [], extraEnv?: Record<string, string>) {
-  return runPS(script, args, emitLog, session ?? getConnection(), undefined, extraEnv);
+// Optional timeoutMs routes slow local operations (PC status probe, onboarding
+// steps) through this same session + logging policy instead of calling runPS
+// directly. The non-session probes (auth/connection tests) deliberately don't.
+function ps(script: string, args: string[] = [], extraEnv?: Record<string, string>, timeoutMs?: number) {
+  return runPS(script, args, emitLog, session ?? getConnection(), timeoutMs, extraEnv);
 }
 
 handle("ad:get-groups", async () => {
@@ -798,7 +781,7 @@ let pcStatusCache: Awaited<ReturnType<typeof runPS>> | null = null;
 handle("ad:pc-status", async (_e, rawParams) => {
   const p = (rawParams ?? {}) as { force?: boolean };
   if (!p.force && pcStatusCache) return pcStatusCache;
-  const r = await runPS("Get-PCStatus.ps1", [], emitLog, session ?? getConnection(), 90000);
+  const r = await ps("Get-PCStatus.ps1", [], undefined, 90000);
   // Cache only a successful probe, so a transient failure isn't pinned until the
   // next reboot; the next call re-probes.
   if (r.ok) pcStatusCache = r;
@@ -859,7 +842,7 @@ handle("ad:onboard-step", async (_e, rawParams) => {
     p.smlPlayerIni ?? "",
     p.description ?? "",
   ];
-  return runPS("Invoke-OnboardStep.ps1", args, emitLog, session ?? getConnection(), TIMEOUTS[step]);
+  return ps("Invoke-OnboardStep.ps1", args, undefined, TIMEOUTS[step]);
 });
 
 // Reports whether the RSAT ActiveDirectory module is installed on this machine.
@@ -1050,7 +1033,7 @@ handle("config:set-connection", (_e, rawPayload) => {
     // password omitted => keep existing; empty string => explicitly clear.
     password: payload.password === undefined ? current.password : encryptPassword(payload.password),
   };
-  writeFileSync(CONN_PATH, JSON.stringify(next, null, 2), "utf8");
+  connectionStore.write(next);
 });
 
 // Runs a test using the given values (if provided) instead of the saved ones,
