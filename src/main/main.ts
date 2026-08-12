@@ -253,6 +253,7 @@ interface OnboardState {
   smlPlayerSource: string;  // SMLPlayer installer
   smlPlayerIni: string;     // Main.ini source
   completed: string[]; // step keys already done (regional/update/anyconnect/screenconnect/smlplayer/printers/domain)
+  preparedFor?: { sam: string; name: string }; // user the PC is being prepared for (written to the computer's AD description)
   startedAt: number;
   updatedAt: number;
 }
@@ -290,6 +291,11 @@ function normalizeOnboardState(raw: unknown): OnboardState | null {
     smlPlayerSource: typeof p.smlPlayerSource === "string" ? p.smlPlayerSource : "",
     smlPlayerIni: typeof p.smlPlayerIni === "string" ? p.smlPlayerIni : "",
     completed: Array.isArray(p.completed) ? p.completed.filter((s): s is string => typeof s === "string") : [],
+    preparedFor:
+      p.preparedFor && typeof p.preparedFor === "object" &&
+      typeof p.preparedFor.sam === "string" && typeof p.preparedFor.name === "string"
+        ? { sam: p.preparedFor.sam, name: p.preparedFor.name }
+        : undefined,
     startedAt: typeof p.startedAt === "number" ? p.startedAt : now,
     updatedAt: now,
   };
@@ -774,6 +780,13 @@ handle("ad:unlock-user", async (_e, username) => {
   return ps("Unlock-ADUser.ps1", [username as string]);
 });
 
+// Free-text AD user search for the "prepared for" picker in PC onboarding. The
+// query is a plain name/username (no secret) so it travels on the command line;
+// the script sanitizes it and only embeds it in the AD filter via a variable.
+handle("ad:search-users", async (_e, query) => {
+  return ps("Search-ADUser.ps1", [(query as string) ?? ""]);
+});
+
 handle("ad:add-group-permission", async (_e, params) => {
   const p = params as { groupName: string; description: string };
   return ps("Add-ADGroup.ps1", [p.groupName, p.description]);
@@ -844,6 +857,7 @@ handle("ad:onboard-step", async (_e, rawParams) => {
     printerSource?: string;
     smlPlayerSource?: string;
     smlPlayerIni?: string;
+    description?: string;
   };
   const step = (p.step ?? "").trim().toLowerCase();
   if (!step) return { ok: false, error: "Passo em falta." };
@@ -880,6 +894,7 @@ handle("ad:onboard-step", async (_e, rawParams) => {
     p.printerSource ?? "",
     p.smlPlayerSource ?? "",
     p.smlPlayerIni ?? "",
+    p.description ?? "",
   ];
   return runPS("Invoke-OnboardStep.ps1", args, emitLog, session ?? getConnection(), TIMEOUTS[step]);
 });

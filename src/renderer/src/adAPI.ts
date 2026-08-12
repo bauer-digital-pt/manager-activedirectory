@@ -31,6 +31,14 @@ export interface ADUser {
   UserPrincipalName?: string;
 }
 
+// Minimal user shape returned by the free-text search (Search-ADUser.ps1) — just
+// enough to identify and label a person in the "prepared for" picker.
+export interface ADUserLite {
+  SamAccountName: string;
+  DisplayName: string;
+  Enabled?: boolean;
+}
+
 interface PSResult<T = unknown> {
   ok: boolean;
   data?: T;
@@ -77,6 +85,9 @@ export interface OnboardStepParams {
   // SMLPlayer installer + the Main.ini copied into %APPDATA%\SMLPlayer7 (smlplayer step).
   smlPlayerSource?: string;
   smlPlayerIni?: string;
+  // Free-text description stamped onto the computer's AD object (domain step),
+  // e.g. "Preparado para João Silva (jsilva)". Empty = leave it untouched.
+  description?: string;
 }
 
 // Destination folder options for the device OU map. Get-DeviceOU-All.ps1 mirrors
@@ -106,6 +117,10 @@ export interface OnboardState {
   printerSource: string;
   smlPlayerSource: string;
   smlPlayerIni: string;
+  // The person this machine is being prepared for. Written onto the computer's AD
+  // description during the domain step. Optional — older persisted states (and
+  // runs where the operator skipped it) simply have no value.
+  preparedFor?: { sam: string; name: string };
   completed: string[]; // step keys already done
   startedAt: number;
   updatedAt: number;
@@ -134,6 +149,8 @@ declare global {
       createUser(params: Record<string, string>): Promise<PSResult>;
       resetPassword(params: { username: string; newPassword: string }): Promise<PSResult>;
       unlockUser(username: string): Promise<PSResult>;
+      // Free-text AD user search for the PC-onboarding "prepared for" picker.
+      searchUsers(query: string): Promise<PSResult<ADUserLite[]>>;
       // Offboard: disable + move to the morgue OU. Guarded in main by a username
       // re-type and an admin-password re-confirmation.
       offboardUser(params: { username: string; confirmUsername: string; adminPassword: string }): Promise<PSResult>;
@@ -248,6 +265,7 @@ function mockReadOnboardState(): OnboardState | null {
       active: true, dept: "MKT", targetName: "PT-LPT-MKT-02", targetOU: "MARKETING",
       anyConnectSource: "", screenConnectSource: "",
       printers: ["MRK", "COM1"], printerSource: "", smlPlayerSource: "", smlPlayerIni: "",
+      preparedFor: { sam: "tgomes", name: "Tiago Gomes" },
       completed: ["regional", "update"],
       startedAt: Date.now(), updatedAt: Date.now(),
     };
@@ -312,6 +330,25 @@ const mockAPI: Window["adAPI"] = {
     }
     return { ok: true };
   },
+  searchUsers: async (query) => {
+    await delay(300);
+    const q = (query ?? "").trim().toLowerCase();
+    if (q.length < 2) return { ok: true, data: [] };
+    // Flatten every mock category's members, dedupe by username, then substring-match.
+    const seen = new Set<string>();
+    const all: ADUserLite[] = [];
+    for (const g of Object.values(MOCK_USERS)) {
+      for (const u of g) {
+        if (!u.SamAccountName || seen.has(u.SamAccountName)) continue;
+        seen.add(u.SamAccountName);
+        all.push({ SamAccountName: u.SamAccountName, DisplayName: u.DisplayName, Enabled: u.Enabled });
+      }
+    }
+    const data = all
+      .filter((u) => u.DisplayName?.toLowerCase().includes(q) || u.SamAccountName.toLowerCase().includes(q))
+      .slice(0, 25);
+    return { ok: true, data };
+  },
   offboardUser: async ({ username, confirmUsername, adminPassword }) => {
     await delay(700);
     // Mirror the main-process safety gates so the flow is exercisable in dev.
@@ -347,7 +384,7 @@ const mockAPI: Window["adAPI"] = {
     }
     return { ok: true, data: buildMockPCStatus() };
   },
-  onboardStep: async ({ step, newName, targetOU }) => {
+  onboardStep: async ({ step, newName, targetOU, description }) => {
     await delay(1200);
     if (new URLSearchParams(location.search).has("stepfail")) {
       return { ok: false, error: "Falha simulada ao executar este passo." };
@@ -369,10 +406,12 @@ const mockAPI: Window["adAPI"] = {
         return { ok: true, data: { success: true, step, message: "SMLPlayer instalado; aberto/fechado e Main.ini aplicado." } };
       case "printers":
         return { ok: true, data: { success: true, step, message: "Impressoras configuradas." } };
-      case "domain":
+      case "domain": {
         if (!newName) return { ok: false, error: "Nome em falta." };
         mockPC.domainJoined = true; mockPC.domainName = "bmap.lis"; mockPC.hostname = newName;
-        return { ok: true, data: { success: true, step, newName, rebootRequired: true, message: `Juntado ao domínio bmap.lis e renomeado${targetOU ? ` (pasta ${targetOU})` : ""}.` } };
+        const extra = `${targetOU ? ` (pasta ${targetOU})` : ""}${description ? ` — ${description}` : ""}`;
+        return { ok: true, data: { success: true, step, newName, rebootRequired: true, message: `Juntado ao domínio bmap.lis e renomeado${extra}.` } };
+      }
       default:
         return { ok: false, error: `Passo desconhecido: ${step}` };
     }
@@ -445,6 +484,7 @@ export const adAPI = {
   createUser:           (p: Record<string, string>) => window.adAPI.createUser(p),
   resetPassword:        (p: { username: string; newPassword: string }) => window.adAPI.resetPassword(p),
   unlockUser:           (u: string) => window.adAPI.unlockUser(u),
+  searchUsers:          (q: string) => window.adAPI.searchUsers(q),
   offboardUser:         (p: { username: string; confirmUsername: string; adminPassword: string }) => window.adAPI.offboardUser(p),
   addGroupPermission:   (p: { groupName: string; description: string }) => window.adAPI.addGroupPermission(p),
   removeGroup:          (g: string) => window.adAPI.removeGroup(g),

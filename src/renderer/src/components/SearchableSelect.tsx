@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Check, ChevronsUpDown, Search, X } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2, Search, X } from "lucide-react";
 import { cn } from "../lib/cn";
 
 export interface SelectOption {
@@ -24,6 +24,16 @@ interface SearchableSelectProps {
   /** Label for the clear row (e.g. "Sem utilizador-modelo"). */
   clearLabel?: string;
   className?: string;
+  /**
+   * Async mode. When provided, the component stops filtering `options` locally —
+   * the parent owns the results and is notified of each query change (debounce
+   * on the parent side). Use `loading` for the spinner and `selectedLabel` so the
+   * trigger can still name the current value even when it isn't in `options`.
+   */
+  onSearch?: (query: string) => void;
+  loading?: boolean;
+  /** Fallback trigger label for `value` when it isn't among `options` (async mode). */
+  selectedLabel?: string;
 }
 
 // A self-contained combobox: a trigger button that opens a searchable,
@@ -41,6 +51,9 @@ export default function SearchableSelect({
   clearable = false,
   clearLabel = "Nenhum",
   className,
+  onSearch,
+  loading = false,
+  selectedLabel,
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -50,9 +63,18 @@ export default function SearchableSelect({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const selected = options.find((o) => o.value === value) ?? null;
+  const async = !!onSearch;
 
+  // In async mode the current value may not be in the (query-scoped) options, so
+  // fall back to the caller-supplied label to keep the trigger from going blank.
+  const selected =
+    options.find((o) => o.value === value) ??
+    (async && value && selectedLabel ? { value, label: selectedLabel } : null);
+
+  // Async mode: the parent already filtered — show options verbatim. Local mode:
+  // filter against the in-menu query.
   const filtered = useMemo(() => {
+    if (async) return options;
     const q = query.trim().toLowerCase();
     if (!q) return options;
     return options.filter(
@@ -61,7 +83,7 @@ export default function SearchableSelect({
         o.sublabel?.toLowerCase().includes(q) ||
         o.value.toLowerCase().includes(q)
     );
-  }, [options, query]);
+  }, [async, options, query]);
 
   // Rows include an optional synthetic "clear" row at the top so keyboard nav
   // and click share one index space.
@@ -174,11 +196,13 @@ export default function SearchableSelect({
       {open && (
         <div className="absolute z-30 mt-1.5 w-full rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100">
-            <Search size={14} className="flex-shrink-0 text-zinc-400" />
+            {loading
+              ? <Loader2 size={14} className="flex-shrink-0 text-violet-500 animate-spin" />
+              : <Search size={14} className="flex-shrink-0 text-zinc-400" />}
             <input
               ref={inputRef}
               value={query}
-              onChange={(e) => { setQuery(e.target.value); setActive(0); }}
+              onChange={(e) => { setQuery(e.target.value); setActive(0); onSearch?.(e.target.value); }}
               onKeyDown={onKeyDown}
               placeholder={searchPlaceholder}
               role="combobox"
@@ -191,7 +215,13 @@ export default function SearchableSelect({
           <div ref={listRef} id={listId} role="listbox" className="max-h-60 overflow-y-auto py-1">
             {rows.length === 0 ? (
               <div className="px-3 py-6 text-center text-sm text-zinc-400">
-                {options.length === 0 ? emptyText : "Sem resultados"}
+                {loading
+                  ? "A procurar…"
+                  : async && query.trim().length < 2
+                    ? emptyText
+                    : options.length === 0
+                      ? (async ? "Sem resultados" : emptyText)
+                      : "Sem resultados"}
               </div>
             ) : (
               rows.map((row, i) => {

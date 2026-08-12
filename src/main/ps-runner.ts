@@ -88,6 +88,23 @@ function mockResponse(script: string, args: string[], conn?: ADConnection): { ok
       return { ok: true, data: { success: true, username } };
     }
 
+    case "Search-ADUser.ps1": {
+      const q = (args[0] ?? "").trim().toLowerCase();
+      if (q.length < 2) return { ok: true, data: [] };
+      const pool = [
+        { SamAccountName: "joao.silva",   DisplayName: "João Silva",    Enabled: true },
+        { SamAccountName: "maria.costa",  DisplayName: "Maria Costa",   Enabled: true },
+        { SamAccountName: "ana.ferreira", DisplayName: "Ana Ferreira",  Enabled: false },
+        { SamAccountName: "pedro.sousa",  DisplayName: "Pedro Sousa",   Enabled: true },
+        { SamAccountName: "rita.lopes",   DisplayName: "Rita Lopes",    Enabled: true },
+        { SamAccountName: "tiago.gomes",  DisplayName: "Tiago Gomes",   Enabled: true },
+      ];
+      return {
+        ok: true,
+        data: pool.filter((u) => u.DisplayName.toLowerCase().includes(q) || u.SamAccountName.toLowerCase().includes(q)),
+      };
+    }
+
     case "Test-ADConnection.ps1":
       return { ok: true, data: { success: true, domain: "bmap.lis", forest: "bmap.lis", dc: "dc01.bmap.lis" } };
 
