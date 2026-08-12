@@ -3,6 +3,7 @@
 // In Electron the password is stored encrypted by the main process and is never
 // read back into the renderer — getConnection() only reports whether a password
 // is set. In the browser (dev/mock) everything falls back to localStorage.
+import { DEFAULT_DC } from "../../../shared/constants";
 
 export interface ConnectionInfo {
   server: string;
@@ -17,10 +18,6 @@ export interface ConnectionPayload {
 }
 
 const LS_KEY = "admanager.connection";
-
-// Default domain controller (domain: bmap.lis). Kept in sync with DEFAULT_DC in
-// the main process — mirrored here only for the browser (dev/mock) fallback.
-const DEFAULT_DC = "10.4.0.12";
 
 // window.configAPI is declared globally in groupsConfig.ts.
 

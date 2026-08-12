@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { spawn } from "child_process";
 import electronUpdater from "electron-updater";
 import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
+import { DEFAULT_DC } from "../shared/constants";
+import type { AppSettings, DeviceConfig, OnboardState, StartupInfo } from "../shared/types";
 import {
   bindLogWindow,
   pushLog,
@@ -45,12 +47,7 @@ function writeGroups(config: GroupConfig): void {
 // safeStorage (OS keychain) and is never sent back to the renderer in clear text.
 const CONN_PATH = join(app.getPath("userData"), "connection.json");
 
-// Domain controller the app talks to by default (domain: bmap.lis). Pre-filled
-// so a fresh install connects out of the box; the user can override it in
-// Settings → Connection. An empty stored value also falls back to this.
-// We use the DC's IP directly (not the hostname pt-srv-dc02) because some client
-// PCs don't resolve the DC hostname via DNS, which broke ADWS connectivity.
-const DEFAULT_DC = "10.4.0.12";
+// DEFAULT_DC (the fallback domain controller) is defined in src/shared/constants.ts.
 
 // Legacy stored server values that must be transparently migrated to the IP:
 // the hostname pt-srv-dc02 doesn't resolve via DNS on some client PCs, which
@@ -125,7 +122,6 @@ const SETTINGS_PATH = join(app.getPath("userData"), "settings.json");
 // Remembers the version this profile last ran, so the next launch can tell
 // whether we just came back from an (auto-)update and greet the user.
 const VERSION_PATH = join(app.getPath("userData"), "version.json");
-interface StartupInfo { version: string; justUpdated: boolean; previousVersion?: string }
 let startupInfo: StartupInfo = { version: "", justUpdated: false };
 
 // Compare the version stored last run against the running one. A mismatch means
@@ -148,12 +144,6 @@ function computeStartupInfo() {
   if (startupInfo.justUpdated) {
     pushLog({ level: "success", source: "updater", label: "updated", detail: `${previous} -> ${current}` });
   }
-}
-
-interface AppSettings {
-  devMode: boolean;
-  loginTimeoutMin: number;
-  lastUsername: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = { devMode: false, loginTimeoutMin: 30, lastUsername: "" };
@@ -181,16 +171,6 @@ function writeSettings(next: AppSettings): void {
 // BMAP Devices tree) a freshly-onboarded PC should land in, plus the shared
 // installer sources. Non-secret: stored in clear (paths/URLs, no credentials).
 const DEVICE_CONFIG_PATH = join(app.getPath("userData"), "device-config.json");
-
-interface DeviceConfig {
-  ouMap: Record<string, string>; // dept code -> destination OU folder Name
-  anyConnectSource: string;
-  screenConnectSource: string;
-  printerMap: Record<string, string[]>; // dept code -> printer names (add<NAME>.cmd)
-  printerSource: string;                 // RICOHPCL6 base folder
-  smlPlayerSource: string;               // SMLPlayer installer
-  smlPlayerIni: string;                  // Main.ini copied into %APPDATA%\SMLPlayer7
-}
 
 const DEFAULT_DEVICE_CONFIG: DeviceConfig = {
   ouMap: {}, anyConnectSource: "", screenConnectSource: "",
@@ -240,23 +220,6 @@ function writeDeviceConfig(config: DeviceConfig): void {
 // Windows + the app; the renderer then resumes from `completed`. Non-secret: it
 // holds the target name/OU/dept and which steps finished — NEVER a password.
 const ONBOARD_STATE_PATH = join(app.getPath("userData"), "onboard-state.json");
-
-interface OnboardState {
-  active: boolean;
-  dept: string;
-  targetName: string;
-  targetOU: string;
-  anyConnectSource: string;
-  screenConnectSource: string;
-  printers: string[];       // printer names to configure (add<NAME>.cmd)
-  printerSource: string;    // RICOHPCL6 base folder
-  smlPlayerSource: string;  // SMLPlayer installer
-  smlPlayerIni: string;     // Main.ini source
-  completed: string[]; // step keys already done (regional/update/anyconnect/screenconnect/smlplayer/printers/domain)
-  preparedFor?: { sam: string; name: string }; // user the PC is being prepared for (written to the computer's AD description)
-  startedAt: number;
-  updatedAt: number;
-}
 
 function readOnboardState(): OnboardState | null {
   try {

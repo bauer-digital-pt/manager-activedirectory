@@ -1,5 +1,8 @@
 // Auto-update bridge (electron-updater in the main process).
 // In the browser (dev/mock) window.updatesAPI is absent, so the helpers no-op.
+import type { StartupInfo } from "../../../shared/types";
+
+export type { StartupInfo } from "../../../shared/types";
 
 export type UpdateStatus =
   | { state: "none" }
@@ -57,12 +60,6 @@ export async function getAppVersion(): Promise<string> {
 // Startup info from the main process — used to greet the user with a one-time
 // "updated to vX" welcome right after an auto-update relaunch. In the browser
 // preview appAPI is absent, but ?justupdated lets the welcome be verified.
-export interface StartupInfo {
-  version: string;
-  justUpdated: boolean;
-  previousVersion?: string;
-}
-
 export async function getStartupInfo(): Promise<StartupInfo> {
   try {
     if (window.appAPI?.getStartupInfo) return await window.appAPI.getStartupInfo();

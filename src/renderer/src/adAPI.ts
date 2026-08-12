@@ -1,54 +1,17 @@
-// Type-safe wrapper around window.adAPI injected by the preload script
-
-export interface ADGroup {
-  Name: string;
-  Description: string;
-  GroupCategory: string;
-  GroupScope: string;
-  // Category folders are OUs under O365 — the exact OU DN, when available.
-  DistinguishedName?: string;
-}
-
-export interface ADUser {
-  SamAccountName: string;
-  DisplayName: string;
-  EmailAddress: string;
-  Enabled: boolean;
-  LockedOut: boolean;
-  // Extended fields (populated when fetched with -Properties *)
-  GivenName?: string;
-  Surname?: string;
-  Title?: string;
-  Department?: string;
-  employeeType?: string;
-  Company?: string;
-  Description?: string;
-  StreetAddress?: string;
-  City?: string;
-  PostalCode?: string;
-  Office?: string;
-  DistinguishedName?: string;
-  UserPrincipalName?: string;
-}
-
-// Minimal user shape returned by the free-text search (Search-ADUser.ps1) — just
-// enough to identify and label a person in the "prepared for" picker.
-export interface ADUserLite {
-  SamAccountName: string;
-  DisplayName: string;
-  Enabled?: boolean;
-}
-
-interface PSResult<T = unknown> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
+// Type-safe wrapper around window.adAPI injected by the preload script.
+// The AD/onboarding shapes live in src/shared/types.ts (single source of truth
+// across main + renderer); re-exported here so existing
+// `import { ADUser } from ".../adAPI"` sites keep working unchanged.
+import type {
+  ADGroup, ADUser, ADUserLite, PSResult,
+  OnboardStep, OnboardStepData, OnboardStepParams, OnboardState,
+} from "../../shared/types";
+export type {
+  ADGroup, ADUser, ADUserLite,
+  OnboardStep, OnboardStepData, OnboardStepParams, OnboardState,
+} from "../../shared/types";
 
 // --- PC onboarding (the machine the app is running on) ---
-export type OnboardStep =
-  | "regional" | "anyconnect" | "screenconnect" | "update" | "smlplayer" | "printers" | "domain";
-
 // Read-only snapshot of the local machine's onboarding state (Get-PCStatus.ps1).
 export interface PCStatus {
   hostname: string;
@@ -61,35 +24,6 @@ export interface PCStatus {
   onboarded: boolean;
 }
 
-export interface OnboardStepData {
-  success?: boolean;
-  step?: string;
-  rebootRequired?: boolean;
-  message?: string;
-  installed?: number;
-  newName?: string;
-}
-
-export interface OnboardStepParams {
-  step: OnboardStep;
-  newName?: string;
-  anyConnectSource?: string;
-  screenConnectSource?: string;
-  // Destination folder Name (a sub-OU under O365 in the BMAP Devices tree) the
-  // domain step should place the computer in. Empty = default location.
-  targetOU?: string;
-  // Printer names to configure (printers step) + the base folder holding the
-  // add<NAME>.cmd scripts (RICOHPCL6).
-  printers?: string[];
-  printerSource?: string;
-  // SMLPlayer installer + the Main.ini copied into %APPDATA%\SMLPlayer7 (smlplayer step).
-  smlPlayerSource?: string;
-  smlPlayerIni?: string;
-  // Free-text description stamped onto the computer's AD object (domain step),
-  // e.g. "Preparado para João Silva (jsilva)". Empty = leave it untouched.
-  description?: string;
-}
-
 // Destination folder options for the device OU map. Get-DeviceOU-All.ps1 mirrors
 // the ADGroup shape (Name/Description/DistinguishedName), so we reuse the type.
 export type DeviceOU = ADGroup;
@@ -99,31 +33,6 @@ export interface NextDeviceName {
   dept: string;
   number: string;
   name: string;
-}
-
-// The "fully automatic" PC onboarding wizard state, persisted by main across the
-// domain-join reboot so the run can resume on next launch. Never holds a password.
-export interface OnboardState {
-  active: boolean;
-  dept: string;
-  targetName: string;
-  targetOU: string;
-  anyConnectSource: string;
-  screenConnectSource: string;
-  // Printers to configure on this machine (its department's selection) + the
-  // RICOHPCL6 base folder and SMLPlayer sources — captured at start so the run
-  // resumes with the same inputs even if Settings change mid-flow.
-  printers: string[];
-  printerSource: string;
-  smlPlayerSource: string;
-  smlPlayerIni: string;
-  // The person this machine is being prepared for. Written onto the computer's AD
-  // description during the domain step. Optional — older persisted states (and
-  // runs where the operator skipped it) simply have no value.
-  preparedFor?: { sam: string; name: string };
-  completed: string[]; // step keys already done
-  startedAt: number;
-  updatedAt: number;
 }
 
 // Streamed progress while installing the RSAT ActiveDirectory module.
@@ -184,21 +93,12 @@ declare global {
 
 // --- Mock used when running in the browser (outside Electron) ---
 import { getGroupConfig } from "./lib/groupsConfig";
+import { mockUsersByGroup } from "../../shared/fixtures";
 
-const MOCK_USERS: Record<string, ADUser[]> = {
-  IT: [
-    { SamAccountName: "jsilva",    DisplayName: "João Silva",     EmailAddress: "jsilva@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Técnico de Sistemas",    Department: "IT",        employeeType: "Efetivo" },
-    { SamAccountName: "mcosta",    DisplayName: "Maria Costa",    EmailAddress: "mcosta@empresa.pt",    Enabled: true,  LockedOut: true,  Title: "Técnico de Sistemas",    Department: "IT",        employeeType: "Efetivo" },
-    { SamAccountName: "aferreira", DisplayName: "Ana Ferreira",   EmailAddress: "aferreira@empresa.pt", Enabled: false, LockedOut: false, Title: "Administrador de Redes", Department: "IT",        employeeType: "Prestador" },
-  ],
-  REDACAO: [
-    { SamAccountName: "psousa",    DisplayName: "Pedro Sousa",    EmailAddress: "psousa@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Jornalista",            Department: "Redação",   employeeType: "Efetivo" },
-    { SamAccountName: "rlopes",    DisplayName: "Rita Lopes",     EmailAddress: "rlopes@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Jornalista",            Department: "Redação",   employeeType: "Efetivo" },
-  ],
-  MARKETING: [
-    { SamAccountName: "tgomes",    DisplayName: "Tiago Gomes",    EmailAddress: "tgomes@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Gestor de Marca",       Department: "Marketing", employeeType: "Efetivo" },
-  ],
-};
+// Live, mutable directory for the browser mock: createUser/unlockUser/offboard and
+// the ?baduser affordance mutate it in place, so it's built from the shared people
+// once at load (not per call) to keep those mutations visible across refreshes.
+const MOCK_USERS: Record<string, ADUser[]> = mockUsersByGroup();
 
 const delay = (ms = 600) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -265,7 +165,7 @@ function mockReadOnboardState(): OnboardState | null {
       active: true, dept: "MKT", targetName: "PT-LPT-MKT-02", targetOU: "MARKETING",
       anyConnectSource: "", screenConnectSource: "",
       printers: ["MRK", "COM1"], printerSource: "", smlPlayerSource: "", smlPlayerIni: "",
-      preparedFor: { sam: "tgomes", name: "Tiago Gomes" },
+      preparedFor: { sam: "tiago.gomes", name: "Tiago Gomes" },
       completed: ["regional", "update"],
       startedAt: Date.now(), updatedAt: Date.now(),
     };

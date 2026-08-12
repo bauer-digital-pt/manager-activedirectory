@@ -4,6 +4,7 @@
 // session in the main process (the password never touches the renderer's disk).
 // In the browser (dev/mock) authAPI is absent, so a local mock lets the login
 // flow be exercised without a domain: any password authenticates except "wrong".
+import { titleCaseFromUsername } from "../../../shared/fixtures";
 
 export interface LoginResult {
   ok: boolean;
@@ -23,16 +24,6 @@ export interface AuthStatus {
 
 const LS_LAST_USER = "admanager.lastUsername";
 
-// Derive a display name from a username for the mock (afonso.queiroz → Afonso Queiroz).
-function mockDisplayName(username: string): string {
-  const bare = username.replace(/^.*\\/, "").replace(/@.*$/, "");
-  return bare
-    .split(/[.\-_]/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-}
-
 export async function login(username: string, password: string): Promise<LoginResult> {
   const u = username.trim();
   if (!u || !password) return { ok: false, error: "Indica o utilizador e a palavra-passe." };
@@ -48,7 +39,7 @@ export async function login(username: string, password: string): Promise<LoginRe
   await new Promise((r) => setTimeout(r, 500));
   if (password === "wrong") return { ok: false, error: "Credenciais inválidas." };
   localStorage.setItem(LS_LAST_USER, u);
-  return { ok: true, username: u, displayName: mockDisplayName(u), domain: "bmap.lis", dc: "dc01.bmap.lis" };
+  return { ok: true, username: u, displayName: titleCaseFromUsername(u), domain: "bmap.lis", dc: "dc01.bmap.lis" };
 }
 
 export async function logout(): Promise<void> {
