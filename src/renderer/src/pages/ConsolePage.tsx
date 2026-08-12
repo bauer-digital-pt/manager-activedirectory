@@ -39,6 +39,11 @@ const MIN_LEVELS: { key: LogLevel | "all"; label: string }[] = [
   { key: "error", label: "Errors" },
 ];
 
+// Ring-buffer cap: a long-running session emits an unbounded stream of log
+// entries. Keep only the most recent N so memory (and the per-insert dedupe
+// scan) stay bounded; older lines scroll off the top.
+const MAX_ENTRIES = 2000;
+
 export default function ConsolePage() {
   const [entries, setEntries] = useState<AppLogEntry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -58,7 +63,11 @@ export default function ConsolePage() {
     const unsub = window.consoleAPI.onLog((entry) => {
       if (!mounted) return;
       const e = entry as AppLogEntry;
-      setEntries((prev) => (prev.some((x) => x.id === e.id) ? prev : [...prev, e]));
+      setEntries((prev) => {
+        if (prev.some((x) => x.id === e.id)) return prev;
+        const next = [...prev, e];
+        return next.length > MAX_ENTRIES ? next.slice(next.length - MAX_ENTRIES) : next;
+      });
     });
 
     window.consoleAPI.getHistory?.().then((hist) => {
@@ -67,7 +76,8 @@ export default function ConsolePage() {
         const map = new Map<string, AppLogEntry>();
         for (const e of hist as AppLogEntry[]) map.set(e.id, e);
         for (const e of prev) map.set(e.id, e);
-        return [...map.values()].sort((a, b) => a.ts - b.ts);
+        const all = [...map.values()].sort((a, b) => a.ts - b.ts);
+        return all.length > MAX_ENTRIES ? all.slice(all.length - MAX_ENTRIES) : all;
       });
     });
 

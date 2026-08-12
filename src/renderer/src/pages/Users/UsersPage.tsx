@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { Plus, Search, ServerCrash, Settings, RotateCcw, RefreshCw } from "lucide-react";
 import { adAPI, type ADGroup, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
@@ -167,14 +167,19 @@ export default function UsersPage({
     return () => window.removeEventListener("keydown", handler);
   }, [goCreate, view]);
 
-  const filtered = allUsers.filter((u) => {
-    const matchesGroup = !activeGroup || u.groupName === activeGroup;
-    const matchesSearch =
-      !search ||
-      u.DisplayName?.toLowerCase().includes(search.toLowerCase()) ||
-      u.SamAccountName?.toLowerCase().includes(search.toLowerCase());
-    return matchesGroup && matchesSearch;
-  });
+  // Recompute only when the inputs change (not on every keystroke-driven render
+  // of unrelated state), and lower-case the query once instead of per user.
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return allUsers.filter((u) => {
+      const matchesGroup = !activeGroup || u.groupName === activeGroup;
+      const matchesSearch =
+        !q ||
+        u.DisplayName?.toLowerCase().includes(q) ||
+        u.SamAccountName?.toLowerCase().includes(q);
+      return matchesGroup && matchesSearch;
+    });
+  }, [allUsers, activeGroup, search]);
 
   // Reset the window whenever the result set changes (filter/search/reload).
   useEffect(() => { setVisibleCount(PAGE); }, [search, activeGroup, allUsers]);

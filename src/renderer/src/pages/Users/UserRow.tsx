@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import { Lock, Unlock, KeyRound, MoreHorizontal, X, User, UserMinus, AlertTriangle } from "lucide-react";
 import { adAPI, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
@@ -11,7 +11,7 @@ type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
 const DEFAULT_PASSWORD = "Passw0rd#123";
 
-export default function UserRow({
+function UserRow({
   user,
   groupName,
   toast,
@@ -365,6 +365,12 @@ export default function UserRow({
     </>
   );
 }
+
+// Memoised: UsersPage re-renders on every search keystroke and scroll-driven
+// window growth, but each row's props (user object, group name, the stable
+// `toast` + `onRefresh` callbacks) are unchanged — so a shallow compare skips
+// re-rendering the whole visible list (and its menu/modal machinery) on input.
+export default memo(UserRow);
 
 function MenuItem({ icon, label, bind, disabled, danger, onClick }: { icon: React.ReactNode; label: string; bind: string; disabled?: boolean; danger?: boolean; onClick: () => void }) {
   return (
