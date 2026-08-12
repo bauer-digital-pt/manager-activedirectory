@@ -1,4 +1,7 @@
 import type { DeviceConfig } from "./deviceConfig";
+import type { AppSettings } from "../../../shared/types";
+
+export type { AppSettings } from "../../../shared/types";
 
 export interface GroupEntry {
   adGroups:   string[];
@@ -28,12 +31,6 @@ export const DEFAULT_GROUPS: GroupConfig = {
 };
 
 const LS_KEY = "admanager.groupsConfig";
-
-export interface AppSettings {
-  devMode: boolean;
-  loginTimeoutMin: number;
-  lastUsername: string;
-}
 
 declare global {
   interface Window {
@@ -107,8 +104,4 @@ export async function getGroupConfig(): Promise<GroupConfig> {
 export async function setGroupConfig(config: GroupConfig): Promise<void> {
   if (window.configAPI) return window.configAPI.setGroups(config);
   localStorage.setItem(LS_KEY, JSON.stringify(config));
-}
-
-export function getOnboardingGroups(config: GroupConfig): string[] {
-  return Object.keys(config).sort();
 }

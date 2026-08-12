@@ -4,22 +4,9 @@
 // selection (RICOHPCL6 add<NAME>.cmd scripts), and the SMLPlayer sources. Mirrors
 // groupsConfig.ts — reads from the Electron config bridge when present, else
 // localStorage (so the browser preview is fully exercisable).
+import type { DeviceConfig } from "../../../shared/types";
 
-export interface DeviceConfig {
-  // Department code -> destination OU folder Name (as listed by Get-DeviceOU-All.ps1).
-  ouMap: Record<string, string>;
-  anyConnectSource: string;
-  screenConnectSource: string;
-  // Department code -> list of printer names to configure on that department's PCs.
-  // Each name maps to an add<NAME>.cmd script under the RICOHPCL6 folder.
-  printerMap: Record<string, string[]>;
-  // Base folder holding the printer add<NAME>.cmd scripts (RICOHPCL6). Empty =
-  // the built-in NAS default applied at run time (see DevicesPage).
-  printerSource: string;
-  // SMLPlayer installer + the Main.ini copied into %APPDATA%\SMLPlayer7 after it.
-  smlPlayerSource: string;
-  smlPlayerIni: string;
-}
+export type { DeviceConfig } from "../../../shared/types";
 
 // The 12 device department codes, kept in sync with Get-PCStatus.ps1,
 // Get-NextDeviceName.ps1 and Invoke-OnboardStep.ps1's name-validation regex.

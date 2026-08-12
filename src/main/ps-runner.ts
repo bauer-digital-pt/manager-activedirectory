@@ -1,6 +1,11 @@
 import { execFile } from "child_process";
 import { join } from "path";
 import { app } from "electron";
+import type { ADConnection } from "../shared/types";
+import { mockUsersByGroup, mockSearchPool, titleCaseFromUsername } from "../shared/fixtures";
+
+// Re-exported so main.ts keeps importing ADConnection from "./ps-runner".
+export type { ADConnection } from "../shared/types";
 
 // PowerShell scripts can't be run from inside app.asar (execFile needs a real
 // file path), so they are shipped via electron-builder `extraResources` and
@@ -12,15 +17,9 @@ const SCRIPTS_DIR = app.isPackaged
 // Set MOCK_PS=1 in env to intercept all PS calls and return fake data
 const MOCK_MODE = process.env.MOCK_PS === "1";
 
-// Remote AD connection details. When set, they are forwarded to the PS scripts
-// as environment variables (AD_SERVER / AD_USER / AD_PASSWORD) so the AD cmdlets
-// target a remote domain controller with explicit credentials. When empty, the
-// scripts fall back to the local domain and the current user's credentials.
-export interface ADConnection {
-  server: string;
-  username: string;
-  password: string;
-}
+// ADConnection (the remote AD credentials forwarded to the PS scripts as
+// AD_SERVER / AD_USER / AD_PASSWORD env vars) is defined in src/shared/types.ts
+// and re-exported above.
 
 export interface LogEntry {
   id: string;
@@ -49,20 +48,7 @@ function mockResponse(script: string, args: string[], conn?: ADConnection): { ok
 
     case "Get-ADGroupMembers.ps1": {
       const group = args[0] ?? "IT";
-      const members: Record<string, unknown[]> = {
-        IT: [
-          { SamAccountName: "joao.silva",    DisplayName: "João Silva",    EmailAddress: "joao.silva@bmap.lis",    Enabled: true,  LockedOut: false, Title: "Técnico de IT",    Department: "IT" },
-          { SamAccountName: "maria.costa",   DisplayName: "Maria Costa",   EmailAddress: "maria.costa@bmap.lis",   Enabled: true,  LockedOut: true,  Title: "Helpdesk",         Department: "IT" },
-          { SamAccountName: "ana.ferreira",  DisplayName: "Ana Ferreira",  EmailAddress: "ana.ferreira@bmap.lis",  Enabled: false, LockedOut: false, Title: "Administrador de Sistemas", Department: "IT" },
-        ],
-        REDACAO: [
-          { SamAccountName: "pedro.sousa",   DisplayName: "Pedro Sousa",   EmailAddress: "pedro.sousa@bmap.lis",   Enabled: true,  LockedOut: false, Title: "Jornalista",       Department: "Redação" },
-          { SamAccountName: "rita.lopes",    DisplayName: "Rita Lopes",    EmailAddress: "rita.lopes@bmap.lis",    Enabled: true,  LockedOut: false, Title: "Editor",           Department: "Redação" },
-        ],
-        COMERCIAL: [
-          { SamAccountName: "tiago.gomes",   DisplayName: "Tiago Gomes",   EmailAddress: "tiago.gomes@bmap.lis",   Enabled: true,  LockedOut: false, Title: "Account Manager",  Department: "Comercial" },
-        ],
-      };
+      const members = mockUsersByGroup();
       return { ok: true, data: members[group] ?? [] };
     }
 
@@ -88,6 +74,16 @@ function mockResponse(script: string, args: string[], conn?: ADConnection): { ok
       return { ok: true, data: { success: true, username } };
     }
 
+    case "Search-ADUser.ps1": {
+      const q = (args[0] ?? "").trim().toLowerCase();
+      if (q.length < 2) return { ok: true, data: [] };
+      const pool = mockSearchPool();
+      return {
+        ok: true,
+        data: pool.filter((u) => u.DisplayName.toLowerCase().includes(q) || u.SamAccountName.toLowerCase().includes(q)),
+      };
+    }
+
     case "Test-ADConnection.ps1":
       return { ok: true, data: { success: true, domain: "bmap.lis", forest: "bmap.lis", dc: "dc01.bmap.lis" } };
 
@@ -98,12 +94,7 @@ function mockResponse(script: string, args: string[], conn?: ADConnection): { ok
       const pass = conn?.password ?? "";
       if (!user || !pass) return { ok: false, error: "Credenciais em falta." };
       if (pass === "wrong") return { ok: true, data: { success: false, error: "Credenciais inválidas." } };
-      const bare = user.replace(/^.*\\/, "").replace(/@.*$/, "");
-      const displayName = bare
-        .split(/[.\-_]/)
-        .filter(Boolean)
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(" ");
+      const displayName = titleCaseFromUsername(user);
       return { ok: true, data: { success: true, domain: "bmap.lis", dc: "dc01.bmap.lis", displayName } };
     }
 

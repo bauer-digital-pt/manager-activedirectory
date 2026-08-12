@@ -1,46 +1,17 @@
-// Type-safe wrapper around window.adAPI injected by the preload script
-
-export interface ADGroup {
-  Name: string;
-  Description: string;
-  GroupCategory: string;
-  GroupScope: string;
-  // Category folders are OUs under O365 — the exact OU DN, when available.
-  DistinguishedName?: string;
-}
-
-export interface ADUser {
-  SamAccountName: string;
-  DisplayName: string;
-  EmailAddress: string;
-  Enabled: boolean;
-  LockedOut: boolean;
-  // Extended fields (populated when fetched with -Properties *)
-  GivenName?: string;
-  Surname?: string;
-  Title?: string;
-  Department?: string;
-  employeeType?: string;
-  Company?: string;
-  Description?: string;
-  StreetAddress?: string;
-  City?: string;
-  PostalCode?: string;
-  Office?: string;
-  DistinguishedName?: string;
-  UserPrincipalName?: string;
-}
-
-interface PSResult<T = unknown> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
+// Type-safe wrapper around window.adAPI injected by the preload script.
+// The AD/onboarding shapes live in src/shared/types.ts (single source of truth
+// across main + renderer); re-exported here so existing
+// `import { ADUser } from ".../adAPI"` sites keep working unchanged.
+import type {
+  ADGroup, ADUser, ADUserLite, PSResult,
+  OnboardStep, OnboardStepData, OnboardStepParams, OnboardState,
+} from "../../shared/types";
+export type {
+  ADGroup, ADUser, ADUserLite,
+  OnboardStep, OnboardStepData, OnboardStepParams, OnboardState,
+} from "../../shared/types";
 
 // --- PC onboarding (the machine the app is running on) ---
-export type OnboardStep =
-  | "regional" | "anyconnect" | "screenconnect" | "update" | "smlplayer" | "printers" | "domain";
-
 // Read-only snapshot of the local machine's onboarding state (Get-PCStatus.ps1).
 export interface PCStatus {
   hostname: string;
@@ -53,32 +24,6 @@ export interface PCStatus {
   onboarded: boolean;
 }
 
-export interface OnboardStepData {
-  success?: boolean;
-  step?: string;
-  rebootRequired?: boolean;
-  message?: string;
-  installed?: number;
-  newName?: string;
-}
-
-export interface OnboardStepParams {
-  step: OnboardStep;
-  newName?: string;
-  anyConnectSource?: string;
-  screenConnectSource?: string;
-  // Destination folder Name (a sub-OU under O365 in the BMAP Devices tree) the
-  // domain step should place the computer in. Empty = default location.
-  targetOU?: string;
-  // Printer names to configure (printers step) + the base folder holding the
-  // add<NAME>.cmd scripts (RICOHPCL6).
-  printers?: string[];
-  printerSource?: string;
-  // SMLPlayer installer + the Main.ini copied into %APPDATA%\SMLPlayer7 (smlplayer step).
-  smlPlayerSource?: string;
-  smlPlayerIni?: string;
-}
-
 // Destination folder options for the device OU map. Get-DeviceOU-All.ps1 mirrors
 // the ADGroup shape (Name/Description/DistinguishedName), so we reuse the type.
 export type DeviceOU = ADGroup;
@@ -88,27 +33,6 @@ export interface NextDeviceName {
   dept: string;
   number: string;
   name: string;
-}
-
-// The "fully automatic" PC onboarding wizard state, persisted by main across the
-// domain-join reboot so the run can resume on next launch. Never holds a password.
-export interface OnboardState {
-  active: boolean;
-  dept: string;
-  targetName: string;
-  targetOU: string;
-  anyConnectSource: string;
-  screenConnectSource: string;
-  // Printers to configure on this machine (its department's selection) + the
-  // RICOHPCL6 base folder and SMLPlayer sources — captured at start so the run
-  // resumes with the same inputs even if Settings change mid-flow.
-  printers: string[];
-  printerSource: string;
-  smlPlayerSource: string;
-  smlPlayerIni: string;
-  completed: string[]; // step keys already done
-  startedAt: number;
-  updatedAt: number;
 }
 
 // Streamed progress while installing the RSAT ActiveDirectory module.
@@ -134,6 +58,8 @@ declare global {
       createUser(params: Record<string, string>): Promise<PSResult>;
       resetPassword(params: { username: string; newPassword: string }): Promise<PSResult>;
       unlockUser(username: string): Promise<PSResult>;
+      // Free-text AD user search for the PC-onboarding "prepared for" picker.
+      searchUsers(query: string): Promise<PSResult<ADUserLite[]>>;
       // Offboard: disable + move to the morgue OU. Guarded in main by a username
       // re-type and an admin-password re-confirmation.
       offboardUser(params: { username: string; confirmUsername: string; adminPassword: string }): Promise<PSResult>;
@@ -167,21 +93,12 @@ declare global {
 
 // --- Mock used when running in the browser (outside Electron) ---
 import { getGroupConfig } from "./lib/groupsConfig";
+import { mockUsersByGroup } from "../../shared/fixtures";
 
-const MOCK_USERS: Record<string, ADUser[]> = {
-  IT: [
-    { SamAccountName: "jsilva",    DisplayName: "João Silva",     EmailAddress: "jsilva@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Técnico de Sistemas",    Department: "IT",        employeeType: "Efetivo" },
-    { SamAccountName: "mcosta",    DisplayName: "Maria Costa",    EmailAddress: "mcosta@empresa.pt",    Enabled: true,  LockedOut: true,  Title: "Técnico de Sistemas",    Department: "IT",        employeeType: "Efetivo" },
-    { SamAccountName: "aferreira", DisplayName: "Ana Ferreira",   EmailAddress: "aferreira@empresa.pt", Enabled: false, LockedOut: false, Title: "Administrador de Redes", Department: "IT",        employeeType: "Prestador" },
-  ],
-  REDACAO: [
-    { SamAccountName: "psousa",    DisplayName: "Pedro Sousa",    EmailAddress: "psousa@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Jornalista",            Department: "Redação",   employeeType: "Efetivo" },
-    { SamAccountName: "rlopes",    DisplayName: "Rita Lopes",     EmailAddress: "rlopes@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Jornalista",            Department: "Redação",   employeeType: "Efetivo" },
-  ],
-  MARKETING: [
-    { SamAccountName: "tgomes",    DisplayName: "Tiago Gomes",    EmailAddress: "tgomes@empresa.pt",    Enabled: true,  LockedOut: false, Title: "Gestor de Marca",       Department: "Marketing", employeeType: "Efetivo" },
-  ],
-};
+// Live, mutable directory for the browser mock: createUser/unlockUser/offboard and
+// the ?baduser affordance mutate it in place, so it's built from the shared people
+// once at load (not per call) to keep those mutations visible across refreshes.
+const MOCK_USERS: Record<string, ADUser[]> = mockUsersByGroup();
 
 const delay = (ms = 600) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -248,6 +165,7 @@ function mockReadOnboardState(): OnboardState | null {
       active: true, dept: "MKT", targetName: "PT-LPT-MKT-02", targetOU: "MARKETING",
       anyConnectSource: "", screenConnectSource: "",
       printers: ["MRK", "COM1"], printerSource: "", smlPlayerSource: "", smlPlayerIni: "",
+      preparedFor: { sam: "tiago.gomes", name: "Tiago Gomes" },
       completed: ["regional", "update"],
       startedAt: Date.now(), updatedAt: Date.now(),
     };
@@ -312,6 +230,25 @@ const mockAPI: Window["adAPI"] = {
     }
     return { ok: true };
   },
+  searchUsers: async (query) => {
+    await delay(300);
+    const q = (query ?? "").trim().toLowerCase();
+    if (q.length < 2) return { ok: true, data: [] };
+    // Flatten every mock category's members, dedupe by username, then substring-match.
+    const seen = new Set<string>();
+    const all: ADUserLite[] = [];
+    for (const g of Object.values(MOCK_USERS)) {
+      for (const u of g) {
+        if (!u.SamAccountName || seen.has(u.SamAccountName)) continue;
+        seen.add(u.SamAccountName);
+        all.push({ SamAccountName: u.SamAccountName, DisplayName: u.DisplayName, Enabled: u.Enabled });
+      }
+    }
+    const data = all
+      .filter((u) => u.DisplayName?.toLowerCase().includes(q) || u.SamAccountName.toLowerCase().includes(q))
+      .slice(0, 25);
+    return { ok: true, data };
+  },
   offboardUser: async ({ username, confirmUsername, adminPassword }) => {
     await delay(700);
     // Mirror the main-process safety gates so the flow is exercisable in dev.
@@ -347,7 +284,7 @@ const mockAPI: Window["adAPI"] = {
     }
     return { ok: true, data: buildMockPCStatus() };
   },
-  onboardStep: async ({ step, newName, targetOU }) => {
+  onboardStep: async ({ step, newName, targetOU, description }) => {
     await delay(1200);
     if (new URLSearchParams(location.search).has("stepfail")) {
       return { ok: false, error: "Falha simulada ao executar este passo." };
@@ -369,10 +306,12 @@ const mockAPI: Window["adAPI"] = {
         return { ok: true, data: { success: true, step, message: "SMLPlayer instalado; aberto/fechado e Main.ini aplicado." } };
       case "printers":
         return { ok: true, data: { success: true, step, message: "Impressoras configuradas." } };
-      case "domain":
+      case "domain": {
         if (!newName) return { ok: false, error: "Nome em falta." };
         mockPC.domainJoined = true; mockPC.domainName = "bmap.lis"; mockPC.hostname = newName;
-        return { ok: true, data: { success: true, step, newName, rebootRequired: true, message: `Juntado ao domínio bmap.lis e renomeado${targetOU ? ` (pasta ${targetOU})` : ""}.` } };
+        const extra = `${targetOU ? ` (pasta ${targetOU})` : ""}${description ? ` — ${description}` : ""}`;
+        return { ok: true, data: { success: true, step, newName, rebootRequired: true, message: `Juntado ao domínio bmap.lis e renomeado${extra}.` } };
+      }
       default:
         return { ok: false, error: `Passo desconhecido: ${step}` };
     }
@@ -445,6 +384,7 @@ export const adAPI = {
   createUser:           (p: Record<string, string>) => window.adAPI.createUser(p),
   resetPassword:        (p: { username: string; newPassword: string }) => window.adAPI.resetPassword(p),
   unlockUser:           (u: string) => window.adAPI.unlockUser(u),
+  searchUsers:          (q: string) => window.adAPI.searchUsers(q),
   offboardUser:         (p: { username: string; confirmUsername: string; adminPassword: string }) => window.adAPI.offboardUser(p),
   addGroupPermission:   (p: { groupName: string; description: string }) => window.adAPI.addGroupPermission(p),
   removeGroup:          (g: string) => window.adAPI.removeGroup(g),

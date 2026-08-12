@@ -5,9 +5,10 @@ import {
   Power, X, FolderCog, Building2, Printer, AppWindow,
 } from "lucide-react";
 import type { ExternalToast } from "sonner";
-import { adAPI, isBrowserMock, type PCStatus, type OnboardStep, type OnboardState } from "../adAPI";
+import { adAPI, isBrowserMock, type PCStatus, type OnboardStep, type OnboardState, type ADUserLite } from "../adAPI";
 import { getDeviceConfig, EMPTY_DEVICE_CONFIG, type DeviceConfig } from "../lib/deviceConfig";
 import { setNavGuard } from "../lib/navGuard";
+import SearchableSelect from "../components/SearchableSelect";
 import { cn } from "../lib/cn";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -47,6 +48,14 @@ const STEPS: StepDef[] = [
 // selected in Settings; otherwise it's dropped from the run and the checklist.
 function applicableSteps(printerCount: number): StepDef[] {
   return printerCount > 0 ? STEPS : STEPS.filter((s) => s.key !== "printers");
+}
+
+// The AD-computer description written during the domain step, from the chosen
+// "prepared for" user. Empty string when no user was picked (→ description left
+// untouched). Kept ASCII-safe on the label; the name itself may carry accents.
+function preparedForDescription(pf?: { sam: string; name: string } | null): string {
+  if (!pf || !pf.name) return "";
+  return pf.sam ? `Preparado para ${pf.name} (${pf.sam})` : `Preparado para ${pf.name}`;
 }
 
 type Phase = "idle" | "running" | "paused" | "reboot" | "rebooting" | "done";
@@ -91,6 +100,12 @@ export default function DevicesPage({
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [dept, setDept] = useState("");
+  // Who the machine is being prepared for (optional) — written to the computer's
+  // AD description during the domain step. Held as {sam,name} so the picker can
+  // show the display name while the description carries both.
+  const [preparedFor, setPreparedFor] = useState<{ sam: string; name: string } | null>(null);
+  const [userResults, setUserResults] = useState<ADUserLite[]>([]);
+  const [userSearching, setUserSearching] = useState(false);
   const [activeState, setActiveState] = useState<OnboardState | null>(null);
   const [results, setResults] = useState<Record<string, StepState>>({});
   const [currentStep, setCurrentStep] = useState<OnboardStep | null>(null);
@@ -106,6 +121,25 @@ export default function DevicesPage({
   const mountedRef = useRef(true);
   const toastRef = useRef(toast);
   toastRef.current = toast;
+
+  // Debounced AD user search for the "prepared for" picker. searchSeq drops stale
+  // responses (a slower earlier query resolving after a newer one).
+  const searchTimer = useRef<number | null>(null);
+  const searchSeq = useRef(0);
+  const searchUsers = useCallback((query: string) => {
+    const q = query.trim();
+    const seq = ++searchSeq.current;
+    if (searchTimer.current) window.clearTimeout(searchTimer.current);
+    if (q.length < 2) { setUserResults([]); setUserSearching(false); return; }
+    setUserSearching(true);
+    searchTimer.current = window.setTimeout(async () => {
+      const r = await adAPI.searchUsers(q);
+      if (seq !== searchSeq.current || !mountedRef.current) return; // superseded / unmounted
+      setUserResults(r.ok && Array.isArray(r.data) ? r.data : []);
+      setUserSearching(false);
+    }, 250);
+  }, []);
+  useEffect(() => () => { if (searchTimer.current) window.clearTimeout(searchTimer.current); }, []);
 
   const busy = phase === "running" || phase === "rebooting" || starting;
 
@@ -142,6 +176,7 @@ export default function DevicesPage({
             step: s.key,
             newName: s.key === "domain" ? current.targetName : undefined,
             targetOU: s.key === "domain" ? current.targetOU : undefined,
+            description: s.key === "domain" ? (preparedForDescription(current.preparedFor) || undefined) : undefined,
             anyConnectSource: current.anyConnectSource,
             screenConnectSource: current.screenConnectSource,
             printers: s.key === "printers" ? current.printers : undefined,
@@ -206,6 +241,7 @@ export default function DevicesPage({
         // Resume an onboarding that was in progress (typically after the reboot).
         setActiveState(state);
         setDept(state.dept);
+        setPreparedFor(state.preparedFor ?? null);
         setResults(Object.fromEntries(state.completed.map((k) => [k, { state: "done" as const }])));
         const remaining = applicableSteps(state.printers?.length ?? 0)
           .filter((s) => !state.completed.includes(s.key) && !stepDone(st, s.key));
@@ -347,6 +383,7 @@ export default function DevicesPage({
         printerSource: config.printerSource || DEFAULT_PRINTER_SOURCE,
         smlPlayerSource: config.smlPlayerSource || DEFAULT_SMLPLAYER,
         smlPlayerIni: config.smlPlayerIni || DEFAULT_SMLPLAYER_INI,
+        preparedFor: preparedFor ?? undefined,
         completed: preDone,
         startedAt: now,
         updatedAt: now,
@@ -387,6 +424,7 @@ export default function DevicesPage({
     cancelRef.current = true;
     await adAPI.clearOnboardState();
     setActiveState(null);
+    setPreparedFor(null);
     setRebootCountdown(null);
     setResults({});
     setCurrentStep(null);
@@ -535,6 +573,39 @@ export default function DevicesPage({
                   )}
                 </div>
 
+                {/* Who the machine is being prepared for — stamped onto the AD
+                    computer object's description during the domain step. Optional. */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Computador preparado para</label>
+                  <SearchableSelect
+                    className="max-w-md"
+                    value={preparedFor?.sam ?? ""}
+                    selectedLabel={preparedFor?.name}
+                    onChange={(sam) => {
+                      if (!sam) { setPreparedFor(null); return; }
+                      const u = userResults.find((x) => x.SamAccountName === sam);
+                      setPreparedFor({ sam, name: u?.DisplayName || preparedFor?.name || sam });
+                    }}
+                    options={userResults.map((u) => ({
+                      value: u.SamAccountName,
+                      label: u.DisplayName || u.SamAccountName,
+                      sublabel: u.SamAccountName + (u.Enabled === false ? " · desativado" : ""),
+                    }))}
+                    onSearch={searchUsers}
+                    loading={userSearching}
+                    clearable
+                    clearLabel="Sem utilizador"
+                    placeholder="Procurar utilizador…"
+                    searchPlaceholder="Nome ou username…"
+                    emptyText="Escreve pelo menos 2 letras…"
+                    disabled={busy}
+                  />
+                  <p className="text-xs text-zinc-400">
+                    Opcional. Fica na descrição do computador na Active Directory
+                    {preparedFor ? <> (<span className="font-medium text-zinc-500">{preparedForDescription(preparedFor)}</span>)</> : null}.
+                  </p>
+                </div>
+
                 <button
                   onClick={startOnboarding}
                   disabled={!dept || mappingMissing || busy}
@@ -649,7 +720,7 @@ export default function DevicesPage({
                     key={s.key}
                     def={s}
                     state={displayState(s.key)}
-                    detail={stepDetail(status, s.key, activeState?.targetName ?? "", printersForDept)}
+                    detail={stepDetail(status, s.key, activeState?.targetName ?? "", printersForDept, activeState?.preparedFor?.name ?? preparedFor?.name ?? "")}
                     message={results[s.key]?.message}
                     targetOU={s.key === "domain" ? activeState?.targetOU : undefined}
                   />
@@ -666,7 +737,7 @@ export default function DevicesPage({
 /* -------------------------------------------------------------------------- */
 
 // A one-line description of the current state of a dimension, shown under its label.
-function stepDetail(status: PCStatus, key: OnboardStep, targetName: string, printers: string[]): string {
+function stepDetail(status: PCStatus, key: OnboardStep, targetName: string, printers: string[], preparedForName: string): string {
   switch (key) {
     case "regional": {
       const r = status.regional;
@@ -688,11 +759,12 @@ function stepDetail(status: PCStatus, key: OnboardStep, targetName: string, prin
     case "domain": {
       const okDomain = status.domain.compliant;
       const okName = status.name.compliant;
-      if (okDomain && okName) return `${status.hostname} · ${status.domain.name}`;
+      const prep = preparedForName ? ` · preparado para ${preparedForName}` : "";
+      if (okDomain && okName) return `${status.hostname} · ${status.domain.name}${prep}`;
       const parts: string[] = [];
       parts.push(okDomain ? `no domínio ${status.domain.name}` : "fora do domínio bmap.lis");
       parts.push(okName ? "nome conforme" : targetName ? `renomear → ${targetName}` : "nome não conforme");
-      return parts.join(" · ");
+      return parts.join(" · ") + prep;
     }
   }
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Toaster, toast } from "sonner";
 import { AlertTriangle, Download, X } from "lucide-react";
 import Sidebar from "./components/Sidebar";
@@ -8,9 +8,11 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import SetupRequired from "./components/SetupRequired";
 import UpdateAvailable from "./components/UpdateAvailable";
 import UsersPage from "./pages/Users/UsersPage";
-import DevicesPage from "./pages/DevicesPage";
-import SettingsPage from "./pages/SettingsPage";
-import ConsolePage from "./pages/ConsolePage";
+// Secondary pages are code-split so the initial bundle carries only the login
+// shell + the default Users page. Each chunk loads on first navigation to it.
+const DevicesPage = lazy(() => import("./pages/DevicesPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const ConsolePage = lazy(() => import("./pages/ConsolePage"));
 import { adAPI } from "./adAPI";
 import { updatesAPI, getStartupInfo, type UpdateStatus } from "./lib/updates";
 import { getAuthStatus, logout, ping, type LoginResult } from "./lib/auth";
@@ -359,10 +361,14 @@ export default function App() {
             {/* Keyed by page: a crash in one page shows a compact fallback (sidebar
                 stays), and navigating to another page remounts a fresh boundary. */}
             <ErrorBoundary key={page} compact>
-              {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => navigate("settings")} />}
-              {page === "devices"  && <DevicesPage  toast={toast} onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }} />}
-              {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} initialTab={settingsTab} />}
-              {page === "console"  && devMode && <ConsolePage />}
+              {/* Suspense catches the lazy secondary-page chunks while they load;
+                  the eager Users page renders synchronously and never suspends. */}
+              <Suspense fallback={<PageFallback />}>
+                {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => navigate("settings")} />}
+                {page === "devices"  && <DevicesPage  toast={toast} onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }} />}
+                {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} initialTab={settingsTab} />}
+                {page === "console"  && devMode && <ConsolePage />}
+              </Suspense>
             </ErrorBoundary>
           </main>
         </div>
@@ -375,6 +381,15 @@ export default function App() {
       <TitleBar />
       {content}
       <Toaster position="bottom-right" richColors closeButton />
+    </div>
+  );
+}
+
+// Shown for the brief moment a code-split page chunk is loading.
+function PageFallback() {
+  return (
+    <div className="flex flex-1 items-center justify-center bg-white">
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-200 border-t-violet-500" />
     </div>
   );
 }

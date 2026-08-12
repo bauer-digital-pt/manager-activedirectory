@@ -2,9 +2,9 @@
 //
 // In Electron these persist to settings.json via the main process. In the
 // browser (dev/mock) they fall back to localStorage so the UI still works.
-import type { AppSettings } from "./groupsConfig";
+import type { AppSettings } from "../../../shared/types";
 
-export type { AppSettings } from "./groupsConfig";
+export type { AppSettings } from "../../../shared/types";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   devMode: false,

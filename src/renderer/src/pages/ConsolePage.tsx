@@ -4,6 +4,7 @@ import {
   AlertTriangle, Info, Bug, Copy, Check,
 } from "lucide-react";
 import { cn } from "../lib/cn";
+import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import type { AppLogEntry, LogLevel } from "../lib/appLog";
 
 // Severity rank for the min-level filter. "success" is an info-severity event.
@@ -38,6 +39,11 @@ const MIN_LEVELS: { key: LogLevel | "all"; label: string }[] = [
   { key: "error", label: "Errors" },
 ];
 
+// Ring-buffer cap: a long-running session emits an unbounded stream of log
+// entries. Keep only the most recent N so memory (and the per-insert dedupe
+// scan) stay bounded; older lines scroll off the top.
+const MAX_ENTRIES = 2000;
+
 export default function ConsolePage() {
   const [entries, setEntries] = useState<AppLogEntry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -45,7 +51,7 @@ export default function ConsolePage() {
   const [hiddenSources, setHiddenSources] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyFeedback(1500);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Subscribe first, then back-fill history — so nothing emitted in the gap is
@@ -57,7 +63,11 @@ export default function ConsolePage() {
     const unsub = window.consoleAPI.onLog((entry) => {
       if (!mounted) return;
       const e = entry as AppLogEntry;
-      setEntries((prev) => (prev.some((x) => x.id === e.id) ? prev : [...prev, e]));
+      setEntries((prev) => {
+        if (prev.some((x) => x.id === e.id)) return prev;
+        const next = [...prev, e];
+        return next.length > MAX_ENTRIES ? next.slice(next.length - MAX_ENTRIES) : next;
+      });
     });
 
     window.consoleAPI.getHistory?.().then((hist) => {
@@ -66,7 +76,8 @@ export default function ConsolePage() {
         const map = new Map<string, AppLogEntry>();
         for (const e of hist as AppLogEntry[]) map.set(e.id, e);
         for (const e of prev) map.set(e.id, e);
-        return [...map.values()].sort((a, b) => a.ts - b.ts);
+        const all = [...map.values()].sort((a, b) => a.ts - b.ts);
+        return all.length > MAX_ENTRIES ? all.slice(all.length - MAX_ENTRIES) : all;
       });
     });
 
@@ -110,13 +121,7 @@ export default function ConsolePage() {
 
   const clearAll = () => { setEntries([]); setExpanded(new Set()); window.consoleAPI?.clear?.(); };
 
-  const copyAll = async () => {
-    try {
-      await navigator.clipboard.writeText(filtered.map(fmtLine).join("\n"));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* clipboard blocked */ }
-  };
+  const copyAll = () => copy(filtered.map(fmtLine).join("\n"));
 
   const fmt = (ts: number) => {
     const d = new Date(ts);

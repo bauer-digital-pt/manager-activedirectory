@@ -37,7 +37,11 @@ param(
   [string]$PrinterSource = "",
   # SMLPlayer installer + the Main.ini copied into %APPDATA%\SMLPlayer7 (smlplayer step).
   [string]$SmlPlayerSource = "",
-  [string]$SmlPlayerIni = ""
+  [string]$SmlPlayerIni = "",
+  # Free-text description written onto the computer's AD object (domain step),
+  # e.g. "Preparado para Joao Silva (jsilva)". Empty = leave the description
+  # untouched. Best-effort: a failure here warns but never fails the join.
+  [string]$Description = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -267,19 +271,32 @@ switch ($Step) {
     $sec = ConvertTo-SecureString $pw -AsPlainText -Force
     $cred = New-Object System.Management.Automation.PSCredential($u, $sec)
 
-    # Resolve the destination OU DN from the folder Name (a sub-OU under O365 in the
-    # BMAP Devices tree). Matched by -Filter on Name so a folder name with a space /
-    # comma / quote can never corrupt the DN. Resolution failure is a WARNING, not a
-    # fatal error: the computer still needs to be joined, just in the default spot.
+    # The AD module + connection are needed to resolve the destination OU and/or to
+    # stamp the computer's description. Load them once when either is requested;
+    # failure to load is non-fatal (the join itself uses netdom-style cmdlets that
+    # don't need the RSAT module) — it just downgrades OU placement + description to
+    # a warning.
     $DEVICE_BASE = "OU=O365,OU=BMAP Devices,DC=bmap,DC=lis"
-    $ouDn      = $null
-    $ouWarning = $null
-    $adConn    = $null
-    if ($TargetOU) {
+    $ouDn       = $null
+    $ouWarning  = $null
+    $adConn     = $null
+    if ($TargetOU -or $Description) {
       try {
         Import-Module ActiveDirectory -ErrorAction Stop -WarningAction SilentlyContinue
         . "$PSScriptRoot\_ADConn.ps1"
         $adConn = Get-ADConn
+      } catch {
+        $adConn = $null
+        if ($TargetOU) { $ouWarning = "Nao foi possivel carregar o modulo ActiveDirectory (" + $_.Exception.Message + "); o computador fica no local por defeito." }
+      }
+    }
+
+    # Resolve the destination OU DN from the folder Name (a sub-OU under O365 in the
+    # BMAP Devices tree). Matched by -Filter on Name so a folder name with a space /
+    # comma / quote can never corrupt the DN. Resolution failure is a WARNING, not a
+    # fatal error: the computer still needs to be joined, just in the default spot.
+    if ($TargetOU -and $adConn) {
+      try {
         $ou = Get-ADOrganizationalUnit @adConn -SearchBase $DEVICE_BASE -SearchScope OneLevel `
                 -Filter 'Name -eq $TargetOU' -ErrorAction Stop | Select-Object -First 1
         if ($ou) { $ouDn = $ou.DistinguishedName }
@@ -327,9 +344,34 @@ switch ($Step) {
       }
     } catch { Fail ("Falha a juntar ao dominio / renomear: " + $_.Exception.Message) }
 
+    # Stamp the "prepared for" description onto the computer's AD object. Done AFTER
+    # the join/rename so the account exists and carries its final name. Best-effort:
+    # the join already succeeded, so a description failure only warns.
+    $descWarning = $null
+    if ($Description) {
+      if ($adConn) {
+        try {
+          $comp = $null
+          try { $comp = Get-ADComputer @adConn -Identity $NewName -ErrorAction Stop } catch { }
+          if (-not $comp -and $oldName) { try { $comp = Get-ADComputer @adConn -Identity $oldName -ErrorAction Stop } catch { } }
+          if ($comp) {
+            Set-ADComputer @adConn -Identity $comp.DistinguishedName -Description $Description -ErrorAction Stop
+          } else {
+            $descWarning = "Juntado/renomeado, mas nao foi possivel localizar a conta de computador para definir a descricao."
+          }
+        } catch {
+          $descWarning = "Juntado/renomeado, mas a definicao da descricao falhou: " + $_.Exception.Message
+        }
+      } else {
+        $descWarning = "Nao foi possivel definir a descricao (modulo ActiveDirectory indisponivel)."
+      }
+    }
+
     $res = @{ success = $true; step = "domain"; newName = $NewName; rebootRequired = $true; message = "Juntado ao dominio bmap.lis e renomeado. E necessario reiniciar." }
-    if ($ouDn)      { $res.targetOU = $TargetOU }
-    if ($ouWarning) { $res.warning  = $ouWarning }
+    if ($ouDn) { $res.targetOU = $TargetOU }
+    # Surface any non-fatal OU / description warnings together.
+    $warnings = @($ouWarning, $descWarning) | Where-Object { $_ }
+    if ($warnings.Count) { $res.warning = ($warnings -join " ") }
     Out-Result $res
     exit 0
   }

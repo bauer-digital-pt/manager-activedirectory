@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("adAPI", {
   resetPassword: (params: { username: string; newPassword: string }) =>
     ipcRenderer.invoke("ad:reset-password", params),
   unlockUser: (username: string) => ipcRenderer.invoke("ad:unlock-user", username),
+  searchUsers: (query: string) => ipcRenderer.invoke("ad:search-users", query),
   offboardUser: (params: { username: string; confirmUsername: string; adminPassword: string }) =>
     ipcRenderer.invoke("ad:offboard-user", params),
   addGroupPermission: (params: { groupName: string; description: string }) =>
@@ -68,6 +69,7 @@ contextBridge.exposeInMainWorld("adAPI", {
     printerSource?: string;
     smlPlayerSource?: string;
     smlPlayerIni?: string;
+    description?: string;
   }) => ipcRenderer.invoke("ad:onboard-step", params),
   getDeviceOUs: () => ipcRenderer.invoke("ad:device-ous"),
   getNextDeviceName: (dept: string) => ipcRenderer.invoke("ad:next-device-name", dept),

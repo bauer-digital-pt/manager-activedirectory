@@ -17,41 +17,17 @@ $ProgressPreference = "SilentlyContinue"
 # Parent OU that holds the category folders. Kept in sync with New-ADUser.ps1.
 $BASE_OU = "OU=O365,OU=BMAP USERS,DC=bmap,DC=lis"
 
+. "$PSScriptRoot\_Common.ps1"
+
 try {
-  Import-Module ActiveDirectory -ErrorAction Stop -WarningAction SilentlyContinue
-
-  . "$PSScriptRoot\_ADConn.ps1"
-  $conn = Get-ADConn
-
-  $ous = @(
-    Get-ADOrganizationalUnit @conn -SearchBase $BASE_OU -SearchScope OneLevel -Filter * -Properties Description -ErrorAction Stop |
-      Sort-Object Name |
-      ForEach-Object {
-        @{
-          Name              = $_.Name
-          Description       = $_.Description
-          DistinguishedName = $_.DistinguishedName
-          GroupCategory     = "OU"
-          GroupScope        = ""
-        }
-      }
-  )
-
+  $ous = @(Get-ChildOUsAsGroups $BASE_OU)
   if ($ous.Count -eq 0) {
     "[]"
   } else {
     ConvertTo-Json -InputObject $ous -Compress
   }
 } catch {
-  $raw = $_.Exception.Message
-  $srv = if ($env:AD_SERVER) { $env:AD_SERVER } else { "o servidor AD" }
-  if ($raw -match 'Web Services|ADServerDown|unable to contact|server is not operational|find(ing)? .*server') {
-    $msg = "Nao foi possivel contactar o Active Directory Web Services em '$srv' (porta 9389). Confirma a ligacao/VPN, que o ADWS esta a correr, e experimenta o nome completo do servidor (ex: $srv.bmap.lis)."
-  } elseif ($raw -match 'directory object not found|cannot find an object|referral') {
-    $msg = "Nao foi encontrada a OU base '$BASE_OU'. Confirma que a estrutura BMAP USERS -> O365 existe no dominio."
-  } else {
-    $msg = $raw
-  }
+  $msg = Resolve-OUListError $_.Exception.Message $BASE_OU "BMAP USERS -> O365"
   ConvertTo-Json -InputObject @{ error = $msg } -Compress
   exit 1
 }
