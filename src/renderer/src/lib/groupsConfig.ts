@@ -108,7 +108,3 @@ export async function setGroupConfig(config: GroupConfig): Promise<void> {
   if (window.configAPI) return window.configAPI.setGroups(config);
   localStorage.setItem(LS_KEY, JSON.stringify(config));
 }
-
-export function getOnboardingGroups(config: GroupConfig): string[] {
-  return Object.keys(config).sort();
-}

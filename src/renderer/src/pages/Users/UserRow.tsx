@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Lock, Unlock, KeyRound, MoreHorizontal, X, User, UserMinus, AlertTriangle } from "lucide-react";
 import { adAPI, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
+import { initials as computeInitials } from "../../lib/initials";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -80,13 +81,9 @@ export default function UserRow({
   // SamAccountName — e.g. a nested group or computer account). A raw
   // `.split()` on undefined here throws and, without a boundary, blanks the app.
   const displayName = user.DisplayName || user.SamAccountName || "—";
-  const initials =
-    (displayName
-      .split(" ")
-      .slice(0, 2)
-      .map((w) => w[0])
-      .join("")
-      .toUpperCase() || "?");
+  // Shared helper (strips DOMAIN\ prefixes + accents); keep the "?" fallback for
+  // records whose name has no letters at all.
+  const initials = computeInitials(displayName) || "?";
 
   const doReset = async () => {
     setBusy(true);

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Laptop, RefreshCw, Check, AlertTriangle, ServerCrash, Loader2, Play,
   RotateCcw, CheckCircle2, Languages, DownloadCloud, ShieldCheck, Monitor, Network,
-  Power, X, FolderCog, Building2, Printer, AppWindow, UserRound,
+  Power, X, FolderCog, Building2, Printer, AppWindow,
 } from "lucide-react";
 import type { ExternalToast } from "sonner";
 import { adAPI, isBrowserMock, type PCStatus, type OnboardStep, type OnboardState, type ADUserLite } from "../adAPI";

@@ -16,12 +16,6 @@ export interface ConnectionPayload {
   password?: string; // omit to keep the stored password, "" to clear it
 }
 
-export interface ConnectionTestResult {
-  ok: boolean;
-  data?: { domain?: string; forest?: string; dc?: string };
-  error?: string;
-}
-
 const LS_KEY = "admanager.connection";
 
 // Default domain controller (domain: bmap.lis). Kept in sync with DEFAULT_DC in
