@@ -10,6 +10,7 @@ import { adAPI, type ADUser, type ADGroup, type DeviceOU } from "../adAPI";
 import { usersCache, usersInGroup } from "../lib/usersCache";
 import SearchableSelect from "../components/SearchableSelect";
 import { cn } from "../lib/cn";
+import { inputCls } from "../components/ui/controls";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -233,9 +234,6 @@ function ConnectionTab({ toast }: { toast: { success: ToastFn; error: ToastFn } 
     toast.success("Connection cleared — using local domain");
   };
 
-  const inputCls =
-    "w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all placeholder:text-zinc-300";
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="px-8 py-6 space-y-8 max-w-xl">
@@ -364,9 +362,6 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
     else delete printerMap[dept];
     persist({ ...config, printerMap });
   };
-
-  const inputCls =
-    "w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all placeholder:text-zinc-300";
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -821,7 +816,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
                 value={entry.department}
                 onChange={(e) => setDepartment(e.target.value)}
                 placeholder="Ex: Redação"
-                className="w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all placeholder:text-zinc-300"
+                className={inputCls}
               />
             </section>
 

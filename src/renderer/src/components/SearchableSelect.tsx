@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Check, ChevronsUpDown, Loader2, Search, X } from "lucide-react";
 import { cn } from "../lib/cn";
+import { useOutsideClick } from "../hooks/useOutsideClick";
 
 export interface SelectOption {
   value: string;
@@ -59,7 +60,8 @@ export default function SearchableSelect({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0); // highlighted index within `rows`
   const listId = useId();
-  const rootRef = useRef<HTMLDivElement>(null);
+  // Close on outside click while open (ref goes on the root wrapper).
+  const rootRef = useOutsideClick<HTMLDivElement>(open, () => setOpen(false));
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -94,16 +96,6 @@ export default function SearchableSelect({
     ],
     [clearable, clearLabel, filtered]
   );
-
-  // Close on outside click.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
 
   // On open: focus the search, reset the query, and highlight the current value.
   useEffect(() => {

@@ -6,6 +6,8 @@ import { usersCache, usersInGroup } from "../../lib/usersCache";
 import SearchableSelect from "../../components/SearchableSelect";
 import { cn } from "../../lib/cn";
 import { setNavGuard } from "../../lib/navGuard";
+import { Kbd } from "../../components/ui/Kbd";
+import { inputCls } from "../../components/ui/controls";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -788,7 +790,7 @@ export default function CreateUserWizard({
           onClick={step === "group" ? onClose : prev}
           className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors"
         >
-          <kbd className="text-xs font-mono bg-zinc-100 text-zinc-400 px-1.5 py-0.5 rounded border border-zinc-200">Esc</kbd>
+          <Kbd>Esc</Kbd>
           {step === "group" ? "Cancel" : "Back"}
         </button>
         {step !== "confirm" ? (
@@ -798,7 +800,7 @@ export default function CreateUserWizard({
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             Continue
-            <kbd className="text-xs font-mono bg-violet-500/60 text-violet-100 px-1.5 py-0.5 rounded border border-violet-400/40">↵</kbd>
+            <Kbd tone="violet">↵</Kbd>
           </button>
         ) : (
           <button
@@ -807,7 +809,7 @@ export default function CreateUserWizard({
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? "Creating…" : "Create user"}
-            {!saving && <kbd className="text-xs font-mono bg-violet-500/60 text-violet-100 px-1.5 py-0.5 rounded border border-violet-400/40">↵</kbd>}
+            {!saving && <Kbd tone="violet">↵</Kbd>}
           </button>
         )}
       </div>
@@ -843,8 +845,6 @@ function CheckOption({ checked, onChange, label, disabled, hint }: { checked: bo
     </label>
   );
 }
-
-const inputCls = "w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all placeholder:text-zinc-300";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

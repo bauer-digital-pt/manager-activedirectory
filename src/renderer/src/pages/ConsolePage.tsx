@@ -4,6 +4,7 @@ import {
   AlertTriangle, Info, Bug, Copy, Check,
 } from "lucide-react";
 import { cn } from "../lib/cn";
+import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import type { AppLogEntry, LogLevel } from "../lib/appLog";
 
 // Severity rank for the min-level filter. "success" is an info-severity event.
@@ -45,7 +46,7 @@ export default function ConsolePage() {
   const [hiddenSources, setHiddenSources] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyFeedback(1500);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Subscribe first, then back-fill history — so nothing emitted in the gap is
@@ -110,13 +111,7 @@ export default function ConsolePage() {
 
   const clearAll = () => { setEntries([]); setExpanded(new Set()); window.consoleAPI?.clear?.(); };
 
-  const copyAll = async () => {
-    try {
-      await navigator.clipboard.writeText(filtered.map(fmtLine).join("\n"));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* clipboard blocked */ }
-  };
+  const copyAll = () => copy(filtered.map(fmtLine).join("\n"));
 
   const fmt = (ts: number) => {
     const d = new Date(ts);

@@ -5,6 +5,7 @@ import { cn } from "../../lib/cn";
 import type { ExternalToast } from "sonner";
 import CreateUserWizard from "./CreateUserWizard";
 import UserRow from "./UserRow";
+import { Kbd } from "../../components/ui/Kbd";
 import { usersCache, setUsersCache, type UserWithGroup } from "../../lib/usersCache";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -235,7 +236,7 @@ export default function UsersPage({
             >
               <Plus size={14} strokeWidth={2.5} />
               New user
-              <kbd className="ml-1 text-xs font-mono bg-violet-500/60 text-violet-100 px-1.5 py-0.5 rounded border border-violet-400/40">N</kbd>
+              <Kbd tone="violet" className="ml-1">N</Kbd>
             </button>
           </div>
         </div>

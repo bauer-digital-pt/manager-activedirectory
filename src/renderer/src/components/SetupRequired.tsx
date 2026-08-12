@@ -14,6 +14,7 @@ import {
 import StatusScreen, { type StatusAction } from "./StatusScreen";
 import { adAPI, type InstallProgress } from "../adAPI";
 import { cn } from "../lib/cn";
+import { useCopyFeedback } from "../hooks/useCopyFeedback";
 
 interface SetupRequiredProps {
   onRecheck: () => void;
@@ -192,17 +193,7 @@ type Method = "windows" | "powershell";
 
 function ManualSection({ title }: { title: string }) {
   const [method, setMethod] = useState<Method>("windows");
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(PS_COMMAND);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      /* área de transferência indisponível — ignorar silenciosamente */
-    }
-  };
+  const { copied, copy } = useCopyFeedback();
 
   const segments: { id: Method; label: string }[] = [
     { id: "windows", label: "Windows (interface)" },
@@ -273,7 +264,7 @@ function ManualSection({ title }: { title: string }) {
             </code>
             <button
               type="button"
-              onClick={handleCopy}
+              onClick={() => copy(PS_COMMAND)}
               aria-label="Copiar comando"
               className={cn(
                 "inline-flex shrink-0 items-center gap-1.5 self-start rounded-md border px-2.5 py-2 text-xs font-medium transition-colors",

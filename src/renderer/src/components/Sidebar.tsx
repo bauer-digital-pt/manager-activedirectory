@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Users, Laptop, Settings, Terminal, User, LogOut } from "lucide-react";
 import { cn } from "../lib/cn";
 import type { Page } from "../App";
 import { initials } from "../lib/initials";
+import { useOutsideClick } from "../hooks/useOutsideClick";
 import brandFull from "../assets/logo_1.png";
 
 const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean }[] = [
@@ -29,19 +30,8 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk,
   const nav = NAV.filter((n) => !n.dev || devMode);
   const inits = initials(userName);
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
   // Close the account menu on an outside click or Escape.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMenuOpen(false); };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
-  }, [menuOpen]);
+  const menuRef = useOutsideClick<HTMLDivElement>(menuOpen, () => setMenuOpen(false), { escape: true });
 
   const dotColor = connOk === false ? "#ef4444" : connOk === true ? "#1fd1bd" : "#f59e0b";
   const dotTitle = connOk === false ? "Sem ligação ao AD" : connOk === true ? "Ligado ao AD" : "A verificar ligação…";
