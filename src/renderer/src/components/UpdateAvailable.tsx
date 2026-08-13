@@ -1,6 +1,7 @@
 import { Sparkles, Download, CheckCircle2, AlertTriangle, RefreshCw } from "lucide-react";
 import StatusScreen, { type StatusAction } from "./StatusScreen";
 import { type UpdateStatus } from "../lib/updates";
+import { FLAVOR_UI } from "../lib/flavor";
 
 interface UpdateAvailableProps {
   status: UpdateStatus;
@@ -8,7 +9,7 @@ interface UpdateAvailableProps {
   onDismiss: () => void;
 }
 
-const EYEBROW = "AD Manager";
+const EYEBROW = FLAVOR_UI.eyebrow;
 
 export default function UpdateAvailable({
   status,

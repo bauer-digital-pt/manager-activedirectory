@@ -82,8 +82,9 @@ $newUserParams = @{
   Path                  = $ouPath
   Country               = "PT"
   OtherAttributes       = @{
-    co          = "Portugal"
-    countryCode = 620
+    co                  = "Portugal"
+    countryCode         = 620
+    msExchUsageLocation = "PT"
   }
 }
 
@@ -96,7 +97,7 @@ if ($Department)  { $newUserParams.Department    = $Department }
 if ($Company)     { $newUserParams.Company       = $Company }
 if ($Email)       { $newUserParams.EmailAddress  = $Email }
 # employeeType has no dedicated New-ADUser parameter; it goes through
-# -OtherAttributes (alongside co/countryCode set above).
+# -OtherAttributes (alongside co/countryCode/msExchUsageLocation set above).
 if ($EmployeeType) { $newUserParams.OtherAttributes['employeeType'] = $EmployeeType }
 
 # Create the account first. Only a failure HERE is a creation failure.

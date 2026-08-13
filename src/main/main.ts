@@ -5,9 +5,9 @@ import { spawn } from "child_process";
 import electronUpdater from "electron-updater";
 import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
 import { DEFAULT_DC } from "../shared/constants";
+import { BUILD_FLAVOR, FLAVOR_META } from "../shared/flavor";
 import type { AppSettings, DeviceConfig, OnboardState, StartupInfo } from "../shared/types";
 import {
-  bindLogWindow,
   pushLog,
   getHistory,
   clearHistory,
@@ -201,7 +201,23 @@ const deviceConfigStore = makeJsonStore<DeviceConfig>("device-config.json", (raw
     smlPlayerIni: typeof r.smlPlayerIni === "string" ? r.smlPlayerIni : "",
   };
 });
-function readDeviceConfig(): DeviceConfig { return deviceConfigStore.read(); }
+// Dev-only convenience: when PowerShell is mocked (MOCK_PS=1) and nothing has
+// been configured yet, hand back a demo OU/printer mapping so the onboarding
+// wizard is fully exercisable off a real domain. Without it every department
+// reports "sem pasta definida" and the run can't start. Never hit in a real run.
+const MOCK_PS = process.env.MOCK_PS === "1";
+function demoDeviceConfig(): DeviceConfig {
+  const ouMap: Record<string, string> = {};
+  for (const d of ["ADM", "RCM", "CDD", "MKT", "NWS", "RTO", "COM", "DIG", "EVT", "HR", "IT", "LEG"]) {
+    ouMap[d] = `OU=${d},OU=O365,OU=BMAP Devices,DC=bmap,DC=lis`;
+  }
+  return { ouMap, anyConnectSource: "", screenConnectSource: "", printerMap: { ADM: ["ADM"], IT: ["PRO", "MRK"] }, printerSource: "", smlPlayerSource: "", smlPlayerIni: "" };
+}
+function readDeviceConfig(): DeviceConfig {
+  const cfg = deviceConfigStore.read();
+  if (MOCK_PS && Object.keys(cfg.ouMap).length === 0) return demoDeviceConfig();
+  return cfg;
+}
 function writeDeviceConfig(config: DeviceConfig): void { deviceConfigStore.write(config); }
 
 // --- PC onboarding state (onboard-state.json) ---
@@ -309,11 +325,14 @@ function installAppMenu() {
 }
 
 function createWindow() {
+  // The Agent is a slim per-PC installer: a single centered onboarding card, no
+  // sidebar. Give it a small, tidy window instead of the Manager's full console.
+  const isAgent = BUILD_FLAVOR === "agent";
   const win = new BrowserWindow({
-    width: 1200,
-    height: 750,
-    minWidth: 900,
-    minHeight: 600,
+    width: isAgent ? 760 : 1200,
+    height: isAgent ? 820 : 750,
+    minWidth: isAgent ? 600 : 900,
+    minHeight: isAgent ? 680 : 600,
     backgroundColor: "#ffffff",
     // Frameless everywhere. macOS keeps the traffic lights via the hidden title
     // bar (inset a touch so they clear our custom top bar); Windows/Linux drop
@@ -329,22 +348,8 @@ function createWindow() {
   });
 
   mainWindow = win;
-  bindLogWindow(win);
   wireWindowLogging(win);
-
-  // Harden the renderer: it only ever loads our own bundle — the Vite dev server
-  // in dev, a file:// URL in production. Deny any window/popup the page tries to
-  // open, and block navigation away from that origin, so an injected link or
-  // redirect can't repoint the window at remote/attacker-controlled content
-  // (which would run with this app's Node/preload bridge and admin rights).
-  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  win.webContents.on("will-navigate", (e, url) => {
-    const devOk = !!VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL);
-    if (!devOk && !url.startsWith("file://")) {
-      e.preventDefault();
-      pushLog({ level: "warn", source: "window", label: "navigation-blocked", detail: url });
-    }
-  });
+  hardenWebContents(win.webContents);
 
   // Pin the zoom to 100%. Running elevated (requireAdministrator) can drop the
   // app's per-monitor DPI awareness and render everything shrunk, and Chromium
@@ -360,6 +365,71 @@ function createWindow() {
   } else {
     win.loadFile(join(__dirname, "../dist/index.html"));
   }
+}
+
+// Harden a renderer: it only ever loads our own bundle — the Vite dev server in
+// dev, a file:// URL in production. Deny any window/popup the page tries to open,
+// and block navigation away from that origin, so an injected link or redirect
+// can't repoint the window at remote/attacker-controlled content (which would run
+// with this app's Node/preload bridge and admin rights). Applied to every window
+// we create, including the detached Console.
+function hardenWebContents(wc: Electron.WebContents) {
+  wc.setWindowOpenHandler(() => ({ action: "deny" }));
+  wc.on("will-navigate", (e, url) => {
+    const devOk = !!VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL);
+    if (!devOk && !url.startsWith("file://")) {
+      e.preventDefault();
+      pushLog({ level: "warn", source: "window", label: "navigation-blocked", detail: url });
+    }
+  });
+}
+
+// ── Detached Console window (Ctrl+Shift+C) ──────────────────────────────────
+// A separate, deliberately unbranded diagnostics window that renders the same
+// activity log as the Manager's Console page. It is its OWN OS window (real frame,
+// generic "Console" title, dark chrome) so it reads as a standalone utility with
+// no visible tie to the app — the only way to reach the log in the slim Agent.
+// The renderer decides to show the console-only view from the "#console" hash.
+let consoleWindow: BrowserWindow | null = null;
+
+function openConsoleWindow() {
+  if (consoleWindow && !consoleWindow.isDestroyed()) {
+    if (consoleWindow.isMinimized()) consoleWindow.restore();
+    consoleWindow.focus();
+    return;
+  }
+
+  const win = new BrowserWindow({
+    width: 940,
+    height: 640,
+    minWidth: 560,
+    minHeight: 360,
+    title: "Console",
+    backgroundColor: "#0f1117",
+    // A normal OS frame (not the app's frameless custom title bar) reinforces the
+    // "separate little app" feel and gives native minimize/close controls.
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  consoleWindow = win;
+  hardenWebContents(win.webContents);
+  win.setMenuBarVisibility(false);
+  // Keep the generic title even if the loaded document tries to set its own.
+  win.on("page-title-updated", (e) => e.preventDefault());
+  win.on("closed", () => { consoleWindow = null; });
+
+  if (VITE_DEV_SERVER_URL) {
+    win.loadURL(`${VITE_DEV_SERVER_URL}#console`);
+  } else {
+    win.loadFile(join(__dirname, "../dist/index.html"), { hash: "console" });
+  }
+
+  pushLog({ level: "info", source: "app", label: "console-window", detail: "Detached Console opened" });
 }
 
 // Mirror the window's load lifecycle, renderer console output, crashes, and
@@ -406,7 +476,7 @@ app.whenReady().then(() => {
     level: "info",
     source: "app",
     label: "ready",
-    detail: `AD Manager ${app.getVersion()} · ${process.platform} ${process.arch} · Electron ${process.versions.electron} · packaged=${app.isPackaged}`,
+    detail: `${FLAVOR_META[BUILD_FLAVOR].productName} ${app.getVersion()} · ${process.platform} ${process.arch} · Electron ${process.versions.electron} · packaged=${app.isPackaged}`,
   });
   // Login now owns authentication. Purge any legacy service-account password left
   // encrypted at rest by earlier versions — creds are session-only from here on.
@@ -515,7 +585,7 @@ function friendlyInstallError(output: string, code: number | null): string {
       + "download de funcionalidades opcionais diretamente do Windows Update.";
   }
   if (code === 740 || text.includes("elevat") || text.includes("access is denied") || text.includes("acesso negado")) {
-    return "É preciso executar o AD Manager como administrador para instalar o componente. "
+    return `É preciso executar o ${FLAVOR_META[BUILD_FLAVOR].productName} como administrador para instalar o componente. `
       + "Fecha a app, clica com o botão direito e escolhe “Executar como administrador”.";
   }
   if (text.includes("could not be found") || text.includes("não foi possível encontrar")) {
@@ -789,9 +859,9 @@ handle("ad:pc-status", async (_e, rawParams) => {
 });
 
 // Executes ONE onboarding step on the local machine. Steps have very different
-// runtimes (a Windows Update pass or a large installer can take many minutes),
-// so each gets its own timeout. The domain-join step reuses the session
-// credentials (passed as AD_USER/AD_PASSWORD by runPS) for Add-Computer.
+// runtimes (a large installer can take many minutes), so each gets its own
+// timeout. The domain-join step reuses the session credentials (passed as
+// AD_USER/AD_PASSWORD by runPS) for Add-Computer.
 handle("ad:onboard-step", async (_e, rawParams) => {
   const p = (rawParams ?? {}) as {
     step?: string;
@@ -812,7 +882,6 @@ handle("ad:onboard-step", async (_e, rawParams) => {
     regional: 60_000,
     anyconnect: 10 * 60_000,
     screenconnect: 10 * 60_000,
-    update: 30 * 60_000,
     smlplayer: 15 * 60_000,
     printers: 10 * 60_000,
     domain: 3 * 60_000,
@@ -1086,6 +1155,13 @@ handle("ad:device-ous", async () => {
   return ps("Get-DeviceOU-All.ps1");
 });
 
+// Lists every computer object under the BMAP Devices tree (read-only) for the
+// Manager's device list. Can return the whole fleet, so it gets a longer ceiling
+// than a normal AD call (like the PC-status probe).
+handle("ad:get-devices", async () => {
+  return ps("Get-ADComputer-All.ps1", [], undefined, 60000);
+});
+
 // Computes the next available PT-LPT-<DEPT>-<NN> name (lowest free number).
 handle("ad:next-device-name", async (_e, dept) => {
   return ps("Get-NextDeviceName.ps1", [String(dept ?? "")]);
@@ -1120,6 +1196,9 @@ handle("onboard:reboot", () => {
 // clearing the log doesn't itself generate log noise or recurse.
 ipcMain.handle("console:get-history", () => getHistory());
 ipcMain.handle("console:clear", () => { clearHistory(); });
+// Open (or focus) the detached Console window. Raw ipcMain.on — fire-and-forget,
+// no result, and it must not itself generate log noise.
+ipcMain.on("console:open-window", () => openConsoleWindow());
 ipcMain.on("console:report", (_e, entry: {
   level?: import("./logbus").LogLevel; source?: string; label?: string; detail?: string; data?: unknown;
 }) => {

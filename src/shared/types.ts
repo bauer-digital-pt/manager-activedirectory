@@ -66,9 +66,31 @@ export interface ADUserLite {
   Enabled?: boolean;
 }
 
+// A computer object listed by Get-ADComputer-All.ps1, powering the Manager's
+// READ-ONLY device list (never written back). Covers the whole BMAP Devices tree.
+export interface ADComputer {
+  Name: string;
+  DNSHostName?: string;
+  Enabled: boolean;
+  OperatingSystem?: string;
+  OperatingSystemVersion?: string;
+  // The AD-computer description — carries the "Preparado para <user>" text the
+  // domain step stamps on during onboarding.
+  Description?: string;
+  DistinguishedName: string;
+  // DN of the object set as ManagedBy (empty when unset).
+  ManagedBy?: string;
+  // Immediate parent OU folder under BMAP Devices -> O365 = the department.
+  OU?: string;
+  // Pre-stringified in the script as "yyyy-MM-dd HH:mm:ss" (a [datetime] would
+  // otherwise serialize as /Date(ms)/); null when the attribute is unset.
+  LastLogonDate?: string | null;
+  WhenCreated?: string | null;
+}
+
 // --- PC onboarding ---
 export type OnboardStep =
-  | "regional" | "anyconnect" | "screenconnect" | "update" | "smlplayer" | "printers" | "domain";
+  | "regional" | "anyconnect" | "screenconnect" | "smlplayer" | "printers" | "domain";
 
 export interface OnboardStepData {
   success?: boolean;

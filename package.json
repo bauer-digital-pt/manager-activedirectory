@@ -1,105 +1,22 @@
 {
   "name": "admanager",
-  "version": "1.0.31",
+  "version": "1.0.32",
   "description": "Active Directory Onboarding Manager — Bauer Media Audio Portugal",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "dev:browser": "vite --config vite.browser.config.mts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
-    "build": "tsc && vite build && electron-builder",
+    "build:renderer": "tsc && vite build",
+    "build:manager": "cross-env APP_FLAVOR=manager npm run build:renderer && cross-env APP_FLAVOR=manager electron-builder --config electron-builder.config.cjs",
+    "build:agent": "cross-env APP_FLAVOR=agent npm run build:renderer && cross-env APP_FLAVOR=agent electron-builder --config electron-builder.config.cjs",
+    "build:all": "npm run build:manager && npm run build:agent",
+    "build": "npm run build:manager",
+    "release:manager": "cross-env APP_FLAVOR=manager npm run build:renderer && cross-env APP_FLAVOR=manager electron-builder --config electron-builder.config.cjs --publish always",
+    "release:agent": "cross-env APP_FLAVOR=agent npm run build:renderer && cross-env APP_FLAVOR=agent electron-builder --config electron-builder.config.cjs --publish always",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:mock": "concurrently \"vite\" \"wait-on http://localhost:5173 && MOCK_PS=1 electron .\""
-  },
-  "build": {
-    "appId": "pt.bauermedia.admanager",
-    "productName": "AD Manager",
-    "copyright": "Copyright © 2025 Bauer Media Audio Portugal",
-    "asar": true,
-    "directories": {
-      "buildResources": "build",
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "src/main/ps-scripts",
-        "to": "ps-scripts",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "bauer-digital-pt",
-        "repo": "manager-activedirectory",
-        "releaseType": "release"
-      }
-    ],
-    "mac": {
-      "icon": "build/icon.icns",
-      "category": "public.app-category.business",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ]
-    },
-    "dmg": {
-      "title": "AD Manager",
-      "background": null,
-      "window": {
-        "width": 540,
-        "height": 380
-      }
-    },
-    "win": {
-      "icon": "build/icon.ico",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "requestedExecutionLevel": "requireAdministrator",
-      "publisherName": "Bauer Media Audio Portugal",
-      "legalTrademarks": "Bauer Media Audio Portugal",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
-      "signAndEditExecutable": true
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": true,
-      "allowToChangeInstallationDirectory": false,
-      "runAfterFinish": true,
-      "deleteAppDataOnUninstall": false,
-      "menuCategory": false,
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico",
-      "installerHeader": "build/installerHeader.bmp",
-      "installerSidebar": "build/installerSidebar.bmp",
-      "uninstallerSidebar": "build/installerSidebar.bmp",
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "AD Manager"
-    }
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
@@ -117,6 +34,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^9.0.0",
+    "cross-env": "^7.0.3",
     "electron": "^32.0.0",
     "electron-builder": "^25.0.0",
     "typescript": "^5.5.3",

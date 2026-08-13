@@ -4,13 +4,18 @@ import { cn } from "../lib/cn";
 import type { Page } from "../App";
 import { initials } from "../lib/initials";
 import { useOutsideClick } from "../hooks/useOutsideClick";
+import { FLAVOR, IS_AGENT, type AppFlavor } from "../lib/flavor";
 import brandFull from "../assets/logo_1.png";
 
-const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean }[] = [
-  { id: "users",    label: "Users",         icon: Users,    bind: "1" },
-  { id: "devices",  label: "Onboarding PC", icon: Laptop,   bind: "2" },
-  { id: "settings", label: "Settings",      icon: Settings, bind: "3" },
-  { id: "console",  label: "Console",       icon: Terminal, bind: "4", dev: true },
+// `flavors` restricts an item to specific installers; omit = shown in both.
+// The Agent installer is the onboarding wizard only — no user administration; its
+// "devices" tab IS that wizard ("Onboarding PC"), whereas the Manager's is the
+// read-only fleet list ("Dispositivos").
+const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean; flavors?: AppFlavor[] }[] = [
+  { id: "users",    label: "Users",                                icon: Users,    bind: "1", flavors: ["manager"] },
+  { id: "devices",  label: IS_AGENT ? "Onboarding PC" : "Dispositivos", icon: Laptop,   bind: "2" },
+  { id: "settings", label: "Settings",                             icon: Settings, bind: "3" },
+  { id: "console",  label: "Console",                              icon: Terminal, bind: "4", dev: true },
 ];
 
 interface SidebarProps {
@@ -27,7 +32,9 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ active, onNavigate, devMode, userName, connOk, onLogout }: SidebarProps) {
-  const nav = NAV.filter((n) => !n.dev || devMode);
+  const nav = NAV.filter(
+    (n) => (!n.dev || devMode) && (!n.flavors || n.flavors.includes(FLAVOR)),
+  );
   const inits = initials(userName);
   const [menuOpen, setMenuOpen] = useState(false);
   // Close the account menu on an outside click or Escape.

@@ -11,17 +11,21 @@ import { usersCache, usersInGroup } from "../lib/usersCache";
 import SearchableSelect from "../components/SearchableSelect";
 import { cn } from "../lib/cn";
 import { inputCls } from "../components/ui/controls";
+import { FLAVOR, FLAVOR_UI, type AppFlavor } from "../lib/flavor";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
 type Tab = "general" | "groups" | "devices" | "connection";
 
-const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: "general", label: "General", icon: SlidersHorizontal },
-  { id: "groups", label: "Onboarding Groups", icon: Layers },
-  { id: "devices", label: "Dispositivos", icon: MonitorSmartphone },
-  { id: "connection", label: "AD Connection", icon: Server },
-];
+// The Agent installer doesn't manage user-onboarding groups — hide that tab.
+const TABS: { id: Tab; label: string; icon: React.ElementType; flavors?: AppFlavor[] }[] = (
+  [
+    { id: "general", label: "General", icon: SlidersHorizontal },
+    { id: "groups", label: "Onboarding Groups", icon: Layers, flavors: ["manager"] },
+    { id: "devices", label: "Dispositivos", icon: MonitorSmartphone },
+    { id: "connection", label: "AD Connection", icon: Server },
+  ] as { id: Tab; label: string; icon: React.ElementType; flavors?: AppFlavor[] }[]
+).filter((t) => !t.flavors || t.flavors.includes(FLAVOR));
 
 interface SettingsPageProps {
   toast: { success: ToastFn; error: ToastFn };
@@ -151,7 +155,7 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
         <section className="space-y-3">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Versão</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">AD Manager {version || "…"}</p>
+            <p className="text-xs text-zinc-400 mt-0.5">{FLAVOR_UI.productName} {version || "…"}</p>
           </div>
           <button
             onClick={openUpdate}

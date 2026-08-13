@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import HeroBackground from "./HeroBackground";
 import brandMark from "../assets/logo_2.png";
+import { FLAVOR_UI } from "../lib/flavor";
 
 interface AuthShellProps {
-  /** Small label shown next to the brand mark (e.g. "AD Manager"). */
+  /** Small label shown next to the brand mark. Defaults to the flavor's name. */
   eyebrow?: string;
   children: ReactNode;
 }
@@ -13,7 +14,7 @@ interface AuthShellProps {
 // slightly translucent coloured panel sits on the left with its right edge
 // rounded *over* the photo, decorative blobs in the bottom-right corner, the
 // brand mark top-left, and the caller's content centred within it.
-export default function AuthShell({ eyebrow = "AD Manager", children }: AuthShellProps) {
+export default function AuthShell({ eyebrow = FLAVOR_UI.eyebrow, children }: AuthShellProps) {
   return (
     <div className="relative flex-1 w-full h-full overflow-hidden bg-[#1a0538]">
       {/* Rotating photo — fills the whole surface; the panel covers its left part. */}

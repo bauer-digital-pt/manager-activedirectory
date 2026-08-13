@@ -6,11 +6,10 @@
 #   - hostname matches PT-LPT-<DEPT>-<NUMBER>
 #   - Cisco AnyConnect (Secure Client) installed
 #   - ScreenConnect installed
-#   - no pending Windows updates
 #   - regional settings: OS display language English, region Portugal, PT keyboard
 #
-# Each probe is wrapped so one failure (e.g. Windows Update unreachable) degrades
-# that single field to "unknown" instead of aborting the whole report.
+# Each probe is wrapped so one failure (e.g. a WMI/registry read erroring)
+# degrades that single field to "unknown" instead of aborting the whole report.
 #
 # NOTE: all output strings are ASCII-only (PowerShell 5.1 reads a BOM-less .ps1
 # as the system ANSI codepage; accented literals corrupt the JSON on the wire).
@@ -54,18 +53,6 @@ $domainCompliant = $domainJoined -and ($domainName -ieq "bmap.lis")
 $anyConnect = (Test-InstalledApp "Cisco AnyConnect") -or (Test-InstalledApp "Cisco Secure Client")
 $screenConnect = (Test-InstalledApp "ScreenConnect") -or (Test-InstalledApp "ConnectWise Control")
 
-# --- Windows Update ---
-$wuChecked = $false
-$wuPending = -1
-try {
-  $session  = New-Object -ComObject Microsoft.Update.Session
-  $searcher = $session.CreateUpdateSearcher()
-  $result   = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-  $wuPending = [int]$result.Updates.Count
-  $wuChecked = $true
-} catch { }
-$wuUpToDate = ($wuChecked -and $wuPending -eq 0)
-
 # --- Regional ---
 $osLanguage = ""
 $locale = ""
@@ -81,14 +68,13 @@ try { $keyboard = "$((Get-WinUserLanguageList -ErrorAction Stop)[0].LanguageTag)
 
 $regionalCompliant = ($osLanguage -like "en*") -and ($geoId -eq 193) -and (($keyboard -like "pt*") -or ($locale -like "pt*"))
 
-$onboarded = $domainCompliant -and $nameCompliant -and $anyConnect -and $screenConnect -and $wuUpToDate -and $regionalCompliant
+$onboarded = $domainCompliant -and $nameCompliant -and $anyConnect -and $screenConnect -and $regionalCompliant
 
 $out = @{
   hostname      = $hostname
   domain        = @{ joined = $domainJoined; name = $domainName; compliant = $domainCompliant }
   name          = @{ value = $hostname; compliant = $nameCompliant; pattern = $NAME_PATTERN }
   software      = @{ anyConnect = $anyConnect; screenConnect = $screenConnect }
-  windowsUpdate = @{ checked = $wuChecked; pending = $wuPending; upToDate = $wuUpToDate }
   regional      = @{ osLanguage = $osLanguage; locale = $locale; geoId = $geoId; geo = $geoName; keyboard = $keyboard; compliant = $regionalCompliant }
   departments   = $DEPARTMENTS
   onboarded     = $onboarded

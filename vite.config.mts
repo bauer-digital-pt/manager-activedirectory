@@ -4,7 +4,15 @@ import tailwindcss from "@tailwindcss/vite";
 import electron from "vite-plugin-electron";
 import renderer from "vite-plugin-electron-renderer";
 
+// One codebase → two installers. APP_FLAVOR (manager|agent) is baked into every
+// bundle via `__APP_FLAVOR__`, read by src/shared/flavor.ts. Unset defaults to
+// "manager". Each of the main/preload electron entries gets its OWN Vite build,
+// so the define must be repeated per entry (they don't inherit the top-level one).
+const APP_FLAVOR = process.env.APP_FLAVOR === "agent" ? "agent" : "manager";
+const flavorDefine = { __APP_FLAVOR__: JSON.stringify(APP_FLAVOR) };
+
 export default defineConfig({
+  define: flavorDefine,
   build: {
     // Electron 32 ships Chromium 128 — target it so the renderer bundle isn't
     // needlessly down-levelled (async/await, optional chaining and nullish
@@ -23,6 +31,7 @@ export default defineConfig({
       {
         entry: "src/main/main.ts",
         vite: {
+          define: flavorDefine,
           build: {
             outDir: "dist-electron",
             // Main/preload run on Electron 32's bundled Node 20 — target it
@@ -34,6 +43,7 @@ export default defineConfig({
       {
         entry: "src/preload/preload.ts",
         vite: {
+          define: flavorDefine,
           build: {
             outDir: "dist-electron",
             // Main/preload run on Electron 32's bundled Node 20 — target it

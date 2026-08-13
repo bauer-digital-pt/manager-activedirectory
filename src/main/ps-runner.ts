@@ -2,7 +2,7 @@ import { execFile } from "child_process";
 import { join } from "path";
 import { app } from "electron";
 import type { ADConnection } from "../shared/types";
-import { mockUsersByGroup, mockSearchPool, titleCaseFromUsername } from "../shared/fixtures";
+import { mockUsersByGroup, mockSearchPool, mockDevices, titleCaseFromUsername } from "../shared/fixtures";
 
 // Re-exported so main.ts keeps importing ADConnection from "./ps-runner".
 export type { ADConnection } from "../shared/types";
@@ -103,6 +103,67 @@ function mockResponse(script: string, args: string[], conn?: ADConnection): { ok
 
     case "Remove-ADGroup.ps1":
       return { ok: true, data: { success: true } };
+
+    // ── PC onboarding (Agent / Devices page) ────────────────────────────────
+    // These let the whole onboarding wizard be exercised in Electron on a non-
+    // Windows dev machine (MOCK_PS=1). Shapes mirror the renderer's browser mock
+    // in adAPI.ts so both preview paths behave the same.
+    case "Check-ADModule.ps1":
+      return { ok: true, data: { available: true } };
+
+    case "Get-PCStatus.ps1":
+      // A fresh, non-compliant machine → the wizard opens on its "por onboarding"
+      // state so the department picker + run button are exercisable.
+      return {
+        ok: true,
+        data: {
+          hostname: "DESKTOP-9F2K1B",
+          domain: { joined: false, name: "WORKGROUP", compliant: false },
+          name: { value: "DESKTOP-9F2K1B", compliant: false, pattern: "PT-LPT-<DEPT>-<NUMBER>" },
+          software: { anyConnect: false, screenConnect: false },
+          regional: { osLanguage: "pt-PT", locale: "pt-PT", geoId: 193, geo: "Portugal", keyboard: "pt-PT", compliant: false },
+          departments: ["ADM", "RCM", "CDD", "MKT", "NWS", "RTO", "COM", "DIG", "EVT", "HR", "IT", "LEG"],
+          onboarded: false,
+        },
+      };
+
+    case "Get-DeviceOU-All.ps1":
+      return {
+        ok: true,
+        data: ["ADMINISTRACAO", "MARKETING", "REDACAO", "COMERCIAL", "DIGITAL", "IT", "EVENTOS", "RECURSOS HUMANOS"].map((n) => ({
+          Name: n, Description: "", GroupCategory: "OU", GroupScope: "",
+          DistinguishedName: `OU=${n},OU=O365,OU=BMAP Devices,DC=bmap,DC=lis`,
+        })),
+      };
+
+    case "Get-NextDeviceName.ps1": {
+      const dept = (args[0] ?? "").trim().toUpperCase() || "IT";
+      return { ok: true, data: { dept, number: "01", name: `PT-LPT-${dept}-01` } };
+    }
+
+    case "Get-ADComputer-All.ps1":
+      // Read-only fleet for the Manager device list. Shape mirrors the ADComputer
+      // type + the renderer's browser mock so both preview paths behave the same.
+      return { ok: true, data: mockDevices() };
+
+    case "Invoke-OnboardStep.ps1": {
+      // Positional args match Invoke-OnboardStep.ps1 / the ad:onboard-step handler:
+      // [step, newName, ...]. The reboot-requiring steps flag it so the wizard
+      // surfaces the "Reinício pendente" card (reboot itself is a no-op off Windows).
+      const step = (args[0] ?? "").trim().toLowerCase();
+      const newName = args[1] ?? "";
+      switch (step) {
+        case "regional":     return { ok: true, data: { success: true, step, rebootRequired: true, message: "Definições regionais aplicadas." } };
+        case "anyconnect":   return { ok: true, data: { success: true, step, message: "Cisco AnyConnect instalado." } };
+        case "screenconnect":return { ok: true, data: { success: true, step, message: "ScreenConnect instalado." } };
+        case "smlplayer":    return { ok: true, data: { success: true, step, message: "SMLPlayer instalado; Main.ini aplicado." } };
+        case "printers":     return { ok: true, data: { success: true, step, message: "Impressoras configuradas." } };
+        case "domain":
+          if (!newName) return { ok: false, error: "Nome em falta." };
+          return { ok: true, data: { success: true, step, newName, rebootRequired: true, message: `Juntado ao domínio bmap.lis e renomeado para ${newName}.` } };
+        default:             return { ok: false, error: `Passo desconhecido: ${step}` };
+      }
+    }
 
     default:
       return { ok: false, error: `[MOCK] No mock defined for script: ${script}` };

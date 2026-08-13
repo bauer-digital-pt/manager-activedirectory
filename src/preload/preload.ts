@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld("consoleAPI", {
   // Report a renderer-side event (uncaught error, unhandled rejection) into the
   // shared activity log so it shows alongside main-process activity.
   report: (entry: unknown) => ipcRenderer.send("console:report", entry),
+  // Open (or focus) the detached, unbranded Console window (Ctrl+Shift+C).
+  openWindow: () => ipcRenderer.send("console:open-window"),
 });
 
 contextBridge.exposeInMainWorld("adAPI", {
@@ -72,6 +74,7 @@ contextBridge.exposeInMainWorld("adAPI", {
     description?: string;
   }) => ipcRenderer.invoke("ad:onboard-step", params),
   getDeviceOUs: () => ipcRenderer.invoke("ad:device-ous"),
+  getDevices: () => ipcRenderer.invoke("ad:get-devices"),
   getNextDeviceName: (dept: string) => ipcRenderer.invoke("ad:next-device-name", dept),
   getOnboardState: () => ipcRenderer.invoke("onboard:get-state"),
   setOnboardState: (state: unknown) => ipcRenderer.invoke("onboard:set-state", state),

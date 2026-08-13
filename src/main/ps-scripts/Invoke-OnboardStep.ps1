@@ -6,7 +6,6 @@
 #   regional      OS display language English, region Portugal, PT keyboard
 #   anyconnect    install Cisco AnyConnect / Secure Client (silent)
 #   screenconnect install ScreenConnect (silent)
-#   update        install all pending Windows updates
 #   smlplayer     install SMLPlayer (silent), open+close it, copy Main.ini
 #   printers      run the RICOHPCL6 add<NAME>.cmd for each configured printer
 #   domain        join bmap.lis and rename to PT-LPT-<DEPT>-<NUMBER> (reboot)
@@ -118,57 +117,6 @@ switch ($Step) {
     $path = Resolve-Installer $ScreenConnectSource "ScreenConnect"
     $rb = Install-Silent $path "ScreenConnect"
     Out-Result @{ success = $true; step = "screenconnect"; rebootRequired = $rb; message = "ScreenConnect instalado." }
-    exit 0
-  }
-
-  "update" {
-    try {
-      $session  = New-Object -ComObject Microsoft.Update.Session
-      $searcher = $session.CreateUpdateSearcher()
-      $result   = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-      if ($result.Updates.Count -eq 0) {
-        Out-Result @{ success = $true; step = "update"; installed = 0; rebootRequired = $false; message = "O Windows ja esta atualizado." }
-        exit 0
-      }
-      $toDownload = New-Object -ComObject Microsoft.Update.UpdateColl
-      foreach ($u in $result.Updates) {
-        if (-not $u.EulaAccepted) { $u.AcceptEula() | Out-Null }
-        $toDownload.Add($u) | Out-Null
-      }
-      $downloader = $session.CreateUpdateDownloader()
-      $downloader.Updates = $toDownload
-      $dr = $downloader.Download()
-
-      $toInstall = New-Object -ComObject Microsoft.Update.UpdateColl
-      foreach ($u in $result.Updates) { if ($u.IsDownloaded) { $toInstall.Add($u) | Out-Null } }
-      # Download() does NOT throw when an individual update fails to download (a
-      # transient network / WSUS soft error); it reports the aggregate via
-      # ResultCode and leaves that update with IsDownloaded=$false. Those would be
-      # silently skipped by the filter above, so a partial download must fail
-      # loudly rather than masquerade as a fully-updated machine (mirrors the
-      # install-side ResultCode guard below).
-      if ($toInstall.Count -lt $toDownload.Count) {
-        Fail ("Falha ao descarregar as atualizacoes do Windows (codigo " + [int]$dr.ResultCode + "): " + $toInstall.Count + " de " + $toDownload.Count + " descarregadas.")
-      }
-      $installer = $session.CreateUpdateInstaller()
-      $installer.Updates = $toInstall
-      $ir = $installer.Install()
-
-      # IUpdateInstaller.Install() does NOT throw when individual updates fail; it
-      # reports the outcome via ResultCode (2=Succeeded, 3=SucceededWithErrors,
-      # 4=Failed, 5=Aborted). Count the per-update successes so we report the real
-      # number, not just how many we attempted.
-      $succeeded = 0
-      for ($i = 0; $i -lt $toInstall.Count; $i++) {
-        if ($ir.GetUpdateResult($i).ResultCode -eq 2) { $succeeded++ }
-      }
-    } catch { Fail ("Falha ao instalar as atualizacoes do Windows: " + $_.Exception.Message) }
-    # Anything other than a clean success (2) is a partial/failed install: fail
-    # loudly so it can never masquerade as a completed step.
-    if ($ir.ResultCode -ne 2) {
-      Fail ("Falha ao instalar as atualizacoes do Windows (codigo " + [int]$ir.ResultCode + ", HRESULT 0x" + ("{0:X8}" -f $ir.HResult) + "): " + $succeeded + " de " + $toInstall.Count + " instaladas.")
-    }
-    Out-Result @{ success = $true; step = "update"; installed = [int]$succeeded; rebootRequired = [bool]$ir.RebootRequired; message = ("Atualizacoes instaladas: " + $succeeded + ".") }
     exit 0
   }
 

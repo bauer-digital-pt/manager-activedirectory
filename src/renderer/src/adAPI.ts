@@ -3,11 +3,11 @@
 // across main + renderer); re-exported here so existing
 // `import { ADUser } from ".../adAPI"` sites keep working unchanged.
 import type {
-  ADGroup, ADUser, ADUserLite, PSResult,
+  ADGroup, ADUser, ADUserLite, ADComputer, PSResult,
   OnboardStep, OnboardStepData, OnboardStepParams, OnboardState,
 } from "../../shared/types";
 export type {
-  ADGroup, ADUser, ADUserLite,
+  ADGroup, ADUser, ADUserLite, ADComputer,
   OnboardStep, OnboardStepData, OnboardStepParams, OnboardState,
 } from "../../shared/types";
 
@@ -18,7 +18,6 @@ export interface PCStatus {
   domain: { joined: boolean; name: string; compliant: boolean };
   name: { value: string; compliant: boolean; pattern: string };
   software: { anyConnect: boolean; screenConnect: boolean };
-  windowsUpdate: { checked: boolean; pending: number; upToDate: boolean };
   regional: { osLanguage: string; locale: string; geoId: number; geo: string; keyboard: string; compliant: boolean };
   departments: string[];
   onboarded: boolean;
@@ -71,6 +70,8 @@ declare global {
       onboardStep(params: OnboardStepParams): Promise<PSResult<OnboardStepData>>;
       // Destination folders for the device OU map, and the next free PC name.
       getDeviceOUs(): Promise<PSResult<DeviceOU[]>>;
+      // Read-only: every computer object under the BMAP Devices tree (Manager list).
+      getDevices(): Promise<PSResult<ADComputer[]>>;
       getNextDeviceName(dept: string): Promise<PSResult<NextDeviceName>>;
       // Persisted auto-onboarding wizard state (survives the domain reboot).
       getOnboardState(): Promise<OnboardState | null>;
@@ -87,13 +88,15 @@ declare global {
       getHistory(): Promise<unknown[]>;
       clear(): Promise<void>;
       report(entry: { level?: string; source?: string; label?: string; detail?: string; data?: unknown }): void;
+      // Present only in Electron: open/focus the detached Console window.
+      openWindow?(): void;
     };
   }
 }
 
 // --- Mock used when running in the browser (outside Electron) ---
 import { getGroupConfig } from "./lib/groupsConfig";
-import { mockUsersByGroup } from "../../shared/fixtures";
+import { mockUsersByGroup, mockDevices } from "../../shared/fixtures";
 
 // Live, mutable directory for the browser mock: createUser/unlockUser/offboard and
 // the ?baduser affordance mutate it in place, so it's built from the shared people
@@ -113,8 +116,6 @@ const mockPC = {
   domainName: "WORKGROUP",
   anyConnect: false,
   screenConnect: false,
-  wuChecked: true,
-  wuPending: 14,
   osLanguage: "pt-PT",
   locale: "pt-PT",
   geoId: 193,
@@ -124,7 +125,6 @@ function buildMockPCStatus(): PCStatus {
   const deptAlt = MOCK_DEPARTMENTS.join("|");
   const nameCompliant = new RegExp(`^PT-LPT-(${deptAlt})-\\d+$`).test(mockPC.hostname);
   const domainCompliant = mockPC.domainJoined && mockPC.domainName.toLowerCase() === "bmap.lis";
-  const wuUpToDate = mockPC.wuChecked && mockPC.wuPending === 0;
   const regionalCompliant =
     mockPC.osLanguage.startsWith("en") && mockPC.geoId === 193 &&
     (mockPC.keyboard.startsWith("pt") || mockPC.locale.startsWith("pt"));
@@ -133,13 +133,12 @@ function buildMockPCStatus(): PCStatus {
     domain: { joined: mockPC.domainJoined, name: mockPC.domainName, compliant: domainCompliant },
     name: { value: mockPC.hostname, compliant: nameCompliant, pattern: "PT-LPT-<DEPT>-<NUMBER>" },
     software: { anyConnect: mockPC.anyConnect, screenConnect: mockPC.screenConnect },
-    windowsUpdate: { checked: mockPC.wuChecked, pending: mockPC.wuPending, upToDate: wuUpToDate },
     regional: {
       osLanguage: mockPC.osLanguage, locale: mockPC.locale, geoId: mockPC.geoId,
       geo: mockPC.geoId === 193 ? "Portugal" : "", keyboard: mockPC.keyboard, compliant: regionalCompliant,
     },
     departments: MOCK_DEPARTMENTS,
-    onboarded: domainCompliant && nameCompliant && mockPC.anyConnect && mockPC.screenConnect && wuUpToDate && regionalCompliant,
+    onboarded: domainCompliant && nameCompliant && mockPC.anyConnect && mockPC.screenConnect && regionalCompliant,
   };
 }
 
@@ -153,7 +152,7 @@ const MOCK_DEVICE_OUS: DeviceOU[] = [
 }));
 
 // Persisted across reloads so the resume-on-launch path is testable in the browser.
-// ?resume seeds an in-progress run (regional+update done) to exercise resume.
+// ?resume seeds an in-progress run (regional done) to exercise resume.
 const MOCK_ONBOARD_KEY = "mock.onboardState";
 function mockReadOnboardState(): OnboardState | null {
   try {
@@ -166,7 +165,7 @@ function mockReadOnboardState(): OnboardState | null {
       anyConnectSource: "", screenConnectSource: "",
       printers: ["MRK", "COM1"], printerSource: "", smlPlayerSource: "", smlPlayerIni: "",
       preparedFor: { sam: "tiago.gomes", name: "Tiago Gomes" },
-      completed: ["regional", "update"],
+      completed: ["regional"],
       startedAt: Date.now(), updatedAt: Date.now(),
     };
   }
@@ -275,7 +274,6 @@ const mockAPI: Window["adAPI"] = {
           domain: { joined: true, name: "bmap.lis", compliant: true },
           name: { value: "PT-LPT-IT-07", compliant: true, pattern: "PT-LPT-<DEPT>-<NUMBER>" },
           software: { anyConnect: true, screenConnect: true },
-          windowsUpdate: { checked: true, pending: 0, upToDate: true },
           regional: { osLanguage: "en-US", locale: "pt-PT", geoId: 193, geo: "Portugal", keyboard: "pt-PT", compliant: true },
           departments: MOCK_DEPARTMENTS,
           onboarded: true,
@@ -299,9 +297,6 @@ const mockAPI: Window["adAPI"] = {
       case "screenconnect":
         mockPC.screenConnect = true;
         return { ok: true, data: { success: true, step, message: "ScreenConnect instalado." } };
-      case "update":
-        mockPC.wuPending = 0;
-        return { ok: true, data: { success: true, step, installed: 14, rebootRequired: true, message: "Atualizações instaladas." } };
       case "smlplayer":
         return { ok: true, data: { success: true, step, message: "SMLPlayer instalado; aberto/fechado e Main.ini aplicado." } };
       case "printers":
@@ -317,6 +312,14 @@ const mockAPI: Window["adAPI"] = {
     }
   },
   getDeviceOUs: async () => { await delay(400); return { ok: true, data: MOCK_DEVICE_OUS }; },
+  getDevices: async () => {
+    await delay(600);
+    // ?devicesfail exercises the inline error card; ?nodevices the empty state.
+    const q = new URLSearchParams(location.search);
+    if (q.has("devicesfail")) return { ok: false, error: "Não foi possível contactar o Active Directory para listar os dispositivos." };
+    if (q.has("nodevices")) return { ok: true, data: [] };
+    return { ok: true, data: mockDevices() };
+  },
   getNextDeviceName: async (dept) => {
     await delay(400);
     const d = (dept || "").trim().toUpperCase();
@@ -391,6 +394,7 @@ export const adAPI = {
   getPCStatus:          (force?: boolean) => window.adAPI.getPCStatus(force),
   onboardStep:          (p: OnboardStepParams) => window.adAPI.onboardStep(p),
   getDeviceOUs:         () => window.adAPI.getDeviceOUs(),
+  getDevices:           () => window.adAPI.getDevices(),
   getNextDeviceName:    (dept: string) => window.adAPI.getNextDeviceName(dept),
   getOnboardState:      () => window.adAPI.getOnboardState(),
   setOnboardState:      (s: OnboardState | null) => window.adAPI.setOnboardState(s),

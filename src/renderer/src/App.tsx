@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Toaster, toast } from "sonner";
-import { AlertTriangle, Download, X } from "lucide-react";
+import { AlertTriangle, Download, X, ChevronLeft } from "lucide-react";
+import { cn } from "./lib/cn";
 import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
 import LoginGate from "./components/LoginGate";
@@ -18,12 +19,17 @@ import { updatesAPI, getStartupInfo, type UpdateStatus } from "./lib/updates";
 import { getAuthStatus, logout, ping, type LoginResult } from "./lib/auth";
 import { getSettings, type AppSettings, DEFAULT_SETTINGS } from "./lib/appSettings";
 import { confirmNav } from "./lib/navGuard";
+import { IS_AGENT, FLAVOR_UI } from "./lib/flavor";
 import logo from "./assets/bauer-media-logo.svg";
 
 export type Page = "users" | "devices" | "settings" | "console";
 
+// Landing page per flavor: the Manager opens on Users; the Agent installer is the
+// onboarding wizard, so it opens straight on Devices (no Users page at all).
+const HOME_PAGE: Page = IS_AGENT ? "devices" : "users";
+
 export default function App() {
-  const [page, setPage] = useState<Page>("users");
+  const [page, setPage] = useState<Page>(HOME_PAGE);
   // Which Settings tab to open on. Devices deep-links to "devices" to fix an OU
   // mapping; reset to "general" whenever we leave Settings so a plain sidebar
   // click always lands on the first tab.
@@ -78,18 +84,45 @@ export default function App() {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if (e.key === "1") { e.preventDefault(); navigate("users"); }
+      if (e.key === "1" && !IS_AGENT) { e.preventDefault(); navigate("users"); }
       if (e.key === "2") { e.preventDefault(); navigate("devices"); }
       if (e.key === "3") { e.preventDefault(); navigate("settings"); }
-      if (e.key === "4" && devMode) { e.preventDefault(); navigate("console"); }
+      // In-app Console page is a Manager dev tool. The Agent has no such page —
+      // its diagnostics live in the detached Console window (Ctrl+Shift+C below).
+      if (e.key === "4" && devMode && !IS_AGENT) { e.preventDefault(); navigate("console"); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [devMode, navigate]);
 
-  // If dev mode is turned off while sitting on the Console, fall back to Users.
+  // Open the detached, unbranded Console window. In Electron it's a separate OS
+  // window (main process owns it); in the browser preview there's no such bridge,
+  // so open a standalone tab on the same bundle with the "#console" hash.
+  const openConsoleWindow = useCallback(() => {
+    if (window.consoleAPI?.openWindow) {
+      window.consoleAPI.openWindow();
+    } else {
+      window.open(`${location.pathname}${location.search}#console`, "_blank", "noopener,noreferrer,width=960,height=640");
+    }
+  }, []);
+
+  // Ctrl+Shift+C — a deliberately obscure shortcut that pops the Console as its
+  // own window, unattached to the app. Handled globally (even inside inputs, and
+  // whether or not the user is logged in) since the modifier combo is unambiguous.
   useEffect(() => {
-    if (!devMode && page === "console") setPage("users");
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (e.key === "C" || e.key === "c")) {
+        e.preventDefault();
+        openConsoleWindow();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [openConsoleWindow]);
+
+  // If dev mode is turned off while sitting on the Console, fall back home.
+  useEffect(() => {
+    if (!devMode && page === "console") setPage(HOME_PAGE);
   }, [devMode, page]);
 
   // Check the RSAT ActiveDirectory module. An outright check failure is treated
@@ -201,7 +234,7 @@ export default function App() {
     setAuthed(false);
     setLocked(false);
     setConnOk(null);
-    setPage("users");
+    setPage(HOME_PAGE);
   }, []);
 
   // The manual-update modal lives in Settings and suppresses the full-screen
@@ -256,13 +289,16 @@ export default function App() {
       <div className="flex flex-1 flex-col items-center justify-center gap-5 bg-white">
         <img src={logo} alt="Bauer Media" className="h-12 w-12 animate-pulse opacity-90" />
         <div className="flex flex-col items-center gap-1.5">
-          <span className="text-sm font-medium tracking-wide text-zinc-500">AD Manager</span>
+          <span className="text-sm font-medium tracking-wide text-zinc-500">{FLAVOR_UI.eyebrow}</span>
           <span className="text-xs text-zinc-400">A iniciar…</span>
         </div>
       </div>
     );
-  } else if (moduleMissing && !continueAnyway) {
+  } else if (!IS_AGENT && moduleMissing && !continueAnyway) {
     // Module missing and not dismissed — RSAT setup is a precondition for login.
+    // Agent runs on freshly-imaged PCs that legitimately lack RSAT (the domain
+    // join needs no module; only the OU move degrades to a warning), so it never
+    // hard-gates on it — the wizard opens straight away.
     content = (
       <SetupRequired
         onRecheck={recheck}
@@ -309,6 +345,22 @@ export default function App() {
       <LoginGate lastUsername={lastUsername} locked={locked} onSuccess={onLoginSuccess} />
     );
   } else {
+    // The active page, wrapped once so both the Manager (sidebar) and Agent
+    // (centered card) shells render the exact same content. Keyed by page: a
+    // crash in one page shows a compact fallback and navigating remounts a fresh
+    // boundary. Suspense catches the lazy secondary-page chunks; the eager Users
+    // page renders synchronously and never suspends.
+    const pageBody = (
+      <ErrorBoundary key={page} compact>
+        <Suspense fallback={<PageFallback />}>
+          {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => navigate("settings")} />}
+          {page === "devices"  && <DevicesPage  toast={toast} onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }} />}
+          {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} initialTab={settingsTab} />}
+          {page === "console"  && devMode && <ConsolePage />}
+        </Suspense>
+      </ErrorBoundary>
+    );
+
     content = (
       <>
         {moduleMissing && continueAnyway && !bannerDismissed && (
@@ -348,30 +400,28 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex flex-1 overflow-hidden">
-          <Sidebar
-            active={page}
-            onNavigate={navigate}
-            devMode={devMode}
-            userName={displayName || lastUsername}
-            connOk={connOk}
-            onLogout={onLogout}
-          />
-          <main className="flex-1 overflow-hidden flex flex-col bg-white">
-            {/* Keyed by page: a crash in one page shows a compact fallback (sidebar
-                stays), and navigating to another page remounts a fresh boundary. */}
-            <ErrorBoundary key={page} compact>
-              {/* Suspense catches the lazy secondary-page chunks while they load;
-                  the eager Users page renders synchronously and never suspends. */}
-              <Suspense fallback={<PageFallback />}>
-                {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => navigate("settings")} />}
-                {page === "devices"  && <DevicesPage  toast={toast} onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }} />}
-                {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} initialTab={settingsTab} />}
-                {page === "console"  && devMode && <ConsolePage />}
-              </Suspense>
-            </ErrorBoundary>
-          </main>
-        </div>
+        {IS_AGENT ? (
+          // Slim installer: no sidebar, just the onboarding wizard in a compact
+          // card centered on the page (Settings is reachable via the wizard's
+          // deep-link / the hidden number hotkeys, with a Back affordance).
+          <AgentShell page={page} onBack={() => navigate("devices")}>
+            {pageBody}
+          </AgentShell>
+        ) : (
+          <div className="flex flex-1 overflow-hidden">
+            <Sidebar
+              active={page}
+              onNavigate={navigate}
+              devMode={devMode}
+              userName={displayName || lastUsername}
+              connOk={connOk}
+              onLogout={onLogout}
+            />
+            <main className="flex-1 overflow-hidden flex flex-col bg-white">
+              {pageBody}
+            </main>
+          </div>
+        )}
       </>
     );
   }
@@ -390,6 +440,37 @@ function PageFallback() {
   return (
     <div className="flex flex-1 items-center justify-center bg-white">
       <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-200 border-t-violet-500" />
+    </div>
+  );
+}
+
+// The Agent's slim-installer chrome: a single card floated in the middle of the
+// page, no sidebar. The card sizes to its content and centers vertically, but
+// caps at the viewport (scrolling internally) so a long onboarding run still
+// fits. Settings — reached via the wizard's deep-link or the hidden hotkeys —
+// gets a wider card and a Back button, since there's no sidebar to return with.
+function AgentShell({ page, onBack, children }: { page: Page; onBack: () => void; children: React.ReactNode }) {
+  const wide = page !== "devices";
+  return (
+    <div className="flex flex-1 overflow-y-auto bg-gradient-to-b from-zinc-100 to-zinc-200/60 px-6 py-8">
+      <div
+        className={cn(
+          "mx-auto my-auto flex max-h-full w-full flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl shadow-zinc-900/10",
+          wide ? "max-w-[820px]" : "max-w-[600px]",
+        )}
+      >
+        {page !== "devices" && (
+          <div className="flex items-center border-b border-zinc-200 px-3 py-2">
+            <button
+              onClick={onBack}
+              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
+            >
+              <ChevronLeft size={14} /> Voltar ao onboarding
+            </button>
+          </div>
+        )}
+        {children}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import logo from "../assets/bauer-media-logo.svg";
+import { FLAVOR_UI } from "../lib/flavor";
 
 interface Props {
   children: ReactNode;
@@ -99,7 +100,7 @@ export default class ErrorBoundary extends Component<Props, State> {
           <div className="mb-6 flex items-center justify-center gap-2.5">
             <img src={logo} alt="Bauer Media" className="h-8 w-8" />
             <span className="text-sm font-medium tracking-wide text-zinc-400">
-              AD Manager
+              {FLAVOR_UI.eyebrow}
             </span>
           </div>
 

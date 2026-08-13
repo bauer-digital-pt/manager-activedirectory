@@ -24,14 +24,6 @@ export interface AppLogEntry {
 const BUFFER_MAX = 3000;
 const buffer: AppLogEntry[] = [];
 let seq = 0;
-let win: BrowserWindow | null = null;
-
-// Bind the window that live entries are pushed to. Buffering happens regardless,
-// so entries emitted before this is called (or before the renderer subscribes)
-// are never lost — they arrive via getHistory().
-export function bindLogWindow(w: BrowserWindow): void {
-  win = w;
-}
 
 export function getHistory(): AppLogEntry[] {
   return buffer;
@@ -55,8 +47,12 @@ export function pushLog(partial: Omit<AppLogEntry, "id" | "ts"> & { ts?: number 
   };
   buffer.push(entry);
   if (buffer.length > BUFFER_MAX) buffer.splice(0, buffer.length - BUFFER_MAX);
-  if (win && !win.isDestroyed()) {
-    try { win.webContents.send("console:log", entry); } catch { /* window tearing down */ }
+  // Fan the live entry out to every open window — the main app window AND the
+  // detached Console window (Ctrl+Shift+C). Each renderer that cares subscribes
+  // via console:log; those that don't (e.g. the Agent's wizard) simply ignore it.
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w.isDestroyed()) continue;
+    try { w.webContents.send("console:log", entry); } catch { /* window tearing down */ }
   }
   return entry;
 }

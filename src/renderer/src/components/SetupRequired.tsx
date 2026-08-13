@@ -15,6 +15,7 @@ import StatusScreen, { type StatusAction } from "./StatusScreen";
 import { adAPI, type InstallProgress } from "../adAPI";
 import { cn } from "../lib/cn";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
+import { FLAVOR_UI } from "../lib/flavor";
 
 interface SetupRequiredProps {
   onRecheck: () => void;
@@ -85,7 +86,7 @@ export default function SetupRequired({
     return (
       <StatusScreen
         tone="brand"
-        eyebrow="AD Manager"
+        eyebrow={FLAVOR_UI.eyebrow}
         badge={<Loader2 size={28} className="animate-spin" />}
         title="A instalar componentes…"
         subtitle="Isto pode demorar alguns minutos. Podes deixar a janela aberta — não é preciso fazer mais nada."
@@ -109,7 +110,7 @@ export default function SetupRequired({
     return (
       <StatusScreen
         tone="success"
-        eyebrow="AD Manager"
+        eyebrow={FLAVOR_UI.eyebrow}
         badge={<CheckCircle2 size={30} strokeWidth={2.2} />}
         title="Componente instalado!"
         subtitle={
@@ -142,7 +143,7 @@ export default function SetupRequired({
     return (
       <StatusScreen
         tone="error"
-        eyebrow="AD Manager"
+        eyebrow={FLAVOR_UI.eyebrow}
         badge={<AlertTriangle size={28} strokeWidth={2} />}
         title="Não foi possível instalar automaticamente"
         subtitle={message}
@@ -163,7 +164,7 @@ export default function SetupRequired({
   return (
     <StatusScreen
       tone="brand"
-      eyebrow="AD Manager"
+      eyebrow={FLAVOR_UI.eyebrow}
       badge={<PackageX size={28} strokeWidth={2} />}
       title="Faltam componentes necessários"
       subtitle={

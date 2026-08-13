@@ -1,10 +1,15 @@
 name: Release
 
-# Builds the Windows installer and publishes it to GitHub Releases so
+# Builds the Manager Windows installer and publishes it to GitHub Releases so
 # electron-updater clients auto-update. Triggered by pushing a version tag
 # (e.g. `git tag v1.0.1 && git push origin v1.0.1`) or run manually from the
-# Actions tab. `--publish always` makes both paths publish; the release goes
-# out as a full release (see the `releaseType: release` publish config).
+# Actions tab. `release:manager` bakes `--publish always` into the leaf
+# electron-builder call, so BOTH paths publish (tag push and manual dispatch);
+# the release goes out as a full release (see the `releaseType: release` publish
+# config). NOTE: do not use `npm run build -- --publish always` here — the flag
+# is silently dropped when forwarded through the nested `npm run build:manager`.
+# The Agent installer publishes to a SEPARATE feed via `npm run release:agent`
+# and is not wired into CI yet (no deployed Agent fleet to auto-update).
 on:
   push:
     tags:
@@ -57,4 +62,4 @@ jobs:
           # The default Actions token; the permissions block above grants it
           # contents:write. electron-builder reads GH_TOKEN for the GitHub publisher.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build -- --publish always
+        run: npm run release:manager
