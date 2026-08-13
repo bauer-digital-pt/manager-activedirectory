@@ -8,8 +8,16 @@ name: Release
 # the release goes out as a full release (see the `releaseType: release` publish
 # config). NOTE: do not use `npm run build -- --publish always` here — the flag
 # is silently dropped when forwarded through the nested `npm run build:manager`.
-# The Agent installer publishes to a SEPARATE feed via `npm run release:agent`
-# and is not wired into CI yet (no deployed Agent fleet to auto-update).
+#
+# The Agent is a SEPARATE product with its own auto-update feed
+# (agent-activedirectory). That feed repo does not exist yet, and the default
+# GITHUB_TOKEN is scoped to THIS repo only so it could not publish there anyway.
+# So we BUILD the Agent installer on every release for parity and upload it as a
+# run ARTIFACT (download from the Actions run) — but never publish it to a feed.
+# `build:agent` bakes `--publish never` so a tag push can't trip electron-builder's
+# CI auto-publish into the missing repo. To turn on Agent auto-update later: create
+# the public agent-activedirectory repo, add a cross-repo token secret, and swap
+# the "Build Agent installer" step for `npm run release:agent` with that token.
 on:
   push:
     tags:
@@ -57,9 +65,29 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Build Windows installer & publish to GitHub Releases
+      - name: Build Manager installer & publish to GitHub Releases
         env:
           # The default Actions token; the permissions block above grants it
           # contents:write. electron-builder reads GH_TOKEN for the GitHub publisher.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release:manager
+
+      # Build the Agent flavor too (separate APP_FLAVOR bake, separate output
+      # dir release/agent), but NEVER publish it — see the header comment. This
+      # runs after the Manager publish so a failure here can't block the fleet
+      # update that already went out. No GH_TOKEN: `--publish never` needs none.
+      - name: Build Agent installer (no publish)
+        run: npm run build:agent
+
+      # Expose the Agent .exe (+ blockmap) for manual download/distribution. The
+      # versioned installer ("AD Agent Setup <version>.exe" — spaces, electron-
+      # builder's default on-disk name; the dashed form is only ever the published
+      # GitHub asset, which the Agent never produces) lives inside the artifact.
+      - name: Upload Agent installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AD-Agent-Installer
+          path: |
+            release/agent/*.exe
+            release/agent/*.exe.blockmap
+          if-no-files-found: error
