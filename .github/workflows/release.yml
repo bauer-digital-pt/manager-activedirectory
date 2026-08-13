@@ -12,12 +12,15 @@ name: Release
 # The Agent is a SEPARATE product with its own auto-update feed
 # (agent-activedirectory). That feed repo does not exist yet, and the default
 # GITHUB_TOKEN is scoped to THIS repo only so it could not publish there anyway.
-# So we BUILD the Agent installer on every release for parity and upload it as a
-# run ARTIFACT (download from the Actions run) — but never publish it to a feed.
+# So we BUILD the Agent installer on every release and ATTACH it to the SAME
+# GitHub Release as an extra downloadable .exe. This is a plain release asset, NOT
+# a feed publish: we upload ONLY the .exe, never the Agent's latest.yml (which
+# would collide with the Manager's and hijack the fleet), so the Manager feed
+# stays Manager-only and electron-updater clients never cross-update to the Agent.
 # `build:agent` bakes `--publish never` so a tag push can't trip electron-builder's
-# CI auto-publish into the missing repo. To turn on Agent auto-update later: create
-# the public agent-activedirectory repo, add a cross-repo token secret, and swap
-# the "Build Agent installer" step for `npm run release:agent` with that token.
+# CI auto-publish into the (missing) agent feed repo. To turn on real Agent
+# auto-update later: create the public agent-activedirectory repo, add a cross-repo
+# token secret, and swap the Agent build step for `npm run release:agent`.
 on:
   push:
     tags:
@@ -79,15 +82,18 @@ jobs:
       - name: Build Agent installer (no publish)
         run: npm run build:agent
 
-      # Expose the Agent .exe (+ blockmap) for manual download/distribution. The
-      # versioned installer ("AD Agent Setup <version>.exe" — spaces, electron-
-      # builder's default on-disk name; the dashed form is only ever the published
-      # GitHub asset, which the Agent never produces) lives inside the artifact.
-      - name: Upload Agent installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AD-Agent-Installer
-          path: |
-            release/agent/*.exe
-            release/agent/*.exe.blockmap
-          if-no-files-found: error
+      # Attach the Agent .exe to the SAME GitHub Release as an extra download.
+      # ONLY the .exe — never the Agent's latest.yml (same filename as the
+      # Manager's; uploading it would hijack the fleet's update feed). The release
+      # is tagged v<version> (electron-builder's default), computed from
+      # package.json so this works on both tag push and manual dispatch. The
+      # on-disk name has spaces ("AD Agent Setup <version>.exe"); the bash glob
+      # expands it as a single path.
+      - name: Attach Agent installer to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          echo "Uploading Agent installer to release $VERSION"
+          gh release upload "$VERSION" release/agent/*.exe --clobber
