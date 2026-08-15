@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld("configAPI", {
   setSettings: (settings: unknown) => ipcRenderer.invoke("config:set-settings", settings),
   getDeviceConfig: () => ipcRenderer.invoke("config:get-device-config"),
   setDeviceConfig: (config: unknown) => ipcRenderer.invoke("config:set-device-config", config),
+  getInventory: () => ipcRenderer.invoke("config:get-inventory"),
+  setInventory: (config: unknown) => ipcRenderer.invoke("config:set-inventory", config),
 });
 
 contextBridge.exposeInMainWorld("authAPI", {
@@ -88,6 +90,17 @@ contextBridge.exposeInMainWorld("adAPI", {
     ipcRenderer.on("ad:install-progress", listener);
     return () => ipcRenderer.removeListener("ad:install-progress", listener);
   },
+});
+
+// Internal read-only inventory API (pyexp-inventory). Manager-only; every call is
+// a GET signed with the live login session (HTTP Basic) in the main process.
+contextBridge.exposeInMainWorld("inventoryAPI", {
+  test: (override?: { baseUrl?: string }) => ipcRenderer.invoke("inventory:test", override),
+  getAssets: () => ipcRenderer.invoke("inventory:assets"),
+  getMembers: () => ipcRenderer.invoke("inventory:members"),
+  getADDevices: () => ipcRenderer.invoke("inventory:ad-devices"),
+  getReconciliation: () => ipcRenderer.invoke("inventory:reconciliation"),
+  getMetricsSummary: () => ipcRenderer.invoke("inventory:metrics-summary"),
 });
 
 contextBridge.exposeInMainWorld("updatesAPI", {

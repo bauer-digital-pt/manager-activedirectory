@@ -14,15 +14,17 @@ import UsersPage from "./pages/Users/UsersPage";
 const DevicesPage = lazy(() => import("./pages/DevicesPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const ConsolePage = lazy(() => import("./pages/ConsolePage"));
+const InventoryPage = lazy(() => import("./pages/InventoryPage"));
 import { adAPI } from "./adAPI";
 import { updatesAPI, getStartupInfo, type UpdateStatus } from "./lib/updates";
 import { getAuthStatus, logout, ping, type LoginResult } from "./lib/auth";
 import { getSettings, type AppSettings, DEFAULT_SETTINGS } from "./lib/appSettings";
+import { getInventoryConfig } from "./lib/inventoryConfig";
 import { confirmNav } from "./lib/navGuard";
 import { IS_AGENT, FLAVOR_UI } from "./lib/flavor";
 import logo from "./assets/bauer-media-logo.svg";
 
-export type Page = "users" | "devices" | "settings" | "console";
+export type Page = "users" | "devices" | "inventory" | "settings" | "console";
 
 // Landing page per flavor: the Manager opens on Users; the Agent installer is the
 // onboarding wizard, so it opens straight on Devices (no Users page at all).
@@ -33,7 +35,10 @@ export default function App() {
   // Which Settings tab to open on. Devices deep-links to "devices" to fix an OU
   // mapping; reset to "general" whenever we leave Settings so a plain sidebar
   // click always lands on the first tab.
-  const [settingsTab, setSettingsTab] = useState<"general" | "groups" | "devices" | "connection">("general");
+  const [settingsTab, setSettingsTab] = useState<"general" | "groups" | "devices" | "connection" | "inventory">("general");
+  // Whether the inventory API is configured+enabled — gates the sidebar tab, the
+  // hotkey, and the page. Manager-only; the Agent never surfaces the inventory.
+  const [inventoryEnabled, setInventoryEnabled] = useState(false);
   // null = still checking; true = RSAT module missing; false = available.
   const [moduleMissing, setModuleMissing] = useState<boolean | null>(null);
   const [continueAnyway, setContinueAnyway] = useState(false);
@@ -67,9 +72,15 @@ export default function App() {
   useEffect(() => {
     getAuthStatus().then((s) => setLastUsername(s.lastUsername || s.username || ""));
     getSettings().then(setSettings);
+    if (!IS_AGENT) getInventoryConfig().then((c) => setInventoryEnabled(c.enabled)).catch(() => {});
   }, []);
 
-  const reloadSettings = useCallback(() => { getSettings().then(setSettings); }, []);
+  // Re-read app settings AND the inventory flag: the Settings inventory tab calls
+  // onSettingsChange after a save, so toggling it there shows/hides the tab live.
+  const reloadSettings = useCallback(() => {
+    getSettings().then(setSettings);
+    if (!IS_AGENT) getInventoryConfig().then((c) => setInventoryEnabled(c.enabled)).catch(() => {});
+  }, []);
 
   // Central page switch: gives an in-progress flow (the create-user wizard) a
   // chance to veto navigation that would discard unsaved data. Used by the
@@ -86,14 +97,15 @@ export default function App() {
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (e.key === "1" && !IS_AGENT) { e.preventDefault(); navigate("users"); }
       if (e.key === "2") { e.preventDefault(); navigate("devices"); }
-      if (e.key === "3") { e.preventDefault(); navigate("settings"); }
+      if (e.key === "3" && !IS_AGENT && inventoryEnabled) { e.preventDefault(); navigate("inventory"); }
+      if (e.key === "4") { e.preventDefault(); navigate("settings"); }
       // In-app Console page is a Manager dev tool. The Agent has no such page —
       // its diagnostics live in the detached Console window (Ctrl+Shift+C below).
-      if (e.key === "4" && devMode && !IS_AGENT) { e.preventDefault(); navigate("console"); }
+      if (e.key === "5" && devMode && !IS_AGENT) { e.preventDefault(); navigate("console"); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [devMode, navigate]);
+  }, [devMode, inventoryEnabled, navigate]);
 
   // Open the detached, unbranded Console window. In Electron it's a separate OS
   // window (main process owns it); in the browser preview there's no such bridge,
@@ -124,6 +136,11 @@ export default function App() {
   useEffect(() => {
     if (!devMode && page === "console") setPage(HOME_PAGE);
   }, [devMode, page]);
+
+  // Likewise, if the inventory is disabled (in Settings) while it's open, leave.
+  useEffect(() => {
+    if (!inventoryEnabled && page === "inventory") setPage(HOME_PAGE);
+  }, [inventoryEnabled, page]);
 
   // Check the RSAT ActiveDirectory module. An outright check failure is treated
   // as "not missing" so we never block the app on an ambiguous error.
@@ -353,10 +370,18 @@ export default function App() {
     const pageBody = (
       <ErrorBoundary key={page} compact>
         <Suspense fallback={<PageFallback />}>
-          {page === "users"    && <UsersPage    toast={toast} onOpenSettings={() => navigate("settings")} />}
-          {page === "devices"  && <DevicesPage  toast={toast} onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }} />}
-          {page === "settings" && <SettingsPage toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} initialTab={settingsTab} />}
-          {page === "console"  && devMode && <ConsolePage />}
+          {page === "users"     && <UsersPage     toast={toast} onOpenSettings={() => navigate("settings")} />}
+          {page === "devices"   && (
+            <DevicesPage
+              toast={toast}
+              onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }}
+              onOpenConnectionSettings={() => { setSettingsTab("connection"); navigate("settings"); }}
+              onOpenInventorySettings={() => { setSettingsTab("inventory"); navigate("settings"); }}
+            />
+          )}
+          {page === "inventory" && <InventoryPage toast={toast} onOpenSettings={() => { setSettingsTab("inventory"); navigate("settings"); }} />}
+          {page === "settings"  && <SettingsPage  toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} initialTab={settingsTab} />}
+          {page === "console"   && devMode && <ConsolePage />}
         </Suspense>
       </ErrorBoundary>
     );
@@ -364,7 +389,7 @@ export default function App() {
     content = (
       <>
         {moduleMissing && continueAnyway && !bannerDismissed && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-sm">
+          <div className="anim-banner flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-sm">
             <AlertTriangle size={15} className="flex-shrink-0" />
             <span className="flex-1">
               O módulo <strong>ActiveDirectory (RSAT)</strong> não está instalado — as funções de AD não vão funcionar.
@@ -383,7 +408,7 @@ export default function App() {
 
         {/* Once the full-screen update notice is dismissed, a ready update stays reachable here. */}
         {update.state === "downloaded" && updateDismissed && !updateBannerDismissed && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white text-sm">
+          <div className="anim-banner flex items-center gap-2 px-4 py-2 bg-violet-600 text-white text-sm">
             <Download size={15} className="flex-shrink-0" />
             <span className="flex-1">
               Atualização {update.version ? `(${update.version}) ` : ""}pronta a instalar.
@@ -413,12 +438,18 @@ export default function App() {
               active={page}
               onNavigate={navigate}
               devMode={devMode}
+              inventoryEnabled={inventoryEnabled}
               userName={displayName || lastUsername}
               connOk={connOk}
               onLogout={onLogout}
             />
             <main className="flex-1 overflow-hidden flex flex-col bg-white">
-              {pageBody}
+              {/* Keyed by page so a fresh element mounts on every sidebar
+                  navigation — a light cross-fade marks the page change without
+                  the desktop-app feel of an instant hard cut. */}
+              <div key={page} className="anim-page flex flex-1 flex-col overflow-hidden">
+                {pageBody}
+              </div>
             </main>
           </div>
         )}

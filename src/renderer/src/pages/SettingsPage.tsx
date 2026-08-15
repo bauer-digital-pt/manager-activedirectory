@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Trash2, X, Settings2, Layers, Server, Loader2, CheckCircle2, XCircle, SlidersHorizontal, RefreshCw, MonitorSmartphone } from "lucide-react";
+import { Plus, Trash2, X, Settings2, Layers, Server, Loader2, CheckCircle2, XCircle, SlidersHorizontal, RefreshCw, MonitorSmartphone, Boxes } from "lucide-react";
 import { getGroupConfig, setGroupConfig, DEFAULT_GROUPS, type GroupConfig } from "../lib/groupsConfig";
 import { getConnection, setConnection, type ConnectionInfo } from "../lib/connectionConfig";
+import { getInventoryConfig, setInventoryConfig, type InventoryConfigInfo } from "../lib/inventoryConfig";
+import { inventoryAPI } from "../inventoryAPI";
 import { getSettings, setSettings, type AppSettings } from "../lib/appSettings";
 import { getDeviceConfig, setDeviceConfig, DEVICE_DEPARTMENTS, AVAILABLE_PRINTERS, EMPTY_DEVICE_CONFIG, type DeviceConfig } from "../lib/deviceConfig";
 import { getAppVersion } from "../lib/updates";
@@ -15,15 +17,17 @@ import { FLAVOR, FLAVOR_UI, type AppFlavor } from "../lib/flavor";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
-type Tab = "general" | "groups" | "devices" | "connection";
+type Tab = "general" | "groups" | "devices" | "connection" | "inventory";
 
-// The Agent installer doesn't manage user-onboarding groups — hide that tab.
+// The Agent installer doesn't manage user-onboarding groups or the inventory
+// dashboard — hide those tabs.
 const TABS: { id: Tab; label: string; icon: React.ElementType; flavors?: AppFlavor[] }[] = (
   [
     { id: "general", label: "General", icon: SlidersHorizontal },
     { id: "groups", label: "Onboarding Groups", icon: Layers, flavors: ["manager"] },
     { id: "devices", label: "Dispositivos", icon: MonitorSmartphone },
     { id: "connection", label: "AD Connection", icon: Server },
+    { id: "inventory", label: "Inventário", icon: Boxes, flavors: ["manager"] },
   ] as { id: Tab; label: string; icon: React.ElementType; flavors?: AppFlavor[] }[]
 ).filter((t) => !t.flavors || t.flavors.includes(FLAVOR));
 
@@ -68,6 +72,7 @@ export default function SettingsPage({ toast, onSettingsChange, onUpdateModal, i
       {tab === "groups" && <GroupsTab toast={toast} />}
       {tab === "devices" && <DevicesTab toast={toast} />}
       {tab === "connection" && <ConnectionTab toast={toast} />}
+      {tab === "inventory" && <InventoryTab toast={toast} onSaved={onSettingsChange} />}
     </div>
   );
 }
@@ -308,6 +313,160 @@ function ConnectionTab({ toast }: { toast: { success: ToastFn; error: ToastFn } 
             className="ml-auto text-xs text-zinc-400 hover:text-red-500 transition-colors"
           >
             Clear
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InventoryTab({ toast, onSaved }: {
+  toast: { success: ToastFn; error: ToastFn };
+  /** Called after the config changes so the shell can show/hide the sidebar tab. */
+  onSaved?: () => void;
+}) {
+  const [baseUrl, setBaseUrl] = useState("");
+  const [enabled, setEnabled] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    getInventoryConfig().then((c: InventoryConfigInfo) => {
+      setBaseUrl(c.baseUrl);
+      setEnabled(c.enabled);
+    });
+  }, []);
+
+  const test = async () => {
+    setTesting(true);
+    setResult(null);
+    try {
+      // /healthz is open — this only proves the address is reachable. Credential
+      // validity surfaces on the first real read (signed with the login).
+      const res = await inventoryAPI.test({ baseUrl: baseUrl.trim() });
+      if (res.ok) {
+        const d = res.data;
+        const mode = d?.mode ? ` (${d.mode})` : "";
+        setResult({ ok: true, message: `API acessível${mode}` });
+      } else {
+        setResult({ ok: false, message: res.error ?? "Não foi possível contactar a API." });
+      }
+    } catch (e) {
+      setResult({ ok: false, message: e instanceof Error ? e.message : "Não foi possível contactar a API." });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await setInventoryConfig({ baseUrl: baseUrl.trim(), enabled });
+      onSaved?.();
+      toast.success("Definições de inventário guardadas");
+    } catch {
+      toast.error("Não foi possível guardar as definições de inventário");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearInventory = async () => {
+    await setInventoryConfig({ baseUrl: "", enabled: false });
+    setBaseUrl("");
+    setEnabled(false);
+    setResult(null);
+    onSaved?.();
+    toast.success("Ligação ao inventário limpa");
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="px-8 py-6 space-y-8 max-w-xl">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-900">API de inventário</h2>
+          <p className="text-xs text-zinc-400 mt-0.5">
+            Ligação à API interna de inventário (pyexp-inventory) que cruza o Active Directory
+            com o EZOffice. Só de leitura. Deixa desativado para esconder o separador Inventário.
+          </p>
+          <p className="text-xs text-zinc-400 mt-1.5">
+            Cada pedido é assinado com as credenciais do teu início de sessão — não há token nem
+            conta de serviço. Usa um endereço <span className="font-medium text-zinc-500">https://</span> para
+            proteger a palavra-passe em rede.
+          </p>
+        </div>
+
+        {/* Enabled toggle */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Ativar inventário</h3>
+              <p className="text-xs text-zinc-400 mt-0.5">Mostra o painel de reconciliação na barra lateral.</p>
+            </div>
+            <button
+              onClick={() => { setEnabled((v) => !v); setResult(null); }}
+              role="switch"
+              aria-checked={enabled}
+              className={cn(
+                "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
+                enabled ? "bg-violet-600" : "bg-zinc-200"
+              )}
+            >
+              <span className={cn(
+                "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
+                enabled ? "translate-x-5" : "translate-x-0.5"
+              )} />
+            </button>
+          </div>
+        </section>
+
+        <section className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Endereço da API</label>
+            <input
+              value={baseUrl}
+              onChange={(e) => { setBaseUrl(e.target.value); setResult(null); }}
+              placeholder="ex: http://pt-srv-pyexp:8000"
+              className={inputCls}
+              autoComplete="off"
+            />
+            <p className="text-[11px] text-zinc-400">Endereço interno (http:// ou https://), sem barra final.</p>
+          </div>
+        </section>
+
+        {result && (
+          <div className={cn(
+            "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
+            result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
+          )}>
+            {result.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
+            <span className="truncate">{result.message}</span>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            onClick={test}
+            disabled={testing || !baseUrl.trim()}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 transition-colors"
+          >
+            {testing ? <Loader2 size={14} className="animate-spin" /> : <Boxes size={14} />}
+            Testar ligação
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors"
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : null}
+            Guardar
+          </button>
+          <button
+            onClick={clearInventory}
+            className="ml-auto text-xs text-zinc-400 hover:text-red-500 transition-colors"
+          >
+            Limpar
           </button>
         </div>
       </div>

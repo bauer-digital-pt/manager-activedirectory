@@ -1,5 +1,5 @@
 import type { DeviceConfig } from "./deviceConfig";
-import type { AppSettings } from "../../../shared/types";
+import type { AppSettings, InventoryConfigInfo, InventoryConfigPayload } from "../../../shared/types";
 
 export type { AppSettings } from "../../../shared/types";
 
@@ -43,6 +43,8 @@ declare global {
       setSettings(settings: Partial<AppSettings>): Promise<AppSettings>;
       getDeviceConfig(): Promise<DeviceConfig>;
       setDeviceConfig(config: Partial<DeviceConfig>): Promise<DeviceConfig>;
+      getInventory(): Promise<InventoryConfigInfo>;
+      setInventory(config: InventoryConfigPayload): Promise<InventoryConfigInfo>;
     };
     authAPI?: {
       login(creds: { username: string; password: string }): Promise<{ ok: boolean; username?: string; displayName?: string; domain?: string; dc?: string; error?: string }>;

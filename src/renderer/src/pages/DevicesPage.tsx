@@ -14,8 +14,12 @@ type ToastFn = (msg: string, opts?: ExternalToast) => void;
 // HOME_PAGE, AgentShell sizing) is flavor-agnostic.
 export default function DevicesPage(props: {
   toast: { success: ToastFn; error: ToastFn };
-  /** Opens Settings on the "Dispositivos" tab. */
+  /** Agent wizard "Abrir Definições" → the "Dispositivos" tab (shared with the Manager list). */
   onOpenDeviceSettings?: () => void;
+  /** Manager device-list error recovery → the "AD Connection" tab (AD read failed). */
+  onOpenConnectionSettings?: () => void;
+  /** Manager device-list error recovery → the "Inventário" tab (inventory-API source failed). */
+  onOpenInventorySettings?: () => void;
 }) {
   return IS_AGENT ? <PcOnboardingWizard {...props} /> : <DeviceListPage {...props} />;
 }

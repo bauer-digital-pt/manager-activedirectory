@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Search, ServerCrash, RotateCcw, RefreshCw, Settings } from "lucide-react";
+import { Search, ServerCrash, RotateCcw, RefreshCw, Settings, Boxes } from "lucide-react";
 import { adAPI, type ADComputer } from "../adAPI";
+import { inventoryAPI, type InventoryAsset, type InventorySourceDevice } from "../inventoryAPI";
+import { getInventoryConfig } from "../lib/inventoryConfig";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
-import DeviceRow, { deviceStatus } from "./DeviceRow";
+import DeviceRow, { deviceStatus, type DeviceAsset } from "./DeviceRow";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
@@ -15,20 +17,85 @@ function toArray<T>(data: unknown): T[] {
   return [data as T];
 }
 
+// The inventory API's AD view (ldap3, snake_case) → the ADComputer shape the
+// table already renders. It carries no DNS / ManagedBy / created / enabled flag,
+// so those stay blank; last_seen (ISO-8601) maps onto LastLogonDate, which the
+// row's date helpers parse the same as the PowerShell "yyyy-MM-dd HH:mm:ss" stamp.
+function fromSourceDevice(d: InventorySourceDevice): ADComputer {
+  return {
+    Name: d.name,
+    Enabled: true,
+    OperatingSystem: d.platform || undefined,
+    OperatingSystemVersion: d.os_version || undefined,
+    OU: d.department || undefined,
+    LastLogonDate: d.last_seen ?? null,
+    DistinguishedName: "",
+  };
+}
+
+// Build the by-name enrichment map (keyed lowercase — AD has no serial, so the
+// join is by device name). Seed from the AD-source devices first (Mac path) so a
+// device missing from EZOffice still shows its serial/holder, then overlay the
+// EZOffice assets, which are authoritative for category/status.
+function buildAssetMap(
+  assets: InventoryAsset[] | null,
+  sources: InventorySourceDevice[] | null,
+): Map<string, DeviceAsset> {
+  const map = new Map<string, DeviceAsset>();
+  if (sources) {
+    for (const s of sources) {
+      const k = (s.name || "").toLowerCase();
+      if (!k) continue;
+      map.set(k, {
+        serial_number: s.serial_number || undefined,
+        assigned_user_email: s.assigned_user_email || undefined,
+      });
+    }
+  }
+  if (assets) {
+    for (const a of assets) {
+      const k = (a.name || "").toLowerCase();
+      if (!k) continue;
+      const prev = map.get(k) ?? {};
+      map.set(k, {
+        serial_number: a.serial_number || prev.serial_number,
+        category: a.category || undefined,
+        status: a.status || undefined,
+        assigned_user_email: a.assigned_user_email || prev.assigned_user_email,
+      });
+    }
+  }
+  return map;
+}
+
 // Module-level cache so returning from another page (e.g. Settings) is instant
-// and doesn't re-query the whole fleet. A first-ever mount has loaded=false.
-type DevicesCache = { devices: ADComputer[]; loaded: boolean; error: string | null };
-let devicesCache: DevicesCache = { devices: [], loaded: false, error: null };
+// and doesn't re-query the whole fleet. A first-ever mount has loaded=false. `key`
+// records the source+enrichment signature the cache was built for, so toggling
+// inventory (or a non-Windows host) triggers a one-off refresh.
+type DevicesCache = {
+  devices: ADComputer[];
+  assets: Map<string, DeviceAsset>;
+  sourced: boolean;
+  loaded: boolean;
+  error: string | null;
+  key: string;
+};
+let devicesCache: DevicesCache = { devices: [], assets: new Map(), sourced: false, loaded: false, error: null, key: "" };
 
 export default function DeviceListPage({
   toast,
-  onOpenDeviceSettings,
+  onOpenConnectionSettings,
+  onOpenInventorySettings,
 }: {
   toast: { success: ToastFn; error: ToastFn };
-  /** Opens Settings (Dispositivos / Ligação AD) — offered when the query fails. */
-  onOpenDeviceSettings?: () => void;
+  /** Opens Settings → AD Connection — offered when the AD device read fails. */
+  onOpenConnectionSettings?: () => void;
+  /** Opens Settings → Inventário — offered when the inventory-API source fails (Mac/Linux). */
+  onOpenInventorySettings?: () => void;
 }) {
   const [devices, setDevices] = useState<ADComputer[]>(devicesCache.devices);
+  const [assetByName, setAssetByName] = useState<Map<string, DeviceAsset>>(devicesCache.assets);
+  const [sourced, setSourced] = useState(devicesCache.sourced);
   const [loading, setLoading] = useState(!devicesCache.loaded);
   const [error, setError] = useState<string | null>(devicesCache.error);
   const [activeDept, setActiveDept] = useState<string | null>(null);
@@ -45,39 +112,74 @@ export default function DeviceListPage({
   const toastRef = useRef(toast);
   toastRef.current = toast;
 
+  // Where the list comes from + whether to enrich it with EZOffice data. Windows
+  // always reads AD directly (native PowerShell); a Mac/Linux Manager has no local
+  // AD access, so — when the inventory API is enabled — it sources the fleet from
+  // that API instead. `?macfallback` forces this path in the browser preview.
+  const platform = window.appAPI?.platform ?? "browser";
+  const forceMac = platform === "browser" && new URLSearchParams(location.search).has("macfallback");
+  const [invReady, setInvReady] = useState(false);
+  const [invEnabled, setInvEnabled] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getInventoryConfig()
+      .then((c) => { if (alive) { setInvEnabled(!!c.enabled); setInvReady(true); } })
+      .catch(() => { if (alive) setInvReady(true); });
+    return () => { alive = false; };
+  }, []);
+
+  const useInventorySource = invEnabled && (platform === "darwin" || platform === "linux" || forceMac);
+  const enrich = invEnabled;
+  const cacheKey = `${useInventorySource ? "inv" : "ad"}|${enrich ? "enr" : "raw"}`;
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    adAPI
-      .getDevices()
-      .then((r) => {
+    const key = `${useInventorySource ? "inv" : "ad"}|${enrich ? "enr" : "raw"}`;
+
+    // Enrichment must never block the list: a failed assets fetch just means no
+    // EZOffice detail, not a broken page.
+    const assetsP: Promise<InventoryAsset[] | null> = enrich
+      ? inventoryAPI.getAssets().then((r) => (r.ok && r.data ? r.data : null)).catch(() => null)
+      : Promise.resolve(null);
+
+    const run = async (): Promise<{ list: ADComputer[]; map: Map<string, DeviceAsset> }> => {
+      if (useInventorySource) {
+        const [devRes, assets] = await Promise.all([inventoryAPI.getADDevices(), assetsP]);
+        if (!devRes.ok) throw new Error(devRes.error ?? "Não foi possível obter os dispositivos da API de inventário.");
+        const sources = toArray<InventorySourceDevice>(devRes.data);
+        return { list: sources.map(fromSourceDevice), map: buildAssetMap(assets, sources) };
+      }
+      const [devRes, assets] = await Promise.all([adAPI.getDevices(), assetsP]);
+      if (!devRes.ok) throw new Error(devRes.error ?? "Não foi possível carregar os dispositivos do Active Directory.");
+      return { list: toArray<ADComputer>(devRes.data), map: buildAssetMap(assets, null) };
+    };
+
+    run()
+      .then(({ list, map }) => {
         setLoading(false);
-        if (r.ok) {
-          const list = toArray<ADComputer>(r.data);
-          setDevices(list);
-          setError(null);
-          devicesCache = { devices: list, loaded: true, error: null };
-        } else {
-          // Explicit, recoverable error — never a misleading "no devices".
-          setDevices([]);
-          const err = r.error ?? "Não foi possível carregar os dispositivos do Active Directory.";
-          setError(err);
-          devicesCache = { devices: [], loaded: true, error: err };
-        }
+        setDevices(list); setAssetByName(map); setSourced(useInventorySource); setError(null);
+        devicesCache = { devices: list, assets: map, sourced: useInventorySource, loaded: true, error: null, key };
       })
       .catch((e) => {
         setLoading(false);
-        setDevices([]);
-        const err = typeof e?.message === "string" ? e.message : "Não foi possível comunicar com o Active Directory.";
+        setDevices([]); setAssetByName(new Map()); setSourced(useInventorySource);
+        // Explicit, recoverable error — never a misleading "no devices".
+        const fallback = useInventorySource
+          ? "Não foi possível contactar a API de inventário."
+          : "Não foi possível comunicar com o Active Directory.";
+        const err = typeof e?.message === "string" && e.message ? e.message : fallback;
         setError(err);
-        devicesCache = { devices: [], loaded: true, error: err };
+        devicesCache = { devices: [], assets: new Map(), sourced: useInventorySource, loaded: true, error: err, key };
       });
-  }, []);
+  }, [useInventorySource, enrich]);
 
   useEffect(() => {
-    // Only fetch on the first ever mount; later mounts reuse the cache.
-    if (!devicesCache.loaded) load();
-  }, [load]);
+    // Wait until the source decision is known (which inventory config resolves),
+    // then fetch on the first ever mount or whenever the source/enrichment changes.
+    if (!invReady) return;
+    if (!devicesCache.loaded || devicesCache.key !== cacheKey) load();
+  }, [invReady, cacheKey, load]);
 
   // Distinct department folders (OU) present in the fleet, for the filter pills.
   const departments = useMemo(() => {
@@ -108,16 +210,19 @@ export default function DeviceListPage({
     const q = search.toLowerCase();
     return devices.filter((d) => {
       const matchesDept = !activeDept || d.OU === activeDept;
+      if (!q) return matchesDept;
+      const a = assetByName.get((d.Name || "").toLowerCase());
       const matchesSearch =
-        !q ||
         d.Name?.toLowerCase().includes(q) ||
         d.DNSHostName?.toLowerCase().includes(q) ||
         d.Description?.toLowerCase().includes(q) ||
         d.OperatingSystem?.toLowerCase().includes(q) ||
-        d.OU?.toLowerCase().includes(q);
+        d.OU?.toLowerCase().includes(q) ||
+        a?.serial_number?.toLowerCase().includes(q) ||
+        a?.assigned_user_email?.toLowerCase().includes(q);
       return matchesDept && matchesSearch;
     });
-  }, [devices, activeDept, search]);
+  }, [devices, activeDept, search, assetByName]);
 
   // Reset the window whenever the result set changes (filter/search/reload).
   useEffect(() => { setVisibleCount(PAGE); }, [search, activeDept, devices]);
@@ -156,7 +261,7 @@ export default function DeviceListPage({
             <button
               onClick={load}
               disabled={loading}
-              title="Recarregar do Active Directory"
+              title={useInventorySource ? "Recarregar da API de inventário" : "Recarregar do Active Directory"}
               className="inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCw size={14} className={cn(loading && "animate-spin")} />
@@ -198,6 +303,13 @@ export default function DeviceListPage({
 
       {/* Table */}
       <div className="flex-1 overflow-y-auto" onScroll={onScroll}>
+        {/* Mac/Linux Manager: the fleet comes from the inventory API, not local AD. */}
+        {!loading && !error && sourced && (
+          <div className="mx-6 mt-4 flex items-center gap-2 rounded-lg border border-violet-100 bg-violet-50/60 px-3 py-2 text-xs text-violet-700">
+            <Boxes size={14} className="flex-shrink-0" />
+            Lista obtida através da API de inventário — este dispositivo não tem acesso direto ao Active Directory.
+          </div>
+        )}
         {loading ? (
           <div className="px-6 py-4 space-y-3">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -205,13 +317,18 @@ export default function DeviceListPage({
             ))}
           </div>
         ) : error ? (
-          <DevicesError message={error} onRetry={load} onOpenSettings={onOpenDeviceSettings} />
+          <DevicesError
+            message={error}
+            sourced={sourced}
+            onRetry={load}
+            onOpenSettings={sourced ? onOpenInventorySettings : onOpenConnectionSettings}
+          />
         ) : filtered.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-sm text-zinc-400">
             {search || activeDept ? "Nenhum dispositivo corresponde aos filtros" : "Nenhum dispositivo encontrado"}
           </div>
         ) : (
-          <table className="w-full">
+          <table className="anim-fade-in w-full">
             <thead>
               <tr className="border-b border-zinc-100">
                 <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Dispositivo</th>
@@ -224,7 +341,11 @@ export default function DeviceListPage({
             </thead>
             <tbody className="divide-y divide-zinc-50">
               {visible.map((d, i) => (
-                <DeviceRow key={d.DistinguishedName || d.Name || `row-${i}`} device={d} />
+                <DeviceRow
+                  key={d.DistinguishedName || d.Name || `row-${i}`}
+                  device={d}
+                  asset={assetByName.get((d.Name || "").toLowerCase())}
+                />
               ))}
             </tbody>
           </table>
@@ -253,13 +374,17 @@ export default function DeviceListPage({
 /* -------------------------------------------------------------------------- */
 
 // Inline, recoverable error shown when the fleet can't be listed — points at the
-// AD connection settings instead of a dead "no devices".
+// settings for whichever source failed (the inventory API on a Mac/Linux Manager,
+// the AD connection otherwise) instead of a dead "no devices".
 function DevicesError({
   message,
+  sourced,
   onRetry,
   onOpenSettings,
 }: {
   message: string;
+  /** The failing fetch was the inventory-API source (Mac/Linux), not local AD. */
+  sourced: boolean;
   onRetry: () => void;
   onOpenSettings?: () => void;
 }) {
@@ -273,8 +398,17 @@ function DevicesError({
       </h3>
       <p className="mt-2 max-w-[46ch] text-sm leading-relaxed text-zinc-500">{message}</p>
       <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-zinc-400">
-        Verifica a ligação ao Active Directory em{" "}
-        <span className="font-medium text-zinc-500">Definições → Ligação AD</span>.
+        {sourced ? (
+          <>
+            Confirma o endereço da API em{" "}
+            <span className="font-medium text-zinc-500">Definições → Inventário</span>.
+          </>
+        ) : (
+          <>
+            Verifica a ligação ao Active Directory em{" "}
+            <span className="font-medium text-zinc-500">Definições → Ligação AD</span>.
+          </>
+        )}
       </p>
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
         <button

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Users, Laptop, Settings, Terminal, User, LogOut } from "lucide-react";
+import { Users, Laptop, Boxes, Settings, Terminal, User, LogOut } from "lucide-react";
 import { cn } from "../lib/cn";
 import type { Page } from "../App";
 import { initials } from "../lib/initials";
@@ -8,14 +8,16 @@ import { FLAVOR, IS_AGENT, type AppFlavor } from "../lib/flavor";
 import brandFull from "../assets/logo_1.png";
 
 // `flavors` restricts an item to specific installers; omit = shown in both.
+// `needsInventory` additionally hides an item until the inventory API is enabled.
 // The Agent installer is the onboarding wizard only — no user administration; its
 // "devices" tab IS that wizard ("Onboarding PC"), whereas the Manager's is the
 // read-only fleet list ("Dispositivos").
-const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean; flavors?: AppFlavor[] }[] = [
-  { id: "users",    label: "Users",                                icon: Users,    bind: "1", flavors: ["manager"] },
-  { id: "devices",  label: IS_AGENT ? "Onboarding PC" : "Dispositivos", icon: Laptop,   bind: "2" },
-  { id: "settings", label: "Settings",                             icon: Settings, bind: "3" },
-  { id: "console",  label: "Console",                              icon: Terminal, bind: "4", dev: true },
+const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean; flavors?: AppFlavor[]; needsInventory?: boolean }[] = [
+  { id: "users",     label: "Users",                                     icon: Users,    bind: "1", flavors: ["manager"] },
+  { id: "devices",   label: IS_AGENT ? "Onboarding PC" : "Dispositivos", icon: Laptop,   bind: "2" },
+  { id: "inventory", label: "Inventário",                                icon: Boxes,    bind: "3", flavors: ["manager"], needsInventory: true },
+  { id: "settings",  label: "Settings",                                  icon: Settings, bind: "4" },
+  { id: "console",   label: "Console",                                   icon: Terminal, bind: "5", dev: true },
 ];
 
 interface SidebarProps {
@@ -23,6 +25,8 @@ interface SidebarProps {
   onNavigate: (p: Page) => void;
   /** Console is only reachable when developer mode is on. */
   devMode: boolean;
+  /** Inventory tab is only shown when the inventory API is configured + enabled. */
+  inventoryEnabled: boolean;
   /** Logged-in user (display name preferred) — drives the avatar initials. */
   userName: string;
   /** Live connection state: true=up, false=down/timeout, null=checking. */
@@ -31,9 +35,12 @@ interface SidebarProps {
   onLogout: () => void;
 }
 
-export default function Sidebar({ active, onNavigate, devMode, userName, connOk, onLogout }: SidebarProps) {
+export default function Sidebar({ active, onNavigate, devMode, inventoryEnabled, userName, connOk, onLogout }: SidebarProps) {
   const nav = NAV.filter(
-    (n) => (!n.dev || devMode) && (!n.flavors || n.flavors.includes(FLAVOR)),
+    (n) =>
+      (!n.dev || devMode) &&
+      (!n.flavors || n.flavors.includes(FLAVOR)) &&
+      (!n.needsInventory || inventoryEnabled),
   );
   const inits = initials(userName);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -96,7 +103,7 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk,
         {menuOpen && (
           <div
             role="menu"
-            className="absolute bottom-0 left-full ml-3 w-56 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-xl z-50"
+            className="anim-menu absolute bottom-0 left-full ml-3 w-56 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-xl z-50"
           >
             <div className="px-2.5 py-2">
               <p className="truncate text-sm font-medium text-zinc-800">{userName || "Utilizador"}</p>

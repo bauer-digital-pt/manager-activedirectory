@@ -176,3 +176,143 @@ export interface StartupInfo {
   justUpdated: boolean;
   previousVersion?: string;
 }
+
+// --- Inventory API (pyexp-inventory / InventorySystem) ---
+// The internal, read-only HTTP API that reconciles EZOffice Inventory against AD,
+// running on pt-srv-pyexp. The Manager consumes it over the LAN. There is NO token
+// and NO service account: every request is signed with the user's own AD login
+// (HTTP Basic) and the API binds to LDAP as that user. Manager-only — the Agent
+// installer never talks to it.
+
+// Persisted config (inventory.json). Only the address + master switch are stored;
+// credentials come from the live login session, never from disk.
+export interface InventoryConfig {
+  // Base URL of the API, e.g. "https://10.4.0.20:8760" (trailing slash optional).
+  baseUrl: string;
+  // Master switch — when false the Manager surfaces nothing inventory-related.
+  enabled: boolean;
+}
+
+// What config:get-inventory returns.
+export interface InventoryConfigInfo {
+  baseUrl: string;
+  enabled: boolean;
+}
+
+// config:set-inventory payload.
+export interface InventoryConfigPayload {
+  baseUrl: string;
+  enabled: boolean;
+}
+
+// Health probe (GET /healthz — open, no auth). `mode` is "live" for this build.
+export interface InventoryHealth {
+  status: string;
+  mode: string;
+  version?: string;
+}
+
+// EZOffice asset (GET /api/v1/assets) — snake_case, mirrors models.py EZAsset.
+export interface InventoryAsset {
+  asset_id: string;
+  name: string;
+  serial_number: string;
+  category: string;
+  status: string;
+  purchased_on: string;
+  assigned_user_email: string;
+  exempt: boolean;
+}
+
+// EZOffice member (GET /api/v1/members) — mirrors models.py EZUser.
+export interface InventoryMember {
+  member_id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  department: string;
+  title: string;
+  phone: string;
+  active: boolean;
+  exempt: boolean;
+}
+
+// AD-sourced device (GET /api/v1/devices/ad) — mirrors models.py SourceDevice.
+// last_seen is ISO-8601 (or null when unset); source is the enum value ("ad").
+export interface InventorySourceDevice {
+  name: string;
+  serial_number: string;
+  platform: string;
+  os_version: string;
+  manufacturer: string;
+  model: string;
+  department: string;
+  last_seen: string | null;
+  assigned_user_email: string;
+  logged_on_user: string;
+  exempt: boolean;
+  source: string;
+}
+
+// Reconciliation gauge counts. metrics-summary returns these flattened with ran_at.
+export interface ReconciliationCounts {
+  assets_total: number;
+  members_total: number;
+  members_active: number;
+  devices_total: number;
+  missing_in_ezoffice: number;
+  missing_in_source: number;
+  users_orphaned: number;
+  orphaned_assets: number;
+  stale_devices: number;
+  errors: number;
+}
+
+// An EZOffice asset with no live AD device, or assigned to an inactive member.
+export interface OrphanedAsset {
+  name: string;
+  serial_number: string;
+  previous_user: string;
+  reason: string; // "no source object" | "assigned to inactive user"
+}
+
+// An AD device whose last_seen is older than the stale window.
+export interface StaleDevice {
+  name: string;
+  platform: string;
+  last_seen: string | null;
+  source: string;
+}
+
+// A would-be new EZOffice asset (device in AD, absent from EZOffice) — preview only.
+export interface MissingDevice {
+  name: string;
+  serial_number: string;
+  platform: string;
+  source: string;
+}
+
+// A would-be new EZOffice member (user in AD, absent from EZOffice) — preview only.
+export interface NewMember {
+  email: string;
+  display_name: string;
+  source: string;
+}
+
+// Full reconciliation report (GET /api/v1/reconciliation). Read-only, dry-run: the
+// "missing_*"/"new_*" lists are previews of what a sync WOULD create — nothing is
+// ever written by the API.
+export interface Reconciliation {
+  ran_at: string;
+  dry_run: boolean;
+  counts: ReconciliationCounts;
+  orphaned_assets: OrphanedAsset[];
+  stale_devices: StaleDevice[];
+  missing_in_ezoffice_devices: MissingDevice[];
+  new_members: NewMember[];
+  errors: string[];
+}
+
+// GET /api/v1/metrics-summary — ran_at + the gauge counts, flattened.
+export type MetricsSummary = { ran_at: string } & ReconciliationCounts;

@@ -6,7 +6,7 @@ import electronUpdater from "electron-updater";
 import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
 import { DEFAULT_DC } from "../shared/constants";
 import { BUILD_FLAVOR, FLAVOR_META } from "../shared/flavor";
-import type { AppSettings, DeviceConfig, OnboardState, StartupInfo } from "../shared/types";
+import type { AppSettings, DeviceConfig, OnboardState, StartupInfo, PSResult, InventoryHealth } from "../shared/types";
 import {
   pushLog,
   getHistory,
@@ -124,6 +124,25 @@ function getConnection(): ADConnection {
     password: decryptPassword(stored.password),
   };
 }
+
+// --- Inventory API config (inventory.json) ---
+// Points the Manager at the internal read-only inventory API (pyexp-inventory on
+// pt-srv-pyexp). Only the address + master switch are stored — there is NO token
+// and NO service account: every read is signed with the live login session (see
+// inventoryGet). Manager-only: the Agent installer never reads this.
+interface StoredInventory {
+  baseUrl: string;
+  enabled: boolean;
+}
+
+const inventoryStore = makeJsonStore<StoredInventory>("inventory.json", (raw) => {
+  const r = (raw ?? {}) as Partial<StoredInventory>;
+  return {
+    baseUrl: typeof r.baseUrl === "string" ? r.baseUrl.trim() : "",
+    enabled: !!r.enabled,
+  };
+});
+function readStoredInventory(): StoredInventory { return inventoryStore.read(); }
 
 // --- App settings (settings.json) ---
 // General preferences, separate from AD group config and the AD connection.
@@ -1129,6 +1148,150 @@ handle("ad:test-connection", async (_e, rawOverride) => {
     return { ok: false, error: data.error ?? "Não foi possível ligar ao AD." };
   }
   return r;
+});
+
+// --- Inventory API transport (internal read-only HTTP API on pt-srv-pyexp) ---
+// Every call is a GET signed with the current login session (HTTP Basic — no token
+// and no service account; see inventoryGet). Failures collapse to a
+// { ok:false, error } envelope (same contract as the PS runner) so the renderer
+// surfaces a real, actionable reason instead of an empty result. Node's global
+// fetch (Electron ships a recent Node) drives it; an AbortController bounds each
+// call so an unreachable host fails fast rather than hanging the page.
+
+// Turn a non-2xx inventory response into a short, actionable Portuguese message.
+function friendlyInventoryError(status: number, body: string): string {
+  if (status === 401 || status === 403) {
+    return "A API de inventário rejeitou as credenciais de sessão. Termina sessão e volta a entrar com a tua conta de domínio.";
+  }
+  if (status === 404) {
+    return "Endpoint de inventário não encontrado. Confirma o endereço da API em Definições → Inventário.";
+  }
+  if (status >= 500) {
+    return `A API de inventário devolveu um erro do servidor (${status}). Tenta novamente dentro de momentos.`;
+  }
+  const snippet = (body || "").trim().slice(0, 200);
+  return `A API de inventário devolveu ${status}${snippet ? `: ${snippet}` : "."}`;
+}
+
+// Resolve + validate the base URL. There is no token: the inventory API
+// authenticates each request with the caller's own AD login (see inventoryGet).
+function resolveInventory(override?: { baseUrl?: string }):
+  | { ok: true; baseUrl: string }
+  | { ok: false; error: string } {
+  const stored = readStoredInventory();
+  const rawBase = override?.baseUrl !== undefined ? override.baseUrl : stored.baseUrl;
+  const baseUrl = (rawBase ?? "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    return { ok: false, error: "Falta o endereço da API de inventário (Definições → Inventário)." };
+  }
+  // Only http(s) — never let a stored value point the fetch at file://, etc.
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    return { ok: false, error: "O endereço da API de inventário tem de começar por http:// ou https://." };
+  }
+  return { ok: true, baseUrl };
+}
+
+// The login password is sent (Basic) on every inventory read, so warn once if the
+// API address isn't TLS — on a non-trusted network that password is exposed.
+let insecureInventoryWarned = false;
+function warnIfInsecureInventory(baseUrl: string): void {
+  if (insecureInventoryWarned || !/^http:\/\//i.test(baseUrl)) return;
+  insecureInventoryWarned = true;
+  pushLog({
+    level: "warn",
+    source: "inventory",
+    label: "insecure",
+    detail: "A API de inventário usa http:// — as credenciais de sessão são enviadas em cada pedido. Usa https:// numa rede não fidedigna.",
+  });
+}
+
+// Core GET: authenticated read against /api/v1, signed with the CURRENT LOGIN
+// credentials (no service account, no shared token — see the API's auth.py). The
+// in-memory session already holds the username + password the user typed at login.
+async function inventoryGet<T>(path: string, timeoutMs = 20000): Promise<PSResult<T>> {
+  if (!readStoredInventory().enabled) {
+    return { ok: false, error: "A integração de inventário está desativada (Definições → Inventário)." };
+  }
+  if (!session) {
+    return { ok: false, error: "É necessário iniciar sessão para consultar a API de inventário." };
+  }
+  const resolved = resolveInventory();
+  if (!resolved.ok) return resolved;
+  warnIfInsecureInventory(resolved.baseUrl);
+  const auth = "Basic " + Buffer.from(`${session.username}:${session.password}`, "utf8").toString("base64");
+  return inventoryFetch<T>(resolved.baseUrl, path, auth, timeoutMs);
+}
+
+// The raw fetch + error mapping, shared by the credential-signed reads and the
+// (auth-less, enabled-agnostic) /healthz test probe. `auth` is the full
+// Authorization header value, or null for the open /healthz probe.
+async function inventoryFetch<T>(
+  baseUrl: string,
+  path: string,
+  auth: string | null,
+  timeoutMs: number,
+): Promise<PSResult<T>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (auth) headers.Authorization = auth;
+    const resp = await fetch(`${baseUrl}${path}`, { method: "GET", headers, signal: controller.signal });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      return { ok: false, error: friendlyInventoryError(resp.status, body) };
+    }
+    const data = (await resp.json()) as T;
+    return { ok: true, data };
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      return { ok: false, error: `A API de inventário não respondeu em ${Math.round(timeoutMs / 1000)}s.` };
+    }
+    // A DNS/connection error (host down, wrong address) lands here.
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// --- Inventory API IPC ---
+// Reachability probe against /healthz (open, no auth). Accepts an optional
+// { baseUrl } override so Settings can test an unsaved address before saving, and
+// works regardless of the `enabled` switch (you test, then enable).
+handle("inventory:test", async (_e, rawOverride) => {
+  const override = (rawOverride ?? undefined) as { baseUrl?: string } | undefined;
+  const resolved = resolveInventory(override);
+  if (!resolved.ok) return resolved;
+  // /healthz is open (no credentials) — this only confirms the address points at a
+  // live inventory API. Credential validity surfaces on the first real read.
+  return inventoryFetch<InventoryHealth>(resolved.baseUrl, "/healthz", null, 10000);
+});
+
+handle("inventory:assets", async () => inventoryGet("/api/v1/assets"));
+handle("inventory:members", async () => inventoryGet("/api/v1/members"));
+handle("inventory:ad-devices", async () => inventoryGet("/api/v1/devices/ad"));
+// Reconciliation fetches AND cross-checks every source, so it can be slow on a
+// cold cache — give it a generous ceiling (the API caches the result afterwards).
+handle("inventory:reconciliation", async () => inventoryGet("/api/v1/reconciliation", 90000));
+handle("inventory:metrics-summary", async () => inventoryGet("/api/v1/metrics-summary", 90000));
+
+// --- Inventory config IPC ---
+// Only the address + master switch are persisted; credentials come from the live
+// login session (see inventoryGet), never from disk.
+handle("config:get-inventory", () => {
+  const stored = readStoredInventory();
+  return { baseUrl: stored.baseUrl, enabled: stored.enabled };
+});
+
+handle("config:set-inventory", (_e, rawPayload) => {
+  const p = (rawPayload ?? {}) as { baseUrl?: string; enabled?: boolean };
+  const current = readStoredInventory();
+  const next: StoredInventory = {
+    baseUrl: p.baseUrl !== undefined ? String(p.baseUrl).trim() : current.baseUrl,
+    enabled: p.enabled !== undefined ? !!p.enabled : current.enabled,
+  };
+  inventoryStore.write(next);
+  return { baseUrl: next.baseUrl, enabled: next.enabled };
 });
 
 // --- Device onboarding config IPC ---
