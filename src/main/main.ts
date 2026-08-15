@@ -6,7 +6,7 @@ import electronUpdater from "electron-updater";
 import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
 import { DEFAULT_DC } from "../shared/constants";
 import { BUILD_FLAVOR, FLAVOR_META } from "../shared/flavor";
-import type { AppSettings, DeviceConfig, OnboardState, StartupInfo, PSResult, InventoryHealth } from "../shared/types";
+import type { AppSettings, DeviceConfig, OnboardState, StartupInfo, PSResult, InventoryHealth, ADGroup, ADUser, ADUserLite, ADComputer } from "../shared/types";
 import {
   pushLog,
   getHistory,
@@ -325,6 +325,15 @@ function rebootMachine() {
 // AD operations run with, for this run only. Password lives here and nowhere on
 // disk; cleared on every launch and on logout / inactivity relock.
 let session: ADConnection | null = null;
+
+// PowerShell + the RSAT ActiveDirectory module only exist on Windows. On
+// macOS/Linux the Manager has no local AD access, so it authenticates and READS
+// through the inventory API's bind-as-user directory endpoints instead (same
+// login credentials on every request, no service account — see apiLogin /
+// inventoryProbe). AD WRITES have no API equivalent by design and stay on
+// PowerShell/Windows, so off-Windows they return a clear "read-only" error.
+// Gating on the platform keeps the Windows fleet path byte-for-byte unchanged.
+const AD_VIA_API = process.platform !== "win32";
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 
@@ -774,14 +783,17 @@ function ps(script: string, args: string[] = [], extraEnv?: Record<string, strin
 }
 
 handle("ad:get-groups", async () => {
+  if (AD_VIA_API) return apiGetGroups();
   return ps("Get-ADGroup-All.ps1");
 });
 
 handle("ad:get-group-members", async (_e, groupName) => {
+  if (AD_VIA_API) return apiGetGroupMembers(groupName as string);
   return ps("Get-ADGroupMembers.ps1", [groupName as string]);
 });
 
 handle("ad:create-user", async (_e, rawParams) => {
+  if (AD_VIA_API) return adWriteUnavailable();
   const params = rawParams as Record<string, string>;
   const args = [
     params.firstName,
@@ -806,12 +818,14 @@ handle("ad:create-user", async (_e, rawParams) => {
 });
 
 handle("ad:reset-password", async (_e, params) => {
+  if (AD_VIA_API) return adWriteUnavailable();
   const p = params as { username: string; newPassword: string };
   // Password via RESET_PASSWORD env, not the command line (kept off arg[1]).
   return ps("Reset-ADPassword.ps1", [p.username, ""], { RESET_PASSWORD: p.newPassword });
 });
 
 handle("ad:unlock-user", async (_e, username) => {
+  if (AD_VIA_API) return adWriteUnavailable();
   return ps("Unlock-ADUser.ps1", [username as string]);
 });
 
@@ -819,15 +833,18 @@ handle("ad:unlock-user", async (_e, username) => {
 // query is a plain name/username (no secret) so it travels on the command line;
 // the script sanitizes it and only embeds it in the AD filter via a variable.
 handle("ad:search-users", async (_e, query) => {
+  if (AD_VIA_API) return apiSearchUsers((query as string) ?? "");
   return ps("Search-ADUser.ps1", [(query as string) ?? ""]);
 });
 
 handle("ad:add-group-permission", async (_e, params) => {
+  if (AD_VIA_API) return adWriteUnavailable();
   const p = params as { groupName: string; description: string };
   return ps("Add-ADGroup.ps1", [p.groupName, p.description]);
 });
 
 handle("ad:remove-group", async (_e, groupName) => {
+  if (AD_VIA_API) return adWriteUnavailable();
   return ps("Remove-ADGroup.ps1", [groupName as string]);
 });
 
@@ -838,6 +855,7 @@ handle("ad:remove-group", async (_e, groupName) => {
 // PowerShell, the command line, or the log (redact() masks the "adminPassword"
 // key). This makes an accidental or unattended offboard much harder.
 handle("ad:offboard-user", async (_e, rawParams) => {
+  if (AD_VIA_API) return adWriteUnavailable();
   const p = (rawParams ?? {}) as { username?: string; confirmUsername?: string; adminPassword?: string };
   const username = (p.username ?? "").trim();
   const confirmUsername = (p.confirmUsername ?? "").trim();
@@ -934,7 +952,10 @@ handle("ad:onboard-step", async (_e, rawParams) => {
 });
 
 // Reports whether the RSAT ActiveDirectory module is installed on this machine.
+// On macOS/Linux there is no RSAT (and no PowerShell) — AD access goes through the
+// inventory API instead, so report the module as present to skip the install gate.
 handle("ad:check-module", async () => {
+  if (AD_VIA_API) return { ok: true, data: { available: true } };
   return ps("Check-ADModule.ps1");
 });
 
@@ -997,12 +1018,18 @@ handle("updates:download", async () => {
 // Get-ADDomain in Test-ADCredential.ps1). On success the creds become the live
 // session used by every AD op. The password is NEVER persisted or returned.
 handle("auth:login", async (_e, rawPayload) => {
-  const payload = rawPayload as { username?: string; password?: string };
+  const payload = rawPayload as { username?: string; password?: string; baseUrl?: string };
   const username = (payload?.username ?? "").trim();
   const password = payload?.password ?? "";
   if (!username || !password) {
     return { ok: false, error: "Indica o utilizador e a palavra-passe." };
   }
+
+  // Off Windows there is no PowerShell/RSAT: validate the login by binding to AD
+  // *as this user* through the inventory API (same credentials passthrough as every
+  // read, no service account). The API address comes from the login screen bootstrap
+  // field (payload.baseUrl) or the previously-saved inventory config.
+  if (AD_VIA_API) return apiLogin(username, password, payload.baseUrl);
 
   // Target the configured DC if one is set; otherwise auto-discover (empty).
   const server = readStoredConnection().server;
@@ -1059,6 +1086,7 @@ handle("auth:status", () => {
 // creds; quiet (no emitLog) so it doesn't flood the Console every few seconds.
 handle("auth:ping", async () => {
   if (!session) return { ok: false, error: "no session" };
+  if (AD_VIA_API) return apiPing();
   // This AD can take ~7s per call, so an 8s ceiling was borderline. Give the
   // probe generous headroom so a slow-but-healthy DC doesn't flap the dot red.
   const r = await runPS("Test-ADConnection.ps1", [], undefined, session, 20000);
@@ -1128,6 +1156,9 @@ handle("config:set-connection", (_e, rawPayload) => {
 // so the user can verify before saving. Falls back to saved config otherwise.
 handle("ad:test-connection", async (_e, rawOverride) => {
   const override = rawOverride as { server: string; username: string; password?: string } | undefined;
+  // Off Windows the connection that matters is the API bind, not a DC — probe it
+  // with the override creds (Settings can re-type) or the live session.
+  if (AD_VIA_API) return apiTestConnection(override);
   let conn = getConnection();
   if (override) {
     conn = {
@@ -1280,6 +1311,188 @@ async function inventoryFetch<T>(
   }
 }
 
+// --- AD reads via the inventory API (macOS/Linux path) ---
+// These mirror the PowerShell read handlers' PSResult<...> shapes so the renderer
+// stays entirely source-agnostic: on Windows a handler runs its .ps1, off Windows
+// it calls the matching directory endpoint here. Every call is signed with the
+// live login (inventoryGet → HTTP Basic), the API binds to AD as that user, and
+// the results are mapped to the exact shapes the renderer already consumes.
+
+// A lightweight authenticated probe used to VALIDATE a login (bind-as-user) and to
+// power the liveness dot on the API path. Unlike inventoryFetch it reports
+// login-appropriate messages (a 401 here means "wrong password", not "your session
+// expired") and ignores the body — only the status proves the credentials.
+async function inventoryProbe(
+  baseUrl: string,
+  path: string,
+  auth: string,
+  timeoutMs: number,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(`${baseUrl}${path}`, {
+      method: "GET",
+      headers: { Accept: "application/json", Authorization: auth },
+      signal: controller.signal,
+    });
+    if (resp.ok) return { ok: true };
+    if (resp.status === 401 || resp.status === 403) {
+      return { ok: false, error: "Credenciais inválidas. Confirma o utilizador e a palavra-passe de domínio." };
+    }
+    if (resp.status === 404) {
+      return { ok: false, error: "A API de inventário não tem o módulo de diretório ativo (api.directory.enabled). Sem ele, o Manager não consegue autenticar nesta plataforma." };
+    }
+    if (resp.status === 502 || resp.status === 503 || resp.status === 504) {
+      return { ok: false, error: "A API de inventário não conseguiu contactar o Active Directory. Tenta novamente dentro de momentos." };
+    }
+    const body = await resp.text().catch(() => "");
+    return { ok: false, error: friendlyInventoryError(resp.status, body) };
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      return { ok: false, error: `A API de inventário não respondeu em ${Math.round(timeoutMs / 1000)}s.` };
+    }
+    return { ok: false, error: describeFetchError(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Login on macOS/Linux: validate the typed credentials by binding to AD *as the
+// user* through the inventory API (a real LDAP bind — no service account, same
+// passthrough model as every read). A 200 on a cheap authed endpoint proves them.
+// On success the address is persisted + the integration enabled (so subsequent
+// reads and the next launch need no extra setup) and the creds become the session.
+async function apiLogin(
+  username: string,
+  password: string,
+  baseUrlOverride?: string,
+): Promise<{ ok: boolean; username?: string; displayName?: string; error?: string }> {
+  const stored = readStoredInventory();
+  const rawBase = ((baseUrlOverride ?? "").trim().replace(/\/+$/, "")) || stored.baseUrl;
+  if (!rawBase) {
+    return { ok: false, error: "Indica o endereço da API de inventário para iniciar sessão nesta plataforma." };
+  }
+  if (!/^https?:\/\//i.test(rawBase)) {
+    return { ok: false, error: "O endereço da API tem de começar por http:// ou https://." };
+  }
+  warnIfInsecureInventory(rawBase);
+  const auth = "Basic " + Buffer.from(`${username}:${password}`, "utf8").toString("base64");
+  const probe = await inventoryProbe(rawBase, "/api/v1/ad/user-categories", auth, 15000);
+  if (!probe.ok) return { ok: false, error: probe.error };
+  // Credentials proven. Persist the address + enable the integration, then open
+  // the session (mirrors the PowerShell login: session set, PC-status cache reset).
+  if (rawBase !== stored.baseUrl || !stored.enabled) {
+    inventoryStore.write({ baseUrl: rawBase, enabled: true });
+  }
+  session = { server: rawBase, username, password };
+  pcStatusCache = null;
+  const settings = readSettings();
+  if (settings.lastUsername !== username) writeSettings({ ...settings, lastUsername: username });
+  pushLog({ level: "success", source: "app", label: "auth", detail: `Login ${username} via API de inventário (${rawBase})` });
+  return { ok: true, username, displayName: username };
+}
+
+// Liveness probe for the connection dot on the API path (auth:ping equivalent).
+async function apiPing(): Promise<PSResult> {
+  if (!session) return { ok: false, error: "no session" };
+  const resolved = resolveInventory();
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  const auth = "Basic " + Buffer.from(`${session.username}:${session.password}`, "utf8").toString("base64");
+  const probe = await inventoryProbe(resolved.baseUrl, "/api/v1/ad/user-categories", auth, 8000);
+  return probe.ok ? { ok: true } : { ok: false, error: probe.error };
+}
+
+// Settings "test connection" on the API path: on this platform the connection
+// that matters is the API bind, so probe it with the override creds (Settings can
+// re-type a password) or the live session.
+async function apiTestConnection(override?: { username?: string; password?: string }): Promise<PSResult> {
+  const resolved = resolveInventory();
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  const username = (override?.username ?? "").trim() || session?.username || "";
+  const password = override?.password || session?.password || "";
+  if (!username || !password) return { ok: false, error: "Sem sessão ativa para testar a ligação." };
+  const auth = "Basic " + Buffer.from(`${username}:${password}`, "utf8").toString("base64");
+  const probe = await inventoryProbe(resolved.baseUrl, "/api/v1/ad/user-categories", auth, 15000);
+  return probe.ok ? { ok: true, data: { via: "inventory-api", baseUrl: resolved.baseUrl } } : { ok: false, error: probe.error };
+}
+
+// The directory endpoints return category OUs as { name, description,
+// distinguishedName } (lowercase). The renderer's ADGroup/DeviceOU uses PascalCase
+// and carries GroupCategory/GroupScope — vestigial in the "category = child OU"
+// model (only Name/Description are shown), so leave those blank rather than fake them.
+function mapCategoryToGroup(c: { name?: string; description?: string | null; distinguishedName?: string }): ADGroup {
+  return {
+    Name: c.name ?? "",
+    Description: c.description ?? "",
+    GroupCategory: "",
+    GroupScope: "",
+    DistinguishedName: c.distinguishedName || undefined,
+  };
+}
+
+type ApiCategory = { name?: string; description?: string | null; distinguishedName?: string };
+
+async function apiGetGroups(): Promise<PSResult<ADGroup[]>> {
+  const r = await inventoryGet<ApiCategory[]>("/api/v1/ad/user-categories");
+  if (!r.ok || !r.data) return { ok: false, error: r.error };
+  return { ok: true, data: r.data.map(mapCategoryToGroup) };
+}
+
+async function apiGetDeviceOUs(): Promise<PSResult<ADGroup[]>> {
+  const r = await inventoryGet<ApiCategory[]>("/api/v1/ad/device-categories");
+  if (!r.ok || !r.data) return { ok: false, error: r.error };
+  return { ok: true, data: r.data.map(mapCategoryToGroup) };
+}
+
+// The members endpoint already returns the AD Manager's PascalCase user shape
+// (SamAccountName/DisplayName/EmailAddress/Enabled/LockedOut/Title/Department/
+// employeeType), so it maps to ADUser without translation.
+async function apiGetGroupMembers(category: string): Promise<PSResult<ADUser[]>> {
+  const name = (category ?? "").trim();
+  if (!name) return { ok: true, data: [] };
+  return inventoryGet<ADUser[]>(`/api/v1/ad/categories/${encodeURIComponent(name)}/members`);
+}
+
+// search-users returns exactly ADUserLite ({ SamAccountName, DisplayName, Enabled }).
+async function apiSearchUsers(query: string): Promise<PSResult<ADUserLite[]>> {
+  const q = (query ?? "").trim();
+  if (!q) return { ok: true, data: [] };
+  return inventoryGet<ADUserLite[]>(`/api/v1/ad/search-users?q=${encodeURIComponent(q)}`);
+}
+
+// /ad/devices returns the ADComputer shape (Name/DNSHostName/OperatingSystem/…),
+// with Enabled present. Distinct from inventory:ad-devices (the EZOffice-oriented
+// InventorySourceDevice used by the reconciliation), so it powers the plain list.
+async function apiGetDevices(): Promise<PSResult<ADComputer[]>> {
+  return inventoryGet<ADComputer[]>("/api/v1/ad/devices");
+}
+
+// next-device-name returns { name, department, existing }; the renderer's
+// NextDeviceName is { dept, number, name } and only reads `name`. Map for fidelity.
+async function apiNextDeviceName(dept: string): Promise<PSResult<{ dept: string; number: string; name: string }>> {
+  const d = (dept ?? "").trim();
+  if (!d) return { ok: false, error: "Falta o departamento." };
+  const r = await inventoryGet<{ name?: string; department?: string; existing?: number }>(
+    `/api/v1/ad/next-device-name?department=${encodeURIComponent(d)}`,
+  );
+  if (!r.ok || !r.data) return { ok: false, error: r.error };
+  const name = r.data.name ?? "";
+  return {
+    ok: true,
+    data: { name, dept: r.data.department ?? d.toUpperCase(), number: name.match(/(\d+)\s*$/)?.[1] ?? "" },
+  };
+}
+
+// AD writes have no API (they stay on PowerShell/Windows) — a clear message beats
+// a cryptic "pwsh not found" when a write is attempted from the read-only platform.
+function adWriteUnavailable(): PSResult {
+  return {
+    ok: false,
+    error: "As alterações ao Active Directory só estão disponíveis na versão Windows do Manager. Esta plataforma tem acesso só de leitura.",
+  };
+}
+
 // --- Inventory API IPC ---
 // Reachability probe against /healthz (open, no auth). Accepts an optional
 // { baseUrl } override so Settings can test an unsaved address before saving, and
@@ -1341,6 +1554,7 @@ handle("config:set-device-config", (_e, rawPayload) => {
 // Lists the destination folders (sub-OUs under O365 in the BMAP Devices tree) so
 // Settings can offer them as options for the department -> OU map.
 handle("ad:device-ous", async () => {
+  if (AD_VIA_API) return apiGetDeviceOUs();
   return ps("Get-DeviceOU-All.ps1");
 });
 
@@ -1348,11 +1562,13 @@ handle("ad:device-ous", async () => {
 // Manager's device list. Can return the whole fleet, so it gets a longer ceiling
 // than a normal AD call (like the PC-status probe).
 handle("ad:get-devices", async () => {
+  if (AD_VIA_API) return apiGetDevices();
   return ps("Get-ADComputer-All.ps1", [], undefined, 60000);
 });
 
 // Computes the next available PT-LPT-<DEPT>-<NN> name (lowest free number).
 handle("ad:next-device-name", async (_e, dept) => {
+  if (AD_VIA_API) return apiNextDeviceName(String(dept ?? ""));
   return ps("Get-NextDeviceName.ps1", [String(dept ?? "")]);
 });
 

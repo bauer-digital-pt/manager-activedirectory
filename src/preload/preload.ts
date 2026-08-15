@@ -14,7 +14,9 @@ contextBridge.exposeInMainWorld("configAPI", {
 });
 
 contextBridge.exposeInMainWorld("authAPI", {
-  login: (creds: { username: string; password: string }) => ipcRenderer.invoke("auth:login", creds),
+  // baseUrl is only used off Windows: the login screen's bootstrap field passes the
+  // inventory API address so the first login can bind-as-user before any config is saved.
+  login: (creds: { username: string; password: string; baseUrl?: string }) => ipcRenderer.invoke("auth:login", creds),
   logout: () => ipcRenderer.invoke("auth:logout"),
   status: () => ipcRenderer.invoke("auth:status"),
   ping: () => ipcRenderer.invoke("auth:ping"),

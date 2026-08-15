@@ -24,12 +24,15 @@ export interface AuthStatus {
 
 const LS_LAST_USER = "admanager.lastUsername";
 
-export async function login(username: string, password: string): Promise<LoginResult> {
+// `baseUrl` is only meaningful off Windows: it's the inventory API address the
+// login screen collects so the very first login can bind-as-user before any
+// inventory config has been saved. On Windows it's ignored (login uses PowerShell).
+export async function login(username: string, password: string, baseUrl?: string): Promise<LoginResult> {
   const u = username.trim();
   if (!u || !password) return { ok: false, error: "Indica o utilizador e a palavra-passe." };
 
   if (window.authAPI?.login) {
-    return window.authAPI.login({ username: u, password });
+    return window.authAPI.login({ username: u, password, baseUrl });
   }
 
   // Browser mock. Password "wrong" fails auth.

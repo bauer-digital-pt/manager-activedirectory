@@ -47,7 +47,7 @@ declare global {
       setInventory(config: InventoryConfigPayload): Promise<InventoryConfigInfo>;
     };
     authAPI?: {
-      login(creds: { username: string; password: string }): Promise<{ ok: boolean; username?: string; displayName?: string; domain?: string; dc?: string; error?: string }>;
+      login(creds: { username: string; password: string; baseUrl?: string }): Promise<{ ok: boolean; username?: string; displayName?: string; domain?: string; dc?: string; error?: string }>;
       logout(): Promise<{ ok: boolean }>;
       status(): Promise<{ ok: boolean; authenticated: boolean; username: string; lastUsername: string }>;
       ping(): Promise<{ ok: boolean; error?: string }>;
