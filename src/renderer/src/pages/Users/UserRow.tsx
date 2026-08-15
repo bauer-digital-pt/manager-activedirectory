@@ -163,7 +163,7 @@ function UserRow({
             </button>
 
             {menu && (
-              <div className="absolute right-0 mt-1 w-52 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20">
+              <div className="anim-popover absolute right-0 mt-1 w-52 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20">
                 <MenuItem
                   icon={<User size={13} />}
                   label="Open"
@@ -205,11 +205,11 @@ function UserRow({
             <div
               role="dialog"
               aria-modal="true"
-              className="fixed inset-0 z-30 bg-black/30 backdrop-blur-sm flex items-center justify-center"
+              className="anim-overlay fixed inset-0 z-30 bg-black/30 backdrop-blur-sm flex items-center justify-center"
               onClick={() => setModal(null)}
             >
               <div
-                className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
                 onClick={(e) => e.stopPropagation()}
               >
 

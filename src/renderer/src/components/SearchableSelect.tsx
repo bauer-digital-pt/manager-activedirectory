@@ -186,7 +186,7 @@ export default function SearchableSelect({
       )}
 
       {open && (
-        <div className="absolute z-30 mt-1.5 w-full rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden">
+        <div className="anim-popover absolute z-30 mt-1.5 w-full rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100">
             {loading
               ? <Loader2 size={14} className="flex-shrink-0 text-violet-500 animate-spin" />

@@ -536,7 +536,7 @@ export default function PcOnboardingWizard({
           <div className="max-w-3xl space-y-5">
             {/* ── STEP 1 (idle): explanation + a single start button ── */}
             {phase === "idle" && wizardStep === "intro" && (
-              <div className="rounded-xl border border-zinc-200 p-6 space-y-6">
+              <div className="anim-step rounded-xl border border-zinc-200 p-6 space-y-6">
                 <StepHeader step={1} title="Introdução" />
                 <div className="flex items-start gap-3.5">
                   <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-600">
@@ -564,7 +564,7 @@ export default function PcOnboardingWizard({
 
             {/* ── STEP 2 (idle): department (+ number right away) & prepared-for ── */}
             {phase === "idle" && wizardStep === "config" && (
-              <div className="rounded-xl border border-zinc-200 p-5 space-y-5">
+              <div className="anim-step rounded-xl border border-zinc-200 p-5 space-y-5">
                 <StepHeader step={2} title="Configuração" />
 
                 <div className="space-y-2">

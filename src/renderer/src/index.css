@@ -71,3 +71,66 @@
 .status-indeterminate {
   animation: status-indeterminate 1.15s ease-in-out infinite;
 }
+
+/* ── Entrance animations ────────────────────────────────────────────────────
+   Shared motion tokens for content that appears on demand (modals, dropdowns,
+   banners). Kept as plain CSS classes — not Tailwind utilities — so the same
+   timing/easing is reused everywhere and tuned in one place. Two durations:
+   fast (120ms) for lightweight popovers, base (160ms) for larger surfaces. */
+@keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    }
+}
+@keyframes popover-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+@keyframes banner-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+/* Dimmed backdrop behind a modal — fades in. */
+.anim-overlay { animation: overlay-in 160ms ease-out; }
+/* Modal card — rises + scales up from just below centre. */
+.anim-modal   { animation: modal-in 160ms cubic-bezier(0.16, 1, 0.3, 1); }
+/* Dropdown/combobox menu that opens downward from its trigger. */
+.anim-popover { animation: popover-in 120ms ease-out; transform-origin: top; }
+/* Account menu that opens up-and-right from the sidebar avatar. */
+.anim-menu    { animation: popover-in 120ms ease-out; transform-origin: bottom left; }
+/* Full-width notice bar that slides down from the top edge. */
+.anim-banner  { animation: banner-in 200ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes step-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Wizard step body — fades + rises as each step mounts. Direction-neutral, so it
+   reads the same going forward or back. Keyed by the step so it replays on change. */
+.anim-step    { animation: step-in 180ms cubic-bezier(0.16, 1, 0.3, 1); }
+/* First paint of a loaded list/table — a single gentle fade for the whole
+   surface (NOT per row), so scrolling and filtering never re-trigger it. */
+.anim-fade-in { animation: fade-in 220ms ease-out; }
+/* Sidebar page change — a quick cross-fade so navigation reads as a transition
+   rather than a hard cut. Kept short to stay out of the way of frequent use. */
+.anim-page    { animation: fade-in 160ms ease-out; }
+
+/* Respect the OS "reduce motion" setting: collapse every transition/animation
+   to an instant change — EXCEPT the loading indicators (spinner, skeleton
+   pulse, install sweep), which communicate live state rather than decoration
+   and would look broken frozen mid-cycle. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+  .animate-spin { animation: spin 1s linear infinite !important; }
+  .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite !important; }
+  .status-indeterminate { animation: status-indeterminate 1.15s ease-in-out infinite !important; }
+}

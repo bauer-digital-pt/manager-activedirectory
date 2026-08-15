@@ -299,7 +299,7 @@ export default function UsersPage({
             {search || activeGroup ? "No users match the current filters" : "No users found"}
           </div>
         ) : (
-          <table className="w-full">
+          <table className="anim-fade-in w-full">
             <thead>
               <tr className="border-b border-zinc-100">
                 <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">User</th>

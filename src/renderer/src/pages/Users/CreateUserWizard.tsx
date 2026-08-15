@@ -485,7 +485,7 @@ export default function CreateUserWizard({
         "flex-1 overflow-y-auto flex flex-col items-center px-6 py-8",
         step === "group" ? "justify-start" : "justify-center"
       )}>
-        <div className="w-full max-w-md space-y-5">
+        <div key={step} className="anim-step w-full max-w-md space-y-5">
 
           {/* ── Step: Group ── */}
           {step === "group" && (
@@ -819,7 +819,7 @@ export default function CreateUserWizard({
 
 function Dropdown({ items, selected, onSelect }: { items: string[]; selected: string; onSelect: (s: string) => void }) {
   return (
-    <div className="absolute z-10 mt-1 w-full bg-white border border-zinc-200 rounded-lg shadow-lg overflow-hidden">
+    <div className="anim-popover absolute z-10 mt-1 w-full bg-white border border-zinc-200 rounded-lg shadow-lg overflow-hidden">
       {items.map((s) => (
         <button key={s} type="button" onMouseDown={() => onSelect(s)}
           className={cn(
