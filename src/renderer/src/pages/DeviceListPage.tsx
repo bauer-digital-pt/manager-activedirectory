@@ -19,12 +19,12 @@ function toArray<T>(data: unknown): T[] {
 
 // The inventory API's AD view (ldap3, snake_case) → the ADComputer shape the
 // table already renders. It carries no DNS / ManagedBy / created / enabled flag,
-// so those stay blank; last_seen (ISO-8601) maps onto LastLogonDate, which the
-// row's date helpers parse the same as the PowerShell "yyyy-MM-dd HH:mm:ss" stamp.
+// so those stay undefined (Enabled included — the row shows "Estado desconhecido"
+// rather than fabricating "Ativo"); last_seen (ISO-8601) maps onto LastLogonDate,
+// which the row's date helpers parse like the PowerShell "yyyy-MM-dd HH:mm:ss" stamp.
 function fromSourceDevice(d: InventorySourceDevice): ADComputer {
   return {
     Name: d.name,
-    Enabled: true,
     OperatingSystem: d.platform || undefined,
     OperatingSystemVersion: d.os_version || undefined,
     OU: d.department || undefined,
@@ -33,10 +33,12 @@ function fromSourceDevice(d: InventorySourceDevice): ADComputer {
   };
 }
 
-// Build the by-name enrichment map (keyed lowercase — AD has no serial, so the
-// join is by device name). Seed from the AD-source devices first (Mac path) so a
-// device missing from EZOffice still shows its serial/holder, then overlay the
-// EZOffice assets, which are authoritative for category/status.
+// Build the enrichment map joining EZOffice detail onto a device row. The key is
+// the device name (lowercased) because that's the only identifier an ADComputer
+// row and an EZOffice asset share — neither the PowerShell nor the inventory row
+// exposes a serial to join on. On the Mac path the source devices seed serial +
+// holder first (so a device EZOffice doesn't know still shows them), then the
+// EZOffice assets overlay, being authoritative for category/status.
 function buildAssetMap(
   assets: InventoryAsset[] | null,
   sources: InventorySourceDevice[] | null,
@@ -120,22 +122,27 @@ export default function DeviceListPage({
   const forceMac = platform === "browser" && new URLSearchParams(location.search).has("macfallback");
   const [invReady, setInvReady] = useState(false);
   const [invEnabled, setInvEnabled] = useState(false);
+  const [invBaseUrl, setInvBaseUrl] = useState("");
   useEffect(() => {
     let alive = true;
     getInventoryConfig()
-      .then((c) => { if (alive) { setInvEnabled(!!c.enabled); setInvReady(true); } })
+      .then((c) => { if (alive) { setInvEnabled(!!c.enabled); setInvBaseUrl(c.baseUrl || ""); setInvReady(true); } })
       .catch(() => { if (alive) setInvReady(true); });
     return () => { alive = false; };
   }, []);
 
   const useInventorySource = invEnabled && (platform === "darwin" || platform === "linux" || forceMac);
   const enrich = invEnabled;
-  const cacheKey = `${useInventorySource ? "inv" : "ad"}|${enrich ? "enr" : "raw"}`;
+  // Include the API address in the key ONLY when a fetch actually hits it, so
+  // changing the address (source or enrichment) re-queries, while a pure AD read
+  // isn't needlessly invalidated by an unrelated inventory-URL edit.
+  const usesApi = useInventorySource || enrich;
+  const cacheKey = `${useInventorySource ? "inv" : "ad"}|${enrich ? "enr" : "raw"}|${usesApi ? invBaseUrl : "-"}`;
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    const key = `${useInventorySource ? "inv" : "ad"}|${enrich ? "enr" : "raw"}`;
+    const key = cacheKey;
 
     // Enrichment must never block the list: a failed assets fetch just means no
     // EZOffice detail, not a broken page.
@@ -172,7 +179,7 @@ export default function DeviceListPage({
         setError(err);
         devicesCache = { devices: [], assets: new Map(), sourced: useInventorySource, loaded: true, error: err, key };
       });
-  }, [useInventorySource, enrich]);
+  }, [useInventorySource, enrich, cacheKey]);
 
   useEffect(() => {
     // Wait until the source decision is known (which inventory config resolves),
@@ -362,7 +369,9 @@ export default function DeviceListPage({
         <div className="px-6 py-3 border-t border-zinc-100">
           <span className="text-xs text-zinc-400">
             {filtered.length} {filtered.length === 1 ? "dispositivo" : "dispositivos"}
-            {" — "}{activeCount} {activeCount === 1 ? "ativo" : "ativos"}
+            {/* The API source carries no enabled flag, so an "ativos" count there
+                would be a fabricated 0 — only show it on the AD (Windows) path. */}
+            {!sourced && <>{" — "}{activeCount} {activeCount === 1 ? "ativo" : "ativos"}</>}
             {(search || activeDept) && " — filtrado"}
           </span>
         </div>

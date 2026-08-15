@@ -5,7 +5,7 @@
 // Only ever loaded in dev/mock paths — never on a real AD.
 import type {
   ADUser, ADUserLite, ADComputer,
-  InventoryAsset, InventoryMember, InventorySourceDevice, Reconciliation, MetricsSummary,
+  InventoryAsset, InventoryMember, InventorySourceDevice, Reconciliation,
 } from "./types";
 
 export interface MockPerson extends ADUser {
@@ -187,12 +187,6 @@ export function mockReconciliation(): Reconciliation {
     new_members,
     errors: [],
   };
-}
-
-// The gauge counts only — same projection as the API's /metrics-summary.
-export function mockMetricsSummary(): MetricsSummary {
-  const r = mockReconciliation();
-  return { ran_at: r.ran_at, ...r.counts };
 }
 
 // Title-case a username into a display name for the login mocks

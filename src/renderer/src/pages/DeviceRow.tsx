@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useId, useRef, memo } from "react";
 import { Laptop, Eye, X, Boxes } from "lucide-react";
 import { type ADComputer } from "../adAPI";
 import { cn } from "../lib/cn";
@@ -39,10 +39,13 @@ function daysSince(dateStr?: string | null): number | null {
   return Math.max(0, Math.floor((Date.now() - t) / 86_400_000));
 }
 
-type Tone = "emerald" | "amber" | "red";
+type Tone = "emerald" | "amber" | "red" | "zinc";
 
 // Read-only lifecycle state derived from Enabled + last-logon recency.
 export function deviceStatus(d: ADComputer): { label: string; tone: Tone } {
+  // The inventory-API source (Mac/Linux fallback) has no enabled flag, so Enabled
+  // is undefined there — surface it as "unknown" instead of a fabricated verdict.
+  if (d.Enabled === undefined) return { label: "Estado desconhecido", tone: "zinc" };
   if (!d.Enabled) return { label: "Desativado", tone: "red" };
   const days = daysSince(d.LastLogonDate);
   if (days === null || days >= STALE_DAYS) return { label: "Inativo", tone: "amber" };
@@ -53,6 +56,7 @@ const TONE_BADGE: Record<Tone, string> = {
   emerald: "bg-emerald-50 text-emerald-600 border-emerald-200",
   amber: "bg-amber-50 text-amber-600 border-amber-200",
   red: "bg-red-50 text-red-600 border-red-200",
+  zinc: "bg-zinc-100 text-zinc-500 border-zinc-200",
 };
 
 function StatusBadge({ device }: { device: ADComputer }) {
@@ -97,6 +101,8 @@ function cnOf(dn?: string): string | null {
 
 function DeviceRow({ device, asset }: { device: ADComputer; asset?: DeviceAsset }) {
   const [open, setOpen] = useState(false);
+  const titleId = useId();
+  const cardRef = useRef<HTMLDivElement>(null);
 
   // Esc / Enter close the (read-only) detail modal.
   useEffect(() => {
@@ -106,6 +112,15 @@ function DeviceRow({ device, asset }: { device: ADComputer; asset?: DeviceAsset 
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, [open]);
+
+  // Move focus into the dialog on open and restore it to the trigger on close, so
+  // keyboard/screen-reader users land in the modal and return where they were.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.activeElement as HTMLElement | null;
+    cardRef.current?.focus();
+    return () => prev?.focus?.();
   }, [open]);
 
   const name = device.Name || "—";
@@ -162,16 +177,20 @@ function DeviceRow({ device, asset }: { device: ADComputer; asset?: DeviceAsset 
             <div
               role="dialog"
               aria-modal="true"
+              aria-labelledby={titleId}
               className="anim-overlay fixed inset-0 z-30 bg-black/30 backdrop-blur-sm flex items-center justify-center"
               onClick={() => setOpen(false)}
             >
               <div
-                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+                ref={cardRef}
+                tabIndex={-1}
+                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden focus:outline-none"
                 onClick={(e) => e.stopPropagation()}
               >
                 <ModalHeader
                   icon={<Laptop size={15} />}
                   title="Detalhes do dispositivo"
+                  titleId={titleId}
                   subtitle={device.DNSHostName || name}
                   onClose={() => setOpen(false)}
                 />
@@ -220,7 +239,7 @@ function DeviceRow({ device, asset }: { device: ADComputer; asset?: DeviceAsset 
                   )}
 
                   {(manager || device.DistinguishedName) && (
-                    <DetailSection title="Diretoria">
+                    <DetailSection title="Diretório">
                       {manager && <DetailRow label="Gestor" value={manager} />}
                       {device.DistinguishedName && <DetailRow label="DN" value={device.DistinguishedName} mono />}
                     </DetailSection>
@@ -245,13 +264,13 @@ export default memo(DeviceRow);
 
 /* -------------------------------------------------------------------------- */
 
-function ModalHeader({ icon, title, subtitle, onClose }: { icon: React.ReactNode; title: string; subtitle: string; onClose: () => void }) {
+function ModalHeader({ icon, title, titleId, subtitle, onClose }: { icon: React.ReactNode; title: string; titleId?: string; subtitle: string; onClose: () => void }) {
   return (
     <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between">
       <div className="flex items-center gap-2.5 min-w-0">
         <span className="text-zinc-400 flex-shrink-0">{icon}</span>
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-zinc-900">{title}</p>
+          <p id={titleId} className="text-sm font-semibold text-zinc-900">{title}</p>
           <p className="text-xs text-zinc-400 truncate">{subtitle}</p>
         </div>
       </div>

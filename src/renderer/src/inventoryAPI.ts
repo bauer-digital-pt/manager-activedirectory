@@ -6,8 +6,8 @@
 // the internal pyexp-inventory API and returns the same { ok, data, error }
 // envelope the AD calls use. Manager-only — never wired into the Agent installer.
 import type {
-  PSResult, InventoryHealth, InventoryAsset, InventoryMember,
-  InventorySourceDevice, Reconciliation, MetricsSummary,
+  PSResult, InventoryHealth, InventoryAsset,
+  InventorySourceDevice, Reconciliation,
 } from "../../shared/types";
 export type {
   InventoryHealth, InventoryAsset, InventoryMember,
@@ -22,20 +22,17 @@ declare global {
       // optional override so Settings can test unsaved values before saving.
       test(override?: { baseUrl?: string }): Promise<PSResult<InventoryHealth>>;
       getAssets(): Promise<PSResult<InventoryAsset[]>>;
-      getMembers(): Promise<PSResult<InventoryMember[]>>;
       // AD computer objects as the inventory API sees them (ldap3), snake_case.
       getADDevices(): Promise<PSResult<InventorySourceDevice[]>>;
       // Cross-check of AD vs EZOffice: orphaned / stale / missing findings.
       getReconciliation(): Promise<PSResult<Reconciliation>>;
-      // Just the gauge counts (cheaper to render than the full reconciliation).
-      getMetricsSummary(): Promise<PSResult<MetricsSummary>>;
     };
   }
 }
 
 // --- Mock used when running in the browser (outside Electron) ---
 import {
-  mockAssets, mockMembers, mockADSourceDevices, mockReconciliation, mockMetricsSummary,
+  mockAssets, mockADSourceDevices, mockReconciliation,
 } from "../../shared/fixtures";
 
 const delay = (ms = 500) => new Promise<void>((r) => setTimeout(r, ms));
@@ -71,17 +68,18 @@ const mockAPI: Window["inventoryAPI"] = {
     if (override && override.baseUrl !== undefined && !override.baseUrl.trim()) {
       return { ok: false, error: "Falta o endereço da API de inventário." };
     }
-    return { ok: true, data: { status: "ok", mode: "live", version: "mock" } };
+    return {
+      ok: true,
+      data: {
+        status: "ok", mode: "live", version: "mock", directory_enabled: false,
+        cache_age_seconds: { assets: null, members: null, devices_ad: null, reconciliation: null },
+      },
+    };
   },
   getAssets: async () => {
     await delay();
     if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
     return { ok: true, data: invFlag("invempty") ? [] : mockAssets() };
-  },
-  getMembers: async () => {
-    await delay();
-    if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
-    return { ok: true, data: invFlag("invempty") ? [] : mockMembers() };
   },
   getADDevices: async () => {
     await delay();
@@ -93,15 +91,6 @@ const mockAPI: Window["inventoryAPI"] = {
     if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
     return { ok: true, data: invFlag("invempty") ? emptyReconciliation() : mockReconciliation() };
   },
-  getMetricsSummary: async () => {
-    await delay(600);
-    if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
-    if (invFlag("invempty")) {
-      const empty = emptyReconciliation();
-      return { ok: true, data: { ran_at: empty.ran_at, ...empty.counts } };
-    }
-    return { ok: true, data: mockMetricsSummary() };
-  },
 };
 
 if (!window.inventoryAPI) {
@@ -111,8 +100,6 @@ if (!window.inventoryAPI) {
 export const inventoryAPI = {
   test:              (o?: { baseUrl?: string }) => window.inventoryAPI.test(o),
   getAssets:         () => window.inventoryAPI.getAssets(),
-  getMembers:        () => window.inventoryAPI.getMembers(),
   getADDevices:      () => window.inventoryAPI.getADDevices(),
   getReconciliation: () => window.inventoryAPI.getReconciliation(),
-  getMetricsSummary: () => window.inventoryAPI.getMetricsSummary(),
 };

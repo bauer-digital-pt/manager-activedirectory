@@ -71,7 +71,10 @@ export interface ADUserLite {
 export interface ADComputer {
   Name: string;
   DNSHostName?: string;
-  Enabled: boolean;
+  // Windows/PowerShell always reports this; the inventory-API source (ldap3, Mac
+  // fallback) carries no enabled flag, so it's left undefined there — callers must
+  // treat undefined as "unknown", never as enabled.
+  Enabled?: boolean;
   OperatingSystem?: string;
   OperatingSystemVersion?: string;
   // The AD-computer description — carries the "Preparado para <user>" text the
@@ -206,10 +209,19 @@ export interface InventoryConfigPayload {
 }
 
 // Health probe (GET /healthz — open, no auth). `mode` is "live" for this build.
+// directory_enabled + cache_age_seconds mirror the server's /healthz body; both
+// optional so the type still fits an older API (or the test probe) that omits them.
 export interface InventoryHealth {
   status: string;
   mode: string;
   version?: string;
+  directory_enabled?: boolean;
+  cache_age_seconds?: {
+    assets: number | null;
+    members: number | null;
+    devices_ad: number | null;
+    reconciliation: number | null;
+  };
 }
 
 // EZOffice asset (GET /api/v1/assets) — snake_case, mirrors models.py EZAsset.

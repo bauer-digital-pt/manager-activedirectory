@@ -2,6 +2,10 @@
   "compilerOptions": {
     "composite": true,
     "skipLibCheck": true,
+    // Electron 32's main process runs on Node 20 (full ES2022). An explicit
+    // target keeps the lib in step with the renderer's and provides ES2021+
+    // globals like AggregateError (thrown by undici on multi-address failures).
+    "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,

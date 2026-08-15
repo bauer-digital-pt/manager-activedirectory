@@ -456,8 +456,9 @@ function InventoryTab({ toast, onSaved }: {
           </button>
           <button
             onClick={save}
-            disabled={saving}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors"
+            disabled={saving || (enabled && !baseUrl.trim())}
+            title={enabled && !baseUrl.trim() ? "Indica o endereço da API antes de ativar o inventário." : undefined}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : null}
             Guardar

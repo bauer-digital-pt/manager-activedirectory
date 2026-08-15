@@ -4,6 +4,7 @@ import {
   PackageSearch, UserPlus, AlertTriangle, CheckCircle2,
 } from "lucide-react";
 import { inventoryAPI, type Reconciliation } from "../inventoryAPI";
+import { getInventoryConfig } from "../lib/inventoryConfig";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
 
@@ -11,8 +12,10 @@ type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
 // Module-level cache so returning from another page (e.g. Settings) is instant
 // and doesn't re-run the reconciliation. A first-ever mount has loaded=false.
-type ReconCache = { data: Reconciliation | null; loaded: boolean; error: string | null };
-let reconCache: ReconCache = { data: null, loaded: false, error: null };
+// `key` records the API address the data was fetched from, so changing it in
+// Settings invalidates the cache and re-runs against the new server.
+type ReconCache = { data: Reconciliation | null; loaded: boolean; error: string | null; key: string };
+let reconCache: ReconCache = { data: null, loaded: false, error: null, key: "" };
 
 // ISO / "YYYY-MM-DD HH:MM:SS" → a short PT date-time; falls back to the raw
 // string (or "—") when it isn't parseable, so a surprising shape never crashes.
@@ -49,10 +52,25 @@ export default function InventoryPage({
   const [data, setData] = useState<Reconciliation | null>(reconCache.data);
   const [loading, setLoading] = useState(!reconCache.loaded);
   const [error, setError] = useState<string | null>(reconCache.error);
+  // The API address the current view is (or should be) bound to. null until the
+  // config resolves; "∅" stands in for an unset address so a real empty string
+  // still differs from "not yet known".
+  const [cfgKey, setCfgKey] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    getInventoryConfig()
+      .then((c) => { if (alive) setCfgKey(c.baseUrl || "∅"); })
+      .catch(() => { if (alive) setCfgKey("∅"); });
+    return () => { alive = false; };
+  }, []);
+
+  const cfgKeyRef = useRef(cfgKey);
+  cfgKeyRef.current = cfgKey;
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
+    const key = cfgKeyRef.current ?? "";
     inventoryAPI
       .getReconciliation()
       .then((r) => {
@@ -60,12 +78,12 @@ export default function InventoryPage({
         if (r.ok && r.data) {
           setData(r.data);
           setError(null);
-          reconCache = { data: r.data, loaded: true, error: null };
+          reconCache = { data: r.data, loaded: true, error: null, key };
         } else {
           setData(null);
           const err = r.error ?? "Não foi possível obter a reconciliação do inventário.";
           setError(err);
-          reconCache = { data: null, loaded: true, error: err };
+          reconCache = { data: null, loaded: true, error: err, key };
         }
       })
       .catch((e) => {
@@ -73,15 +91,16 @@ export default function InventoryPage({
         setData(null);
         const err = typeof e?.message === "string" ? e.message : "Não foi possível contactar a API de inventário.";
         setError(err);
-        reconCache = { data: null, loaded: true, error: err };
+        reconCache = { data: null, loaded: true, error: err, key };
       });
   }, []);
 
-  const loadedRef = useRef(reconCache.loaded);
   useEffect(() => {
-    // Only fetch on the first ever mount; later mounts reuse the cache.
-    if (!loadedRef.current) load();
-  }, [load]);
+    // Wait until the API address is known, then fetch on the first ever mount or
+    // whenever it changed since the cache was built (e.g. edited in Settings).
+    if (cfgKey === null) return;
+    if (!reconCache.loaded || reconCache.key !== cfgKey) load();
+  }, [cfgKey, load]);
 
   const counts = data?.counts;
   const findingsClean =

@@ -1222,6 +1222,21 @@ async function inventoryGet<T>(path: string, timeoutMs = 20000): Promise<PSResul
   return inventoryFetch<T>(resolved.baseUrl, path, auth, timeoutMs);
 }
 
+// Node's fetch (undici) throws a generic Error("fetch failed") for network errors
+// and stashes the real reason (ECONNREFUSED / ENOTFOUND / TLS, sometimes an
+// AggregateError) on `.cause`. Surface that instead of the useless top-level text.
+function describeFetchError(e: unknown): string {
+  const err = e instanceof Error ? (e as Error & { cause?: unknown }) : undefined;
+  const cause = err?.cause;
+  if (cause instanceof AggregateError && cause.errors?.length) {
+    const first = cause.errors.find((x): x is Error => x instanceof Error);
+    if (first?.message) return first.message;
+  }
+  if (cause instanceof Error && cause.message) return cause.message;
+  if (typeof cause === "string" && cause) return cause;
+  return err?.message || String(e);
+}
+
 // The raw fetch + error mapping, shared by the credential-signed reads and the
 // (auth-less, enabled-agnostic) /healthz test probe. `auth` is the full
 // Authorization header value, or null for the open /healthz probe.
@@ -1241,14 +1256,25 @@ async function inventoryFetch<T>(
       const body = await resp.text().catch(() => "");
       return { ok: false, error: friendlyInventoryError(resp.status, body) };
     }
-    const data = (await resp.json()) as T;
+    // Guard the parse: a reverse proxy / captive portal can answer 200 with an HTML
+    // error page, and a bare resp.json() would then throw a cryptic SyntaxError.
+    const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
+    if (!contentType.includes("application/json")) {
+      return { ok: false, error: "A API de inventário devolveu uma resposta inesperada (não-JSON)." };
+    }
+    let data: T;
+    try {
+      data = (await resp.json()) as T;
+    } catch {
+      return { ok: false, error: "A API de inventário devolveu uma resposta ilegível (JSON inválido)." };
+    }
     return { ok: true, data };
   } catch (e) {
     if (e instanceof Error && e.name === "AbortError") {
       return { ok: false, error: `A API de inventário não respondeu em ${Math.round(timeoutMs / 1000)}s.` };
     }
     // A DNS/connection error (host down, wrong address) lands here.
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { ok: false, error: describeFetchError(e) };
   } finally {
     clearTimeout(timer);
   }
@@ -1268,12 +1294,10 @@ handle("inventory:test", async (_e, rawOverride) => {
 });
 
 handle("inventory:assets", async () => inventoryGet("/api/v1/assets"));
-handle("inventory:members", async () => inventoryGet("/api/v1/members"));
 handle("inventory:ad-devices", async () => inventoryGet("/api/v1/devices/ad"));
 // Reconciliation fetches AND cross-checks every source, so it can be slow on a
 // cold cache — give it a generous ceiling (the API caches the result afterwards).
 handle("inventory:reconciliation", async () => inventoryGet("/api/v1/reconciliation", 90000));
-handle("inventory:metrics-summary", async () => inventoryGet("/api/v1/metrics-summary", 90000));
 
 // --- Inventory config IPC ---
 // Only the address + master switch are persisted; credentials come from the live
@@ -1287,7 +1311,9 @@ handle("config:set-inventory", (_e, rawPayload) => {
   const p = (rawPayload ?? {}) as { baseUrl?: string; enabled?: boolean };
   const current = readStoredInventory();
   const next: StoredInventory = {
-    baseUrl: p.baseUrl !== undefined ? String(p.baseUrl).trim() : current.baseUrl,
+    // Normalise on the way in (trim + strip trailing slashes) so the stored value
+    // matches what resolveInventory expects; the scheme is validated at read time.
+    baseUrl: p.baseUrl !== undefined ? String(p.baseUrl).trim().replace(/\/+$/, "") : current.baseUrl,
     enabled: p.enabled !== undefined ? !!p.enabled : current.enabled,
   };
   inventoryStore.write(next);
