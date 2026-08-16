@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Lock, LogIn, User, AlertCircle } from "lucide-react";
+import { Loader2, Lock, LogIn, User, AlertCircle, Server, ChevronDown } from "lucide-react";
 import AuthShell from "./AuthShell";
 import { login, type LoginResult } from "../lib/auth";
+import { getInventoryConfig } from "../lib/inventoryConfig";
 import { initials } from "../lib/initials";
+
+// Off Windows the Manager has no local PowerShell/RSAT: it authenticates and reads
+// through the inventory API (bind-as-user). Login normally uses the default/saved
+// API address, but Definições → Inventário is unreachable before a session — so
+// off Windows we expose an OPTIONAL, collapsed "connection" field to recover when
+// the default is unreachable. On Windows this is hidden entirely (login uses PS).
+const NON_WINDOWS = typeof window !== "undefined" && !!window.appAPI?.platform && window.appAPI.platform !== "win32";
 
 interface LoginGateProps {
   /** Pre-filled username (remembered from a previous login on this PC). */
@@ -23,11 +31,26 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Off Windows only (see NON_WINDOWS): an optional override for the inventory API
+  // address the login binds against. Blank = use the saved/default address; a value
+  // here overrides it. Prefilled from the saved config so it shows the current
+  // target. `showConn` keeps the field collapsed until the operator needs it.
+  const [baseUrl, setBaseUrl] = useState("");
+  const [showConn, setShowConn] = useState(false);
   // Set when the user clicks "Não és tu?" to sign in with a different account —
   // drops the remembered identity and reveals the username field.
   const [switchUser, setSwitchUser] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
   const usernameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!NON_WINDOWS) return;
+    let alive = true;
+    getInventoryConfig()
+      .then((c) => { if (alive && c.baseUrl) setBaseUrl(c.baseUrl); })
+      .catch(() => { /* leave blank; the field falls back to the default */ });
+    return () => { alive = false; };
+  }, []);
 
   // Compact identity mode: a remembered user (relock or a previous session on
   // this machine) and the user hasn't chosen to switch accounts.
@@ -59,17 +82,24 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
     }
     setBusy(true);
     try {
-      const res = await login(user, password);
+      // Pass the address override only off Windows and only when the operator
+      // typed one; blank keeps the saved/default address (the normal path).
+      const override = NON_WINDOWS && baseUrl.trim() ? baseUrl.trim() : undefined;
+      const res = await login(user, password, override);
       if (res.ok) {
         setPassword("");
         onSuccess(res);
       } else {
         setError(res.error ?? "Não foi possível autenticar.");
+        // Off Windows a failure is often an unreachable/wrong API address, and
+        // Settings can't be reached pre-login — surface the recovery field.
+        if (NON_WINDOWS) setShowConn(true);
         setPassword("");
         passwordRef.current?.focus();
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Não foi possível autenticar.");
+      if (NON_WINDOWS) setShowConn(true);
     } finally {
       setBusy(false);
     }
@@ -139,6 +169,37 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
               />
             </div>
           </div>
+
+          {/* Off-Windows only: optional API-address override, collapsed by default.
+              Blank keeps the saved/default address; this is the only pre-login way
+              to point the app at the right API when the default is unreachable. */}
+          {NON_WINDOWS && (
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                onClick={() => setShowConn((v) => !v)}
+                disabled={busy}
+                className="flex items-center gap-1.5 text-xs font-medium text-white/50 transition-colors hover:text-white/80 disabled:opacity-60"
+              >
+                <ChevronDown size={13} className={showConn ? "rotate-180 transition-transform" : "transition-transform"} />
+                Ligação à API de inventário
+              </button>
+              {showConn && (
+                <div className="relative">
+                  <Server size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
+                  <input
+                    value={baseUrl}
+                    onChange={(e) => { setBaseUrl(e.target.value); setError(null); }}
+                    placeholder="http://10.4.4.69:8000"
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={busy}
+                    className={inputCls}
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           {error && (
             <div className="flex items-center gap-2 rounded-lg border border-red-300/25 bg-red-500/10 px-3 py-2.5 text-sm text-red-100">

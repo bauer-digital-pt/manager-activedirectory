@@ -246,8 +246,12 @@ export default function DeviceListPage({
     });
   }, [devices, activeDept, search, assetByName]);
 
-  // Reset the window whenever the result set changes (filter/search/reload).
-  useEffect(() => { setVisibleCount(PAGE); }, [search, activeDept, devices]);
+  // Reset the window only when the operator changes a filter — deliberately NOT
+  // keyed on `devices`, so a kiosk background refresh swaps the data in place
+  // without collapsing the scrolled-open window and yanking a wall display back
+  // to the top every 5 min. A shrunk/grown result set is handled by the
+  // filtered.slice + hasMore below without needing a reset. (Matches UsersPage.)
+  useEffect(() => { setVisibleCount(PAGE); }, [search, activeDept]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;

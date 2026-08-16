@@ -265,6 +265,9 @@ export default function App() {
   const ensureFreshAuth = useCallback(async (): Promise<boolean> => {
     if (!settings.kioskMode) return true;
     if (Date.now() - lastAuthAtRef.current < KIOSK_REAUTH_MS) return true;
+    // A re-auth is already pending (e.g. a stray double-dispatch): don't open a
+    // second modal or overwrite the live resolver — abort this extra caller.
+    if (reauthResolveRef.current) return false;
     return new Promise<boolean>((resolve) => {
       reauthResolveRef.current = resolve;
       setReauth(true);
@@ -530,14 +533,20 @@ function ReAuthModal({ username, onResult }: { username: string; onResult: (ok: 
     if (!password || busy) return;
     setBusy(true);
     setError("");
-    const r = await reverify(password);
-    if (r.ok) {
-      onResult(true);
-      return; // modal unmounts; no need to clear busy
+    try {
+      const r = await reverify(password);
+      if (r.ok) {
+        onResult(true);
+        return; // modal unmounts; no need to clear busy
+      }
+      setError(r.error || "Palavra-passe incorreta.");
+    } catch (e) {
+      // reverify is a throw-free IPC call today, but never leave the modal stuck
+      // "busy" (Cancel is the only way out then) if that ever changes.
+      setError(e instanceof Error ? e.message : "Não foi possível confirmar a identidade.");
     }
     setBusy(false);
     setPassword("");
-    setError(r.error || "Palavra-passe incorreta.");
     inputRef.current?.focus();
   }, [password, busy, onResult]);
 
@@ -545,7 +554,10 @@ function ReAuthModal({ username, onResult }: { username: string; onResult: (ok: 
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-zinc-900/50 backdrop-blur-sm">
       <div
         className="anim-popover w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl"
-        onKeyDown={(e) => { if (e.key === "Escape") onResult(false); }}
+        // Stop keystrokes bubbling to window-level handlers behind the overlay
+        // (UserRow's / the create-wizard's Enter/Escape listeners) — otherwise
+        // the same Enter that confirms here re-fires the gated action underneath.
+        onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onResult(false); } }}
       >
         <div className="flex items-center gap-3">
           <span className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-100 text-violet-600">
@@ -566,7 +578,7 @@ function ReAuthModal({ username, onResult }: { username: string; onResult: (ok: 
           autoComplete="current-password"
           disabled={busy}
           onChange={(e) => { setPassword(e.target.value); setError(""); }}
-          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); submit(); } }}
           placeholder="Palavra-passe"
           className="mt-5 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-100 disabled:bg-zinc-50"
         />
@@ -575,9 +587,11 @@ function ReAuthModal({ username, onResult }: { username: string; onResult: (ok: 
         <div className="mt-5 flex justify-end gap-2">
           <button
             type="button"
+            // Never disabled: Cancel must always be a way out, even mid-verify —
+            // resolveReauth clears the pending resolver, so a late reverify result
+            // can't re-settle the gate after a cancel.
             onClick={() => onResult(false)}
-            disabled={busy}
-            className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50"
+            className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100"
           >
             Cancelar
           </button>

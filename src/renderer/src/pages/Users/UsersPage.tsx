@@ -337,6 +337,7 @@ export default function UsersPage({
       <CreateUserWizard
         groups={groups}
         toast={toast}
+        ensureFreshAuth={ensureFreshAuth}
         onClose={() => { setView("list"); refresh(); }}
       />
     );

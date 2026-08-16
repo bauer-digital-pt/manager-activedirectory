@@ -99,10 +99,14 @@ export default function CreateUserWizard({
   groups,
   toast,
   onClose,
+  ensureFreshAuth,
 }: {
   groups: ADGroup[];
   toast: { success: ToastFn; error: ToastFn };
   onClose: () => void;
+  // Kiosk re-auth gate: creating an account is the most powerful AD write, so
+  // it must clear the same 10-min re-auth prompt as reset/unlock/offboard.
+  ensureFreshAuth?: () => Promise<boolean>;
 }) {
   const [step, setStep] = useState<Step>("group");
   const [form, setForm] = useState<Form>(EMPTY);
@@ -399,6 +403,9 @@ export default function CreateUserWizard({
   }, [step, groups, form, saving, groupConfig, loginInfoOpen]);
 
   const submit = async () => {
+    // Gate the write behind a fresh login in kiosk mode (no-op otherwise), same
+    // as reset/unlock/offboard — this is the highest-impact AD write of all.
+    if (ensureFreshAuth && !(await ensureFreshAuth())) return;
     setSaving(true);
     const r = await adAPI.createUser({
       firstName:             form.firstName,

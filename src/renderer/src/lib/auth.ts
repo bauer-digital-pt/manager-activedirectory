@@ -25,15 +25,17 @@ export interface AuthStatus {
 const LS_LAST_USER = "admanager.lastUsername";
 
 // Off Windows the Manager authenticates through the inventory API (bind-as-user).
-// The API address is no longer typed at login: it defaults to the internal API
-// (DEFAULT_INVENTORY_BASE_URL in the main process) unless changed in Definições →
-// Inventário. On Windows login uses PowerShell.
-export async function login(username: string, password: string): Promise<LoginResult> {
+// The API address normally defaults to the internal API (DEFAULT_INVENTORY_BASE_URL
+// in the main process) and is changed in Definições → Inventário — but Settings is
+// unreachable before login, so the login screen may pass an optional `baseUrl`
+// override (its collapsed "connection" field) to recover when the default is wrong.
+// On Windows login uses PowerShell and baseUrl is ignored.
+export async function login(username: string, password: string, baseUrl?: string): Promise<LoginResult> {
   const u = username.trim();
   if (!u || !password) return { ok: false, error: "Indica o utilizador e a palavra-passe." };
 
   if (window.authAPI?.login) {
-    return window.authAPI.login({ username: u, password });
+    return window.authAPI.login({ username: u, password, ...(baseUrl ? { baseUrl } : {}) });
   }
 
   // Browser mock. Password "wrong" fails auth.
