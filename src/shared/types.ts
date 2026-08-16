@@ -42,6 +42,16 @@ export interface ADUser {
   EmailAddress: string;
   Enabled: boolean;
   LockedOut: boolean;
+  // Whether the account's password is currently expired. Both read paths derive
+  // it live: PowerShell via Get-ADUser's `PasswordExpired` calculated property,
+  // the inventory API via the 0x800000 bit on msDS-User-Account-Control-Computed.
+  // Optional so an older API (or a record missing the field) reads as "unknown".
+  PasswordExpired?: boolean;
+  // Directory timestamps, pre-stringified as "yyyy-MM-dd HH:mm:ss" (PowerShell) or
+  // ISO-8601 (inventory API). Power the Users page "Criação"/"Último update" sorts;
+  // null/undefined when unset. WhenChanged is the account's last-modified time.
+  WhenCreated?: string | null;
+  WhenChanged?: string | null;
   // Extended fields (populated when fetched with -Properties *)
   GivenName?: string;
   Surname?: string;
@@ -154,6 +164,11 @@ export interface AppSettings {
   devMode: boolean;
   loginTimeoutMin: number;
   lastUsername: string;
+  // Kiosk mode: a wall-mounted / always-on operator view. The session never
+  // auto-logs-out on inactivity; Users + Devices auto-refresh so the live view
+  // stays current; but privileged actions (reset/unlock/create) re-verify the
+  // operator's password if it's been more than 10 minutes since the last auth.
+  kioskMode: boolean;
 }
 
 // --- Device onboarding config (device-config.json) ---
@@ -190,7 +205,7 @@ export interface StartupInfo {
 // Persisted config (inventory.json). Only the address + master switch are stored;
 // credentials come from the live login session, never from disk.
 export interface InventoryConfig {
-  // Base URL of the API, e.g. "https://10.4.0.20:8760" (trailing slash optional).
+  // Base URL of the API, e.g. "https://10.4.0.20:8000" (trailing slash optional).
   baseUrl: string;
   // Master switch — when false the Manager surfaces nothing inventory-related.
   enabled: boolean;

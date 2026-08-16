@@ -51,6 +51,7 @@ declare global {
       logout(): Promise<{ ok: boolean }>;
       status(): Promise<{ ok: boolean; authenticated: boolean; username: string; lastUsername: string }>;
       ping(): Promise<{ ok: boolean; error?: string }>;
+      reverify(password: string): Promise<{ ok: boolean; error?: string }>;
     };
     appAPI?: {
       getVersion(): Promise<string>;

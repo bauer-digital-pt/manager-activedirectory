@@ -1,14 +1,63 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Plus, Search, ServerCrash, Settings, RotateCcw, RefreshCw } from "lucide-react";
+import {
+  Plus, Search, ServerCrash, Settings, RotateCcw, RefreshCw,
+  Folder, Activity, Building2, BadgeCheck, ArrowUpNarrowWide, ArrowDownWideNarrow, X,
+} from "lucide-react";
 import { adAPI, type ADGroup, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
 import type { ExternalToast } from "sonner";
 import CreateUserWizard from "./CreateUserWizard";
 import UserRow from "./UserRow";
+import FilterDropdown, { type FilterOption } from "../../components/ui/FilterDropdown";
 import { Kbd } from "../../components/ui/Kbd";
+import { userStatusRank } from "../../lib/userStatus";
 import { usersCache, setUsersCache, type UserWithGroup } from "../../lib/usersCache";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
+
+// Estado (account-state) filter. Values are matched against the raw AD flags —
+// deliberately overlapping-friendly: "Locked out" shows every locked account
+// even if it's also disabled, whereas "Active" means a clean, healthy account.
+type Estado = "active" | "disabled" | "locked" | "expired";
+const ESTADO_OPTIONS: FilterOption[] = [
+  { value: "active", label: "Active" },
+  { value: "disabled", label: "Disabled" },
+  { value: "locked", label: "Locked out" },
+  { value: "expired", label: "Password expired" },
+];
+function matchesEstado(u: ADUser, estado: Estado): boolean {
+  switch (estado) {
+    case "active":   return !!u.Enabled && !u.LockedOut && !u.PasswordExpired;
+    case "disabled": return !u.Enabled;
+    case "locked":   return !!u.LockedOut;
+    case "expired":  return !!u.PasswordExpired;
+  }
+}
+
+// "Ordenar por" options. "estado" is the default: bucketed (problem accounts
+// first, disabled last), alphabetical within each bucket.
+type SortBy = "estado" | "name" | "created" | "updated";
+const SORT_OPTIONS: FilterOption[] = [
+  { value: "estado",  label: "Estado (padrão)" },
+  { value: "name",    label: "Nome" },
+  { value: "created", label: "Data de criação" },
+  { value: "updated", label: "Último update" },
+];
+
+// Parse a directory timestamp — PowerShell "yyyy-MM-dd HH:mm:ss" or the API's
+// ISO-8601 — into a comparable epoch, or null when absent/unparseable (nulls
+// always sort last, regardless of direction).
+function toTime(v?: string | null): number | null {
+  if (!v) return null;
+  const t = Date.parse(v.includes("T") ? v : v.replace(" ", "T"));
+  return Number.isNaN(t) ? null : t;
+}
+function nameOf(u: ADUser): string {
+  return (u.DisplayName || u.SamAccountName || "").toLowerCase();
+}
+function nameCmp(a: ADUser, b: ADUser): number {
+  return nameOf(a).localeCompare(nameOf(b), "pt");
+}
 
 // Windows PowerShell's ConvertTo-Json returns a bare object for a single result
 // and null for none — normalize any of those shapes to a plain array.
@@ -21,9 +70,16 @@ function toArray<T>(data: unknown): T[] {
 export default function UsersPage({
   toast,
   onOpenSettings,
+  kiosk = false,
+  ensureFreshAuth,
 }: {
   toast: { success: ToastFn; error: ToastFn };
   onOpenSettings?: () => void;
+  // Kiosk mode: auto-refresh the directory every 5 min so the top problem
+  // accounts (locked / password-expired) stay live on a wall display.
+  kiosk?: boolean;
+  // Threaded down to each row to gate privileged actions behind a re-auth.
+  ensureFreshAuth?: () => Promise<boolean>;
 }) {
   // Seed from the module-level cache so returning from Settings is instant and
   // doesn't re-fetch the whole directory. A first-ever mount has loaded=false.
@@ -32,13 +88,19 @@ export default function UsersPage({
   const [loadingGroups, setLoadingGroups] = useState(!usersCache.loaded);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [groupsError, setGroupsError] = useState<string | null>(usersCache.error);
-  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  // The four filter TYPES (null = "all") + the sort control.
+  const [activeOU, setActiveOU] = useState<string | null>(null);
+  const [estado, setEstado] = useState<string | null>(null);
+  const [departamento, setDepartamento] = useState<string | null>(null);
+  const [tipoConta, setTipoConta] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<SortBy>("estado");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [view, setView] = useState<"list" | "create">("list");
   const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   // Lazy render: only mount the first slice of rows and grow as the user scrolls
   // near the bottom, so a large directory doesn't build thousands of DOM rows.
-  const PAGE = 40;
+  const PAGE = 30;
   const [visibleCount, setVisibleCount] = useState(PAGE);
 
   // Keep the latest toast fns reachable without making the load callbacks depend
@@ -47,8 +109,12 @@ export default function UsersPage({
   const toastRef = useRef(toast);
   toastRef.current = toast;
 
-  const loadAllUsers = useCallback(async (gs: ADGroup[]) => {
-    setLoadingUsers(true);
+  // `background` (kiosk auto-refresh) reloads without the loading skeleton and,
+  // on a partial/total failure, keeps the last-good list instead of wiping it or
+  // nagging with a toast — a wall display should stay showing stale-but-useful
+  // data rather than flashing an error every 5 minutes.
+  const loadAllUsers = useCallback(async (gs: ADGroup[], background = false) => {
+    if (!background) setLoadingUsers(true);
     const results = await Promise.all(
       gs.map((g) =>
         adAPI.getGroupMembers(g.Name).then((r) => {
@@ -61,6 +127,12 @@ export default function UsersPage({
         })
       )
     );
+    const failed = results.filter((r) => r.failed).length;
+
+    // In the background, only swap in a fully-successful reload — a transient
+    // failure must not blank out teams the operator can still see.
+    if (background && failed > 0) return;
+
     // Dedupe by SamAccountName, keeping first occurrence
     const seen = new Set<string>();
     const merged: UserWithGroup[] = [];
@@ -74,10 +146,9 @@ export default function UsersPage({
     }
     setAllUsers(merged);
     setUsersCache({ users: merged, loaded: true });
-    setLoadingUsers(false);
+    if (!background) setLoadingUsers(false);
 
-    const failed = results.filter((r) => r.failed).length;
-    if (failed > 0) {
+    if (failed > 0 && !background) {
       toastRef.current.error(
         failed === gs.length
           ? "Não foi possível carregar os utilizadores do Active Directory. Verifica a ligação."
@@ -86,13 +157,12 @@ export default function UsersPage({
     }
   }, []);
 
-  const loadGroups = useCallback(() => {
-    setLoadingGroups(true);
-    setGroupsError(null);
+  const loadGroups = useCallback((background = false) => {
+    if (!background) { setLoadingGroups(true); setGroupsError(null); }
     adAPI
       .getGroups()
       .then((r) => {
-        setLoadingGroups(false);
+        if (!background) setLoadingGroups(false);
         if (r.ok) {
           // Windows PowerShell's ConvertTo-Json emits a bare object (not an
           // array) for a single group — normalize so one-group tenants work.
@@ -100,8 +170,8 @@ export default function UsersPage({
           setGroups(gs);
           setGroupsError(null);
           setUsersCache({ groups: gs, error: null });
-          loadAllUsers(gs);
-        } else {
+          loadAllUsers(gs, background);
+        } else if (!background) {
           // Explicit, recoverable error state — never a misleading "No users found".
           setGroups([]);
           setAllUsers([]);
@@ -109,8 +179,10 @@ export default function UsersPage({
           setGroupsError(err);
           setUsersCache({ groups: [], users: [], error: err, loaded: true });
         }
+        // background + failure: keep the last-good view untouched.
       })
       .catch((e) => {
+        if (background) return; // keep last-good on a background hiccup
         setLoadingGroups(false);
         setGroups([]);
         setAllUsers([]);
@@ -127,6 +199,14 @@ export default function UsersPage({
     // Only fetch on the first ever mount; subsequent mounts reuse the cache.
     if (!usersCache.loaded) loadGroups();
   }, [loadGroups]);
+
+  // Kiosk: silently refresh the directory every 5 minutes so the live view (and
+  // the top locked/expired bucket) stays current without any operator action.
+  useEffect(() => {
+    if (!kiosk) return;
+    const id = setInterval(() => loadGroups(true), 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [kiosk, loadGroups]);
 
   // Full reload — used by the toolbar refresh button and after creating a user.
   const refresh = useCallback(() => {
@@ -167,22 +247,78 @@ export default function UsersPage({
     return () => window.removeEventListener("keydown", handler);
   }, [goCreate, view]);
 
-  // Recompute only when the inputs change (not on every keystroke-driven render
-  // of unrelated state), and lower-case the query once instead of per user.
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-    return allUsers.filter((u) => {
-      const matchesGroup = !activeGroup || u.groupName === activeGroup;
-      const matchesSearch =
-        !q ||
-        u.DisplayName?.toLowerCase().includes(q) ||
-        u.SamAccountName?.toLowerCase().includes(q);
-      return matchesGroup && matchesSearch;
-    });
-  }, [allUsers, activeGroup, search]);
+  // Distinct Departamento / Tipo de conta values, drawn from the loaded users so
+  // the dropdowns only ever offer values that actually exist in the directory.
+  const departamentoOptions = useMemo<FilterOption[]>(() => {
+    const set = new Set<string>();
+    for (const u of allUsers) if (u.Department) set.add(u.Department);
+    return [...set].sort((a, b) => a.localeCompare(b, "pt")).map((d) => ({ value: d, label: d }));
+  }, [allUsers]);
+  const tipoContaOptions = useMemo<FilterOption[]>(() => {
+    const set = new Set<string>();
+    for (const u of allUsers) if (u.employeeType) set.add(u.employeeType);
+    return [...set].sort((a, b) => a.localeCompare(b, "pt")).map((t) => ({ value: t, label: t }));
+  }, [allUsers]);
 
-  // Reset the window whenever the result set changes (filter/search/reload).
-  useEffect(() => { setVisibleCount(PAGE); }, [search, activeGroup, allUsers]);
+  const ouOptions = useMemo<FilterOption[]>(
+    () => groups.map((g) => ({ value: g.Name, label: g.Name })),
+    [groups],
+  );
+
+  const anyFilterActive = !!(activeOU || estado || departamento || tipoConta || search.trim());
+  const clearFilters = useCallback(() => {
+    setActiveOU(null); setEstado(null); setDepartamento(null); setTipoConta(null); setSearch("");
+  }, []);
+
+  // Filter by all four types + free-text, then sort. Recomputes only when an
+  // input actually changes (not on every unrelated keystroke-driven render).
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const base = allUsers.filter((u) => {
+      if (activeOU && u.groupName !== activeOU) return false;
+      if (departamento && (u.Department ?? "") !== departamento) return false;
+      if (tipoConta && (u.employeeType ?? "") !== tipoConta) return false;
+      if (estado && !matchesEstado(u, estado as Estado)) return false;
+      if (
+        q &&
+        !(
+          u.DisplayName?.toLowerCase().includes(q) ||
+          u.SamAccountName?.toLowerCase().includes(q) ||
+          u.EmailAddress?.toLowerCase().includes(q)
+        )
+      )
+        return false;
+      return true;
+    });
+
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...base].sort((a, b) => {
+      switch (sortBy) {
+        case "name":
+          return dir * nameCmp(a, b);
+        case "created":
+        case "updated": {
+          const ta = toTime(sortBy === "created" ? a.WhenCreated : a.WhenChanged);
+          const tb = toTime(sortBy === "created" ? b.WhenCreated : b.WhenChanged);
+          if (ta === null && tb === null) return nameCmp(a, b);
+          if (ta === null) return 1;  // missing timestamps always sort last
+          if (tb === null) return -1;
+          return dir * (ta - tb) || nameCmp(a, b);
+        }
+        case "estado":
+        default:
+          // Buckets first (problem → active → disabled), alphabetical within.
+          return dir * (userStatusRank(a) - userStatusRank(b)) || nameCmp(a, b);
+      }
+    });
+  }, [allUsers, activeOU, departamento, tipoConta, estado, search, sortBy, sortDir]);
+
+  // Reset the render window whenever the filter/sort inputs change. Note this is
+  // deliberately NOT keyed on `allUsers`, so a kiosk background refresh swaps the
+  // data in place without yanking the operator back to the top of the list.
+  useEffect(() => {
+    setVisibleCount(PAGE);
+  }, [search, activeOU, estado, departamento, tipoConta, sortBy, sortDir]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
@@ -246,38 +382,79 @@ export default function UsersPage({
           </div>
         </div>
 
-        {/* Group pills */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setActiveGroup(null)}
-            className={cn(
-              "px-3 py-1 rounded-full text-xs font-medium transition-colors",
-              !activeGroup
-                ? "bg-violet-600 text-white"
-                : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+        {/* Filter types + sort control */}
+        {loadingGroups ? (
+          <div className="flex items-center gap-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-8 w-28 rounded-lg bg-zinc-100 animate-pulse" />
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 flex-wrap">
+            <FilterDropdown
+              label="OU"
+              icon={<Folder size={13} />}
+              allLabel="Todas"
+              value={activeOU}
+              options={ouOptions}
+              onChange={setActiveOU}
+            />
+            <FilterDropdown
+              label="Estado"
+              icon={<Activity size={13} />}
+              allLabel="Todos"
+              value={estado}
+              options={ESTADO_OPTIONS}
+              onChange={setEstado}
+            />
+            <FilterDropdown
+              label="Departamento"
+              icon={<Building2 size={13} />}
+              allLabel="Todos"
+              value={departamento}
+              options={departamentoOptions}
+              onChange={setDepartamento}
+            />
+            <FilterDropdown
+              label="Tipo de conta"
+              icon={<BadgeCheck size={13} />}
+              allLabel="Todos"
+              value={tipoConta}
+              options={tipoContaOptions}
+              onChange={setTipoConta}
+            />
+
+            {/* Sort: choose the key, then toggle asc/desc. */}
+            <div className="ml-auto flex items-center gap-1.5">
+              <FilterDropdown
+                label="Ordenar por"
+                allowAll={false}
+                value={sortBy}
+                options={SORT_OPTIONS}
+                onChange={(v) => setSortBy((v as SortBy) ?? "estado")}
+              />
+              <button
+                type="button"
+                onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                title={sortDir === "asc" ? "Ascendente" : "Descendente"}
+                className="inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white p-1.5 text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700"
+              >
+                {sortDir === "asc" ? <ArrowUpNarrowWide size={15} /> : <ArrowDownWideNarrow size={15} />}
+              </button>
+            </div>
+
+            {anyFilterActive && (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600"
+              >
+                <X size={13} />
+                Limpar
+              </button>
             )}
-          >
-            All groups
-          </button>
-          {loadingGroups
-            ? Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="h-6 w-20 rounded-full bg-zinc-100 animate-pulse" />
-              ))
-            : groups.map((g) => (
-                <button
-                  key={g.Name}
-                  onClick={() => setActiveGroup(activeGroup === g.Name ? null : g.Name)}
-                  className={cn(
-                    "px-3 py-1 rounded-full text-xs font-medium transition-colors",
-                    activeGroup === g.Name
-                      ? "bg-violet-600 text-white"
-                      : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
-                  )}
-                >
-                  {g.Name}
-                </button>
-              ))}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Table */}
@@ -291,12 +468,12 @@ export default function UsersPage({
         ) : groupsError ? (
           <GroupsError
             message={groupsError}
-            onRetry={loadGroups}
+            onRetry={() => loadGroups()}
             onOpenSettings={onOpenSettings}
           />
         ) : filtered.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-sm text-zinc-400">
-            {search || activeGroup ? "No users match the current filters" : "No users found"}
+            {anyFilterActive ? "No users match the current filters" : "No users found"}
           </div>
         ) : (
           <table className="anim-fade-in w-full">
@@ -311,7 +488,7 @@ export default function UsersPage({
             </thead>
             <tbody className="divide-y divide-zinc-50">
               {visible.map((u, i) => (
-                <UserRow key={u.SamAccountName || `row-${i}`} user={u} groupName={u.groupName} toast={toast} onRefresh={refresh} />
+                <UserRow key={u.SamAccountName || `row-${i}`} user={u} groupName={u.groupName} toast={toast} onRefresh={refresh} ensureFreshAuth={ensureFreshAuth} />
               ))}
             </tbody>
           </table>
@@ -328,7 +505,7 @@ export default function UsersPage({
         <div className="px-6 py-3 border-t border-zinc-100">
           <span className="text-xs text-zinc-400">
             {filtered.length} {filtered.length === 1 ? "user" : "users"}
-            {(search || activeGroup) && " — filtered"}
+            {anyFilterActive && " — filtered"}
           </span>
         </div>
       )}

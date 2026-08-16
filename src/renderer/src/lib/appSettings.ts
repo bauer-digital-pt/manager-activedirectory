@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   devMode: false,
   loginTimeoutMin: 30,
   lastUsername: "",
+  kioskMode: false,
 };
 
 const LS_KEY = "admanager.settings";
@@ -25,6 +26,7 @@ function normalize(raw: Partial<AppSettings> | null | undefined): AppSettings {
     devMode: !!raw?.devMode,
     loginTimeoutMin: clampTimeout(raw?.loginTimeoutMin),
     lastUsername: typeof raw?.lastUsername === "string" ? raw.lastUsername : "",
+    kioskMode: !!raw?.kioskMode,
   };
 }
 

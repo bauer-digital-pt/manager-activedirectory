@@ -14,12 +14,12 @@ export interface MockPerson extends ADUser {
 }
 
 export const MOCK_PEOPLE: readonly MockPerson[] = [
-  { group: "IT",        SamAccountName: "joao.silva",   DisplayName: "João Silva",    EmailAddress: "joao.silva@bmap.lis",   Enabled: true,  LockedOut: false, Title: "Técnico de IT",             Department: "IT",        employeeType: "Efetivo" },
-  { group: "IT",        SamAccountName: "maria.costa",  DisplayName: "Maria Costa",   EmailAddress: "maria.costa@bmap.lis",  Enabled: true,  LockedOut: true,  Title: "Helpdesk",                  Department: "IT",        employeeType: "Efetivo" },
-  { group: "IT",        SamAccountName: "ana.ferreira", DisplayName: "Ana Ferreira",  EmailAddress: "ana.ferreira@bmap.lis", Enabled: false, LockedOut: false, Title: "Administrador de Sistemas", Department: "IT",        employeeType: "Prestador" },
-  { group: "REDACAO",   SamAccountName: "pedro.sousa",  DisplayName: "Pedro Sousa",   EmailAddress: "pedro.sousa@bmap.lis",  Enabled: true,  LockedOut: false, Title: "Jornalista",                Department: "Redação",   employeeType: "Efetivo" },
-  { group: "REDACAO",   SamAccountName: "rita.lopes",   DisplayName: "Rita Lopes",    EmailAddress: "rita.lopes@bmap.lis",   Enabled: true,  LockedOut: false, Title: "Editor",                    Department: "Redação",   employeeType: "Efetivo" },
-  { group: "COMERCIAL", SamAccountName: "tiago.gomes",  DisplayName: "Tiago Gomes",   EmailAddress: "tiago.gomes@bmap.lis",  Enabled: true,  LockedOut: false, Title: "Account Manager",           Department: "Comercial", employeeType: "Efetivo" },
+  { group: "IT",        SamAccountName: "joao.silva",   DisplayName: "João Silva",    EmailAddress: "joao.silva@bmap.lis",   Enabled: true,  LockedOut: false, PasswordExpired: false, Title: "Técnico de IT",             Department: "IT",        employeeType: "Efetivo",   WhenCreated: mockLogonStamp(340), WhenChanged: mockLogonStamp(12) },
+  { group: "IT",        SamAccountName: "maria.costa",  DisplayName: "Maria Costa",   EmailAddress: "maria.costa@bmap.lis",  Enabled: true,  LockedOut: true,  PasswordExpired: false, Title: "Helpdesk",                  Department: "IT",        employeeType: "Efetivo",   WhenCreated: mockLogonStamp(210), WhenChanged: mockLogonStamp(2)  },
+  { group: "IT",        SamAccountName: "ana.ferreira", DisplayName: "Ana Ferreira",  EmailAddress: "ana.ferreira@bmap.lis", Enabled: false, LockedOut: false, PasswordExpired: false, Title: "Administrador de Sistemas", Department: "IT",        employeeType: "Prestador", WhenCreated: mockLogonStamp(900), WhenChanged: mockLogonStamp(260) },
+  { group: "REDACAO",   SamAccountName: "pedro.sousa",  DisplayName: "Pedro Sousa",   EmailAddress: "pedro.sousa@bmap.lis",  Enabled: true,  LockedOut: false, PasswordExpired: true,  Title: "Jornalista",                Department: "Redação",   employeeType: "Efetivo",   WhenCreated: mockLogonStamp(120), WhenChanged: mockLogonStamp(1)  },
+  { group: "REDACAO",   SamAccountName: "rita.lopes",   DisplayName: "Rita Lopes",    EmailAddress: "rita.lopes@bmap.lis",   Enabled: true,  LockedOut: false, PasswordExpired: false, Title: "Editor",                    Department: "Redação",   employeeType: "Prestador", WhenCreated: mockLogonStamp(80),  WhenChanged: mockLogonStamp(30) },
+  { group: "COMERCIAL", SamAccountName: "tiago.gomes",  DisplayName: "Tiago Gomes",   EmailAddress: "tiago.gomes@bmap.lis",  Enabled: true,  LockedOut: false, PasswordExpired: false, Title: "Account Manager",           Department: "Comercial", employeeType: "Efetivo",   WhenCreated: mockLogonStamp(45),  WhenChanged: mockLogonStamp(5)  },
 ];
 
 // A fresh, mutable {category -> ADUser[]} map for the browser mock, which mutates

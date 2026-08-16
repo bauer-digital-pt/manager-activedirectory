@@ -14,6 +14,8 @@ type ToastFn = (msg: string, opts?: ExternalToast) => void;
 // HOME_PAGE, AgentShell sizing) is flavor-agnostic.
 export default function DevicesPage(props: {
   toast: { success: ToastFn; error: ToastFn };
+  /** Manager only — kiosk mode auto-refreshes the fleet list; ignored by the Agent wizard. */
+  kiosk?: boolean;
   /** Agent wizard "Abrir Definições" → the "Dispositivos" tab (shared with the Manager list). */
   onOpenDeviceSettings?: () => void;
   /** Manager device-list error recovery → the "AD Connection" tab (AD read failed). */

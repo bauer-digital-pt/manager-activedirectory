@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Toaster, toast } from "sonner";
-import { AlertTriangle, Download, X, ChevronLeft } from "lucide-react";
+import { AlertTriangle, Download, X, ChevronLeft, Lock, Loader2 } from "lucide-react";
 import { cn } from "./lib/cn";
 import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
@@ -17,7 +17,7 @@ const ConsolePage = lazy(() => import("./pages/ConsolePage"));
 const InventoryPage = lazy(() => import("./pages/InventoryPage"));
 import { adAPI } from "./adAPI";
 import { updatesAPI, getStartupInfo, type UpdateStatus } from "./lib/updates";
-import { getAuthStatus, logout, ping, type LoginResult } from "./lib/auth";
+import { getAuthStatus, logout, ping, reverify, type LoginResult } from "./lib/auth";
 import { getSettings, type AppSettings, DEFAULT_SETTINGS } from "./lib/appSettings";
 import { getInventoryConfig } from "./lib/inventoryConfig";
 import { confirmNav } from "./lib/navGuard";
@@ -29,6 +29,10 @@ export type Page = "users" | "devices" | "inventory" | "settings" | "console";
 // Landing page per flavor: the Manager opens on Users; the Agent installer is the
 // onboarding wizard, so it opens straight on Devices (no Users page at all).
 const HOME_PAGE: Page = IS_AGENT ? "devices" : "users";
+
+// Kiosk mode: how long a login/re-auth stays valid before the next sensitive
+// action re-prompts for the password ("de 10 em 10 minutos pedem re-login").
+const KIOSK_REAUTH_MS = 10 * 60_000;
 
 export default function App() {
   const [page, setPage] = useState<Page>(HOME_PAGE);
@@ -58,6 +62,16 @@ export default function App() {
   const [locked, setLocked] = useState(false);
   const [lastUsername, setLastUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
+
+  // --- Kiosk re-auth ---
+  // Kiosk mode never logs out (no inactivity relock, see below), but any sensitive
+  // action re-confirms the operator's password if it's been more than KIOSK_REAUTH_MS
+  // since the last login/re-auth. `lastAuthAtRef` stamps that moment; `reauth` opens
+  // the inline modal; `reauthResolveRef` carries the pending ensureFreshAuth promise's
+  // resolver so the caller (a UserRow action) unblocks with the modal's result.
+  const lastAuthAtRef = useRef(0);
+  const [reauth, setReauth] = useState(false);
+  const reauthResolveRef = useRef<((ok: boolean) => void) | null>(null);
 
   // --- Settings ---
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -227,6 +241,8 @@ export default function App() {
     // unlock) should reposition the user — otherwise every relock yanks them
     // back to Devices no matter where they were working.
     const wasRelock = locked;
+    // A successful login (or kiosk re-auth) opens a fresh re-auth window.
+    lastAuthAtRef.current = Date.now();
     setAuthed(true);
     setLocked(false);
     if (res.username) setLastUsername(res.username);
@@ -240,6 +256,30 @@ export default function App() {
       adAPI.getOnboardState().then((s) => { if (s?.active) setPage("devices"); }).catch(() => {});
     }
   }, [locked]);
+
+  // Gate a sensitive action behind a fresh password check. Outside kiosk mode there
+  // IS no gate (the inactivity relock covers walk-aways), so it resolves true at
+  // once. In kiosk mode it's free within the re-auth window; past it, the inline
+  // modal opens and this promise settles with the operator's choice (true = verified,
+  // false = cancelled → the caller aborts its action). Passed to UsersPage → UserRow.
+  const ensureFreshAuth = useCallback(async (): Promise<boolean> => {
+    if (!settings.kioskMode) return true;
+    if (Date.now() - lastAuthAtRef.current < KIOSK_REAUTH_MS) return true;
+    return new Promise<boolean>((resolve) => {
+      reauthResolveRef.current = resolve;
+      setReauth(true);
+    });
+  }, [settings.kioskMode]);
+
+  // Settle the pending ensureFreshAuth promise from the modal. A verified result
+  // stamps a new re-auth window; either way the modal closes and the caller resumes.
+  const resolveReauth = useCallback((ok: boolean) => {
+    if (ok) lastAuthAtRef.current = Date.now();
+    setReauth(false);
+    const resolve = reauthResolveRef.current;
+    reauthResolveRef.current = null;
+    resolve?.(ok);
+  }, []);
 
   // Explicit sign-out from the sidebar: drop the session (main process too) and
   // return to a fresh login screen (not the relock flow) with the username kept
@@ -281,9 +321,10 @@ export default function App() {
 
   // Inactivity relock: after `loginTimeoutMin` with no user activity, drop the
   // session (main process too) and return to the login screen with the username
-  // pre-filled. Any activity resets the timer.
+  // pre-filled. Any activity resets the timer. Kiosk mode opts out entirely — it
+  // "never logs out" and gates sensitive actions with a re-auth prompt instead.
   useEffect(() => {
-    if (!authed || locked) return;
+    if (!authed || locked || settings.kioskMode) return;
     const ms = Math.min(60, Math.max(5, settings.loginTimeoutMin)) * 60_000;
     let timer: number;
     const doLock = () => { logout(); setAuthed(false); setLocked(true); setConnOk(null); };
@@ -295,7 +336,7 @@ export default function App() {
       window.clearTimeout(timer);
       events.forEach((ev) => window.removeEventListener(ev, reset));
     };
-  }, [authed, locked, settings.loginTimeoutMin]);
+  }, [authed, locked, settings.loginTimeoutMin, settings.kioskMode]);
 
   // ── Screen selection ──────────────────────────────────────────────────────
   let content: React.ReactNode;
@@ -370,10 +411,11 @@ export default function App() {
     const pageBody = (
       <ErrorBoundary key={page} compact>
         <Suspense fallback={<PageFallback />}>
-          {page === "users"     && <UsersPage     toast={toast} onOpenSettings={() => navigate("settings")} />}
+          {page === "users"     && <UsersPage     toast={toast} onOpenSettings={() => navigate("settings")} kiosk={settings.kioskMode} ensureFreshAuth={ensureFreshAuth} />}
           {page === "devices"   && (
             <DevicesPage
               toast={toast}
+              kiosk={settings.kioskMode}
               onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }}
               onOpenConnectionSettings={() => { setSettingsTab("connection"); navigate("settings"); }}
               onOpenInventorySettings={() => { setSettingsTab("inventory"); navigate("settings"); }}
@@ -461,7 +503,95 @@ export default function App() {
     <div className="flex flex-col h-screen">
       <TitleBar />
       {content}
+      {reauth && (
+        <ReAuthModal
+          username={displayName || lastUsername}
+          onResult={resolveReauth}
+        />
+      )}
       <Toaster position="bottom-right" richColors closeButton />
+    </div>
+  );
+}
+
+// Kiosk re-auth prompt. Rendered as an overlay OVER the live app (the users/devices
+// list stays visible behind it) — kiosk mode never logs out, it just re-confirms
+// the operator before a sensitive action once the re-auth window has lapsed.
+// Cancel aborts the action; a correct password verifies against the live session.
+function ReAuthModal({ username, onResult }: { username: string; onResult: (ok: boolean) => void }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const submit = useCallback(async () => {
+    if (!password || busy) return;
+    setBusy(true);
+    setError("");
+    const r = await reverify(password);
+    if (r.ok) {
+      onResult(true);
+      return; // modal unmounts; no need to clear busy
+    }
+    setBusy(false);
+    setPassword("");
+    setError(r.error || "Palavra-passe incorreta.");
+    inputRef.current?.focus();
+  }, [password, busy, onResult]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-zinc-900/50 backdrop-blur-sm">
+      <div
+        className="anim-popover w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl"
+        onKeyDown={(e) => { if (e.key === "Escape") onResult(false); }}
+      >
+        <div className="flex items-center gap-3">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-100 text-violet-600">
+            <Lock size={18} />
+          </span>
+          <div>
+            <h2 className="text-base font-semibold text-zinc-800">Confirmar identidade</h2>
+            <p className="text-xs text-zinc-500">
+              {username ? `Sessão de ${username}` : "Sessão ativa"} · confirma a palavra-passe para continuar
+            </p>
+          </div>
+        </div>
+
+        <input
+          ref={inputRef}
+          type="password"
+          value={password}
+          autoComplete="current-password"
+          disabled={busy}
+          onChange={(e) => { setPassword(e.target.value); setError(""); }}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+          placeholder="Palavra-passe"
+          className="mt-5 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-100 disabled:bg-zinc-50"
+        />
+        {error && <p className="mt-2 text-xs font-medium text-red-600">{error}</p>}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onResult(false)}
+            disabled={busy}
+            className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={busy || !password}
+            className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
+          >
+            {busy && <Loader2 size={14} className="animate-spin" />}
+            Confirmar
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,14 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Lock, LogIn, User, AlertCircle, Server } from "lucide-react";
+import { Loader2, Lock, LogIn, User, AlertCircle } from "lucide-react";
 import AuthShell from "./AuthShell";
 import { login, type LoginResult } from "../lib/auth";
-import { getInventoryConfig } from "../lib/inventoryConfig";
 import { initials } from "../lib/initials";
-
-// Off Windows the Manager has no local PowerShell/RSAT: it authenticates and reads
-// through the inventory API (bind-as-user). So the login screen must also collect
-// the API address — on Windows this whole field is hidden and login uses PowerShell.
-const NON_WINDOWS = typeof window !== "undefined" && !!window.appAPI?.platform && window.appAPI.platform !== "win32";
 
 interface LoginGateProps {
   /** Pre-filled username (remembered from a previous login on this PC). */
@@ -29,19 +23,6 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Only used off Windows (see NON_WINDOWS): the inventory API address the login
-  // binds against. Prefilled from any saved config so a returning user just types
-  // their password.
-  const [baseUrl, setBaseUrl] = useState("");
-
-  useEffect(() => {
-    if (!NON_WINDOWS) return;
-    let alive = true;
-    getInventoryConfig()
-      .then((c) => { if (alive && c.baseUrl) setBaseUrl(c.baseUrl); })
-      .catch(() => { /* leave blank; the user can type it */ });
-    return () => { alive = false; };
-  }, []);
   // Set when the user clicks "Não és tu?" to sign in with a different account —
   // drops the remembered identity and reveals the username field.
   const [switchUser, setSwitchUser] = useState(false);
@@ -76,13 +57,9 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
       setError("Indica o utilizador e a palavra-passe.");
       return;
     }
-    if (NON_WINDOWS && !baseUrl.trim()) {
-      setError("Indica o endereço da API de inventário para iniciar sessão.");
-      return;
-    }
     setBusy(true);
     try {
-      const res = await login(user, password, NON_WINDOWS ? baseUrl.trim() : undefined);
+      const res = await login(user, password);
       if (res.ok) {
         setPassword("");
         onSuccess(res);
@@ -162,27 +139,6 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
               />
             </div>
           </div>
-
-          {NON_WINDOWS && (
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-white/70">API de inventário</label>
-              <div className="relative">
-                <Server size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
-                <input
-                  value={baseUrl}
-                  onChange={(e) => { setBaseUrl(e.target.value); setError(null); }}
-                  placeholder="https://pt-srv-pyexp:8000"
-                  autoComplete="off"
-                  spellCheck={false}
-                  disabled={busy}
-                  className={inputCls}
-                />
-              </div>
-              <p className="text-[11px] leading-relaxed text-white/40">
-                Nesta plataforma a autenticação e a leitura do AD passam pela API interna.
-              </p>
-            </div>
-          )}
 
           {error && (
             <div className="flex items-center gap-2 rounded-lg border border-red-300/25 bg-red-500/10 px-3 py-2.5 text-sm text-red-100">

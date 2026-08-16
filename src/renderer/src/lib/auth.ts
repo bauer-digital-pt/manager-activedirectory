@@ -24,15 +24,16 @@ export interface AuthStatus {
 
 const LS_LAST_USER = "admanager.lastUsername";
 
-// `baseUrl` is only meaningful off Windows: it's the inventory API address the
-// login screen collects so the very first login can bind-as-user before any
-// inventory config has been saved. On Windows it's ignored (login uses PowerShell).
-export async function login(username: string, password: string, baseUrl?: string): Promise<LoginResult> {
+// Off Windows the Manager authenticates through the inventory API (bind-as-user).
+// The API address is no longer typed at login: it defaults to the internal API
+// (DEFAULT_INVENTORY_BASE_URL in the main process) unless changed in Definições →
+// Inventário. On Windows login uses PowerShell.
+export async function login(username: string, password: string): Promise<LoginResult> {
   const u = username.trim();
   if (!u || !password) return { ok: false, error: "Indica o utilizador e a palavra-passe." };
 
   if (window.authAPI?.login) {
-    return window.authAPI.login({ username: u, password, baseUrl });
+    return window.authAPI.login({ username: u, password });
   }
 
   // Browser mock. Password "wrong" fails auth.
@@ -47,6 +48,17 @@ export async function login(username: string, password: string, baseUrl?: string
 
 export async function logout(): Promise<void> {
   if (window.authAPI?.logout) { await window.authAPI.logout(); }
+}
+
+// Kiosk re-auth: confirm the logged-in operator's password without dropping the
+// session. Returns ok=true on a match. In the browser mock, "wrong" fails and any
+// other password passes — mirroring the login mock.
+export async function reverify(password: string): Promise<{ ok: boolean; error?: string }> {
+  if (!password) return { ok: false, error: "Indica a palavra-passe." };
+  if (window.authAPI?.reverify) return window.authAPI.reverify(password);
+  await new Promise((r) => setTimeout(r, 400));
+  if (password === "wrong") return { ok: false, error: "Palavra-passe incorreta." };
+  return { ok: true };
 }
 
 export async function getAuthStatus(): Promise<AuthStatus> {

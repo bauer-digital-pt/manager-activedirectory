@@ -86,10 +86,13 @@ let devicesCache: DevicesCache = { devices: [], assets: new Map(), sourced: fals
 
 export default function DeviceListPage({
   toast,
+  kiosk = false,
   onOpenConnectionSettings,
   onOpenInventorySettings,
 }: {
   toast: { success: ToastFn; error: ToastFn };
+  /** Kiosk mode: silently refresh the fleet every 5 min for a live wall display. */
+  kiosk?: boolean;
   /** Opens Settings → AD Connection — offered when the AD device read fails. */
   onOpenConnectionSettings?: () => void;
   /** Opens Settings → Inventário — offered when the inventory-API source fails (Mac/Linux). */
@@ -139,9 +142,11 @@ export default function DeviceListPage({
   const usesApi = useInventorySource || enrich;
   const cacheKey = `${useInventorySource ? "inv" : "ad"}|${enrich ? "enr" : "raw"}|${usesApi ? invBaseUrl : "-"}`;
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
+  // `background` (kiosk auto-refresh) reloads without the loading skeleton and,
+  // on failure, keeps the last-good fleet instead of blanking it — a wall display
+  // should stay showing stale-but-useful data rather than an error every 5 min.
+  const load = useCallback((background = false) => {
+    if (!background) { setLoading(true); setError(null); }
     const key = cacheKey;
 
     // Enrichment must never block the list: a failed assets fetch just means no
@@ -169,6 +174,8 @@ export default function DeviceListPage({
         devicesCache = { devices: list, assets: map, sourced: useInventorySource, loaded: true, error: null, key };
       })
       .catch((e) => {
+        // Background hiccup: keep the last-good fleet untouched (no blank, no error).
+        if (background) return;
         setLoading(false);
         setDevices([]); setAssetByName(new Map()); setSourced(useInventorySource);
         // Explicit, recoverable error — never a misleading "no devices".
@@ -187,6 +194,14 @@ export default function DeviceListPage({
     if (!invReady) return;
     if (!devicesCache.loaded || devicesCache.key !== cacheKey) load();
   }, [invReady, cacheKey, load]);
+
+  // Kiosk: silently refresh the fleet every 5 minutes so the live view stays
+  // current on a wall display without any operator action.
+  useEffect(() => {
+    if (!kiosk || !invReady) return;
+    const id = setInterval(() => load(true), 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [kiosk, invReady, load]);
 
   // Distinct department folders (OU) present in the fleet, for the filter pills.
   const departments = useMemo(() => {
@@ -266,7 +281,7 @@ export default function DeviceListPage({
               />
             </div>
             <button
-              onClick={load}
+              onClick={() => load()}
               disabled={loading}
               title={useInventorySource ? "Recarregar da API de inventário" : "Recarregar do Active Directory"}
               className="inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
@@ -327,7 +342,7 @@ export default function DeviceListPage({
           <DevicesError
             message={error}
             sourced={sourced}
-            onRetry={load}
+            onRetry={() => load()}
             onOpenSettings={sourced ? onOpenInventorySettings : onOpenConnectionSettings}
           />
         ) : filtered.length === 0 ? (

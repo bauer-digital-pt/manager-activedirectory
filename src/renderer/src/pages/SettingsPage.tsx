@@ -84,11 +84,12 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
 }) {
   const [devMode, setDevMode] = useState(false);
   const [timeout, setTimeoutMin] = useState(30);
+  const [kioskMode, setKioskMode] = useState(false);
   const [version, setVersion] = useState("");
   const [showUpdate, setShowUpdate] = useState(false);
 
   useEffect(() => {
-    getSettings().then((s) => { setDevMode(s.devMode); setTimeoutMin(s.loginTimeoutMin); });
+    getSettings().then((s) => { setDevMode(s.devMode); setTimeoutMin(s.loginTimeoutMin); setKioskMode(s.kioskMode); });
     getAppVersion().then(setVersion);
   }, []);
 
@@ -96,12 +97,18 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
     const next = await setSettings(patch);
     setDevMode(next.devMode);
     setTimeoutMin(next.loginTimeoutMin);
+    setKioskMode(next.kioskMode);
     onSettingsChange?.();
   };
 
   const toggleDev = async () => {
     await persist({ devMode: !devMode });
     toast.success(!devMode ? "Modo developer ativado" : "Modo developer desativado");
+  };
+
+  const toggleKiosk = async () => {
+    await persist({ kioskMode: !kioskMode });
+    toast.success(!kioskMode ? "Modo quiosque ativado" : "Modo quiosque desativado");
   };
 
   const openUpdate = () => { onUpdateModal?.(true); setShowUpdate(true); };
@@ -138,21 +145,53 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
         <section className="space-y-3">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Tempo de inatividade</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">Ao fim deste tempo sem atividade, a sessão bloqueia e pede a palavra-passe.</p>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              {kioskMode
+                ? "Desativado em modo quiosque — a sessão nunca bloqueia por inatividade."
+                : "Ao fim deste tempo sem atividade, a sessão bloqueia e pede a palavra-passe."}
+            </p>
           </div>
-          <div className="flex items-center gap-4">
+          <div className={cn("flex items-center gap-4", kioskMode && "opacity-40 pointer-events-none")}>
             <input
               type="range"
               min={5}
               max={60}
               step={5}
               value={timeout}
+              disabled={kioskMode}
               onChange={(e) => setTimeoutMin(Number(e.target.value))}
               onMouseUp={() => persist({ loginTimeoutMin: timeout })}
               onKeyUp={() => persist({ loginTimeoutMin: timeout })}
               className="flex-1 accent-violet-600"
             />
             <span className="w-16 text-right text-sm font-medium tabular-nums text-zinc-700">{timeout} min</span>
+          </div>
+        </section>
+
+        {/* Kiosk mode */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Modo quiosque</h3>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                Para um ecrã de parede: nunca termina a sessão, atualiza utilizadores e dispositivos
+                automaticamente de 5 em 5 min, e volta a pedir a palavra-passe a cada 10 min antes de qualquer ação.
+              </p>
+            </div>
+            <button
+              onClick={toggleKiosk}
+              role="switch"
+              aria-checked={kioskMode}
+              className={cn(
+                "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
+                kioskMode ? "bg-violet-600" : "bg-zinc-200"
+              )}
+            >
+              <span className={cn(
+                "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
+                kioskMode ? "translate-x-5" : "translate-x-0.5"
+              )} />
+            </button>
           </div>
         </section>
 
@@ -427,7 +466,7 @@ function InventoryTab({ toast, onSaved }: {
             <input
               value={baseUrl}
               onChange={(e) => { setBaseUrl(e.target.value); setResult(null); }}
-              placeholder="ex: http://pt-srv-pyexp:8000"
+              placeholder="ex: http://10.4.4.69:8000"
               className={inputCls}
               autoComplete="off"
             />

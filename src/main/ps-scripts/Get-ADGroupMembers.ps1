@@ -45,10 +45,20 @@ try {
   # Title / Department / employeeType are pulled so the create-user wizard can
   # base its job-title, department and employee-type suggestions on the people
   # already living in this OU (not just the static per-group config).
+  #
+  # PasswordExpired is a calculated property (a live comparison of pwdLastSet +
+  # maxPwdAge against now), surfaced so the Users page can flag/sort expired
+  # accounts. whenCreated/whenChanged power the "Criacao"/"Ultimo update" sorts;
+  # both are [datetime] so they're pre-stringified (a bare [datetime] serializes
+  # as /Date(ms)/ via ConvertTo-Json) — null when the attribute is unset.
   $members = @(
     Get-ADUser @conn -SearchBase $ou.DistinguishedName -SearchScope Subtree -Filter * `
-      -Properties DisplayName, EmailAddress, Enabled, LockedOut, Title, Department, employeeType -WarningAction SilentlyContinue |
-      Select-Object SamAccountName, DisplayName, EmailAddress, Enabled, LockedOut, Title, Department, employeeType
+      -Properties DisplayName, EmailAddress, Enabled, LockedOut, PasswordExpired, Title, Department, employeeType, whenCreated, whenChanged -WarningAction SilentlyContinue |
+      Select-Object SamAccountName, DisplayName, EmailAddress, Enabled, LockedOut,
+        @{ Name = "PasswordExpired"; Expression = { [bool]$_.PasswordExpired } },
+        Title, Department, employeeType,
+        @{ Name = "WhenCreated"; Expression = { if ($_.whenCreated) { $_.whenCreated.ToString('yyyy-MM-dd HH:mm:ss') } else { $null } } },
+        @{ Name = "WhenChanged"; Expression = { if ($_.whenChanged) { $_.whenChanged.ToString('yyyy-MM-dd HH:mm:ss') } else { $null } } }
   )
 
   if ($members.Count -eq 0) {

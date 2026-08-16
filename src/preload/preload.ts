@@ -14,12 +14,15 @@ contextBridge.exposeInMainWorld("configAPI", {
 });
 
 contextBridge.exposeInMainWorld("authAPI", {
-  // baseUrl is only used off Windows: the login screen's bootstrap field passes the
-  // inventory API address so the first login can bind-as-user before any config is saved.
+  // baseUrl is an optional off-Windows override for the inventory API address the
+  // login binds against. The login screen no longer sends it (it defaults to the
+  // internal API in the main process); kept optional for future programmatic callers.
   login: (creds: { username: string; password: string; baseUrl?: string }) => ipcRenderer.invoke("auth:login", creds),
   logout: () => ipcRenderer.invoke("auth:logout"),
   status: () => ipcRenderer.invoke("auth:status"),
   ping: () => ipcRenderer.invoke("auth:ping"),
+  // Kiosk re-auth: confirm the current operator's password without a full re-login.
+  reverify: (password: string) => ipcRenderer.invoke("auth:reverify", { password }),
 });
 
 contextBridge.exposeInMainWorld("appAPI", {

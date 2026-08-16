@@ -1,9 +1,10 @@
 import { useState, useEffect, memo } from "react";
-import { Lock, Unlock, KeyRound, MoreHorizontal, X, User, UserMinus, AlertTriangle } from "lucide-react";
+import { Lock, Unlock, KeyRound, MoreHorizontal, X, User, UserMinus, AlertTriangle, Clock } from "lucide-react";
 import { adAPI, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
 import { initials as computeInitials } from "../../lib/initials";
 import { useOutsideClick } from "../../hooks/useOutsideClick";
+import { userStatusKind } from "../../lib/userStatus";
 import { Kbd } from "../../components/ui/Kbd";
 import type { ExternalToast } from "sonner";
 
@@ -16,11 +17,17 @@ function UserRow({
   groupName,
   toast,
   onRefresh,
+  ensureFreshAuth,
 }: {
   user: ADUser;
   groupName?: string;
   toast: { success: ToastFn; error: ToastFn };
   onRefresh: () => void;
+  // Kiosk gate: privileged actions call this before running. It resolves true
+  // once the operator's session is fresh (re-authenticating via a modal if the
+  // last auth was over the kiosk window ago), false if they cancel. Absent
+  // outside kiosk mode, in which case actions run unguarded as before.
+  ensureFreshAuth?: () => Promise<boolean>;
 }) {
   const [menu, setMenu]   = useState(false);
   const [modal, setModal] = useState<"reset" | "unblock" | "details" | "offboard" | null>(null);
@@ -79,6 +86,7 @@ function UserRow({
   const initials = computeInitials(displayName) || "?";
 
   const doReset = async () => {
+    if (ensureFreshAuth && !(await ensureFreshAuth())) return;
     setBusy(true);
     const r = await adAPI.resetPassword({ username: user.SamAccountName, newPassword: DEFAULT_PASSWORD });
     setBusy(false);
@@ -94,6 +102,7 @@ function UserRow({
   };
 
   const doUnlock = async () => {
+    if (ensureFreshAuth && !(await ensureFreshAuth())) return;
     setBusy(true);
     const r = await adAPI.unlockUser(user.SamAccountName);
     setBusy(false);
@@ -102,6 +111,10 @@ function UserRow({
   };
 
   const doOffboard = async () => {
+    // No ensureFreshAuth gate here: offboard already re-verifies the operator's
+    // password inline (the modal's own field, checked against the live session
+    // in main), so the kiosk re-auth is already satisfied — gating it too would
+    // double-prompt for the password.
     if (!canOffboard) return;
     setBusy(true);
     const r = await adAPI.offboardUser({
@@ -117,12 +130,21 @@ function UserRow({
     } else toast.error(r.error ?? "Não foi possível dar offboard.");
   };
 
+  // One dominant badge per row, matching the default-sort buckets (see
+  // lib/userStatus): disabled dominates (parked), then locked, then password
+  // expired, then active. Keeping the precedence in the shared helper means the
+  // badge and the row's sort bucket can never disagree.
   const statusBadge = () => {
-    if (user.LockedOut)
-      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600 border border-red-200"><Lock size={10} />Locked</span>;
-    if (!user.Enabled)
-      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-600 border border-amber-200">Disabled</span>;
-    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 border border-emerald-200"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Active</span>;
+    switch (userStatusKind(user)) {
+      case "disabled":
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-600 border border-amber-200">Disabled</span>;
+      case "locked":
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600 border border-red-200"><Lock size={10} />Locked</span>;
+      case "expired":
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-600 border border-orange-200"><Clock size={10} />Password expired</span>;
+      default:
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 border border-emerald-200"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Active</span>;
+    }
   };
 
   return (

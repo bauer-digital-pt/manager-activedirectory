@@ -135,10 +135,18 @@ interface StoredInventory {
   enabled: boolean;
 }
 
+// Default address of the internal inventory API. Off Windows the Manager
+// authenticates + reads AD through this API, so the login screen no longer asks
+// for the address — it falls back to this unless changed in Definições →
+// Inventário. The master switch still defaults OFF: a stored address alone never
+// auto-connects (see inventoryGet), so on Windows this is just a pre-filled hint.
+const DEFAULT_INVENTORY_BASE_URL = "http://10.4.4.69:8000";
+
 const inventoryStore = makeJsonStore<StoredInventory>("inventory.json", (raw) => {
   const r = (raw ?? {}) as Partial<StoredInventory>;
+  const stored = typeof r.baseUrl === "string" ? r.baseUrl.trim() : "";
   return {
-    baseUrl: typeof r.baseUrl === "string" ? r.baseUrl.trim() : "",
+    baseUrl: stored || DEFAULT_INVENTORY_BASE_URL,
     enabled: !!r.enabled,
   };
 });
@@ -177,7 +185,7 @@ function computeStartupInfo() {
   }
 }
 
-const DEFAULT_SETTINGS: AppSettings = { devMode: false, loginTimeoutMin: 30, lastUsername: "" };
+const DEFAULT_SETTINGS: AppSettings = { devMode: false, loginTimeoutMin: 30, lastUsername: "", kioskMode: false };
 
 const settingsStore = makeJsonStore<AppSettings>("settings.json", (raw) => {
   const r = (raw ?? {}) as Partial<AppSettings>;
@@ -185,6 +193,7 @@ const settingsStore = makeJsonStore<AppSettings>("settings.json", (raw) => {
     devMode: !!r.devMode,
     loginTimeoutMin: Math.min(60, Math.max(5, Number(r.loginTimeoutMin) || DEFAULT_SETTINGS.loginTimeoutMin)),
     lastUsername: typeof r.lastUsername === "string" ? r.lastUsername : DEFAULT_SETTINGS.lastUsername,
+    kioskMode: !!r.kioskMode,
   };
 });
 function readSettings(): AppSettings { return settingsStore.read(); }
@@ -1027,8 +1036,9 @@ handle("auth:login", async (_e, rawPayload) => {
 
   // Off Windows there is no PowerShell/RSAT: validate the login by binding to AD
   // *as this user* through the inventory API (same credentials passthrough as every
-  // read, no service account). The API address comes from the login screen bootstrap
-  // field (payload.baseUrl) or the previously-saved inventory config.
+  // read, no service account). The API address comes from the saved inventory config,
+  // which falls back to DEFAULT_INVENTORY_BASE_URL (payload.baseUrl stays supported
+  // as an optional override for future callers, but the login screen no longer sends it).
   if (AD_VIA_API) return apiLogin(username, password, payload.baseUrl);
 
   // Target the configured DC if one is set; otherwise auto-discover (empty).
@@ -1072,6 +1082,21 @@ handle("auth:logout", () => {
   return { ok: true };
 });
 
+// Re-verify the current operator's password WITHOUT touching the session — used by
+// kiosk mode, where the app never logs out but every sensitive action (and a
+// periodic re-prompt) must re-confirm it's still the same person at the display.
+// Checked against the in-memory session password, exactly like the offboard gate:
+// the password never reaches PowerShell, the command line, or the log.
+handle("auth:reverify", (_e, rawPayload) => {
+  const p = (rawPayload ?? {}) as { password?: string };
+  const password = p.password ?? "";
+  if (!session) return { ok: false, error: "Sessão expirada. Volta a iniciar sessão." };
+  if (!password || password !== session.password) {
+    return { ok: false, error: "Palavra-passe incorreta." };
+  }
+  return { ok: true };
+});
+
 handle("auth:status", () => {
   const settings = readSettings();
   return {
@@ -1110,6 +1135,7 @@ handle("config:set-settings", (_e, rawPayload) => {
       ? Math.min(60, Math.max(5, Number(p.loginTimeoutMin) || current.loginTimeoutMin))
       : current.loginTimeoutMin,
     lastUsername: p.lastUsername !== undefined ? String(p.lastUsername) : current.lastUsername,
+    kioskMode: p.kioskMode !== undefined ? !!p.kioskMode : current.kioskMode,
   };
   writeSettings(next);
   return next;
@@ -1446,8 +1472,9 @@ async function apiGetDeviceOUs(): Promise<PSResult<ADGroup[]>> {
 }
 
 // The members endpoint already returns the AD Manager's PascalCase user shape
-// (SamAccountName/DisplayName/EmailAddress/Enabled/LockedOut/Title/Department/
-// employeeType), so it maps to ADUser without translation.
+// (SamAccountName/DisplayName/EmailAddress/Enabled/LockedOut/PasswordExpired/
+// Title/Department/employeeType/WhenCreated/WhenChanged), so it maps to ADUser
+// without translation.
 async function apiGetGroupMembers(category: string): Promise<PSResult<ADUser[]>> {
   const name = (category ?? "").trim();
   if (!name) return { ok: true, data: [] };
