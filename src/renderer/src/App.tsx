@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Toaster, toast } from "sonner";
-import { AlertTriangle, Download, X, ChevronLeft, Lock, Loader2 } from "lucide-react";
+import { AlertTriangle, Download, X, ChevronLeft, Lock, Loader2, Fingerprint } from "lucide-react";
 import { cn } from "./lib/cn";
 import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
@@ -18,6 +18,7 @@ const InventoryPage = lazy(() => import("./pages/InventoryPage"));
 import { adAPI } from "./adAPI";
 import { updatesAPI, getStartupInfo, type UpdateStatus } from "./lib/updates";
 import { getAuthStatus, logout, ping, reverify, type LoginResult } from "./lib/auth";
+import { getBiometricInfo, biometricPrompt, biometricLabel, type BiometricInfo } from "./lib/biometric";
 import { getSettings, type AppSettings, DEFAULT_SETTINGS } from "./lib/appSettings";
 import { getInventoryConfig } from "./lib/inventoryConfig";
 import { confirmNav } from "./lib/navGuard";
@@ -25,6 +26,12 @@ import { IS_AGENT, FLAVOR_UI } from "./lib/flavor";
 import logo from "./assets/bauer-media-logo.svg";
 
 export type Page = "users" | "devices" | "inventory" | "settings" | "console";
+
+// The three device views behind the single "Dispositivos" sidebar item:
+//  • ad           — raw AD computer objects, no EZOffice overlay.
+//  • ezoffice     — the EZOffice asset inventory (source of truth for hardware).
+//  • consolidated — AD list enriched with the matching EZOffice asset (default).
+export type DeviceView = "ad" | "ezoffice" | "consolidated";
 
 // Landing page per flavor: the Manager opens on Users; the Agent installer is the
 // onboarding wizard, so it opens straight on Devices (no Users page at all).
@@ -39,7 +46,9 @@ export default function App() {
   // Which Settings tab to open on. Devices deep-links to "devices" to fix an OU
   // mapping; reset to "general" whenever we leave Settings so a plain sidebar
   // click always lands on the first tab.
-  const [settingsTab, setSettingsTab] = useState<"general" | "groups" | "devices" | "connection" | "inventory">("general");
+  const [settingsTab, setSettingsTab] = useState<"general" | "groups" | "devices" | "connection">("general");
+  // Which of the three device sub-views the "Dispositivos" item opens on.
+  const [deviceView, setDeviceView] = useState<DeviceView>("consolidated");
   // Whether the inventory API is configured+enabled — gates the sidebar tab, the
   // hotkey, and the page. Manager-only; the Agent never surfaces the inventory.
   const [inventoryEnabled, setInventoryEnabled] = useState(false);
@@ -56,10 +65,18 @@ export default function App() {
   const releasedRef = useRef(false);
 
   // --- Auth / session ---
-  // Login is required on every launch, so `authed` starts false. `locked` marks
-  // a re-lock after inactivity (only the password is re-requested).
+  // Login is required on every launch, so `authed` starts false. Two lock tiers:
+  //  • `softLocked` — first tier (inactivity ≥ loginTimeoutMin, or manual "Bloquear").
+  //    The session STAYS ALIVE in memory; a full-screen overlay re-confirms identity
+  //    (biometric OR password via reverify) without a full re-login.
+  //  • `locked` — second tier: the session was fully dropped (a soft lock outlived
+  //    fullTimeoutHours, or an explicit sign-out relock). LoginGate asks the password.
   const [authed, setAuthed] = useState(false);
   const [locked, setLocked] = useState(false);
+  const [softLocked, setSoftLocked] = useState(false);
+  // When the current soft lock began — the absolute (full-timeout) escalation is
+  // measured from here, so it counts the walk-away, not activity behind the overlay.
+  const softLockAtRef = useRef(0);
   const [lastUsername, setLastUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
 
@@ -103,6 +120,15 @@ export default function App() {
     if (page === p) return;
     if (!confirmNav()) return;
     setPage(p);
+  }, [page]);
+
+  // Switch the active device sub-view (from the sidebar "Dispositivos" flyout).
+  // Changing view while already on Devices needs no nav guard (Manager's device
+  // list has no unsaved state); coming from elsewhere goes through the guard.
+  const navigateDevice = useCallback((view: DeviceView) => {
+    if (page !== "devices" && !confirmNav()) return;
+    setDeviceView(view);
+    if (page !== "devices") setPage("devices");
   }, [page]);
 
   useEffect(() => {
@@ -293,8 +319,27 @@ export default function App() {
     logout();
     setAuthed(false);
     setLocked(false);
+    setSoftLocked(false);
     setConnOk(null);
     setPage(HOME_PAGE);
+  }, []);
+
+  // Manual "Bloquear" (profile dropdown) — soft-lock immediately. The session
+  // stays alive (no logout, no confirmNav: an in-progress wizard is preserved
+  // behind the overlay); the lock screen re-confirms identity to resume. Works in
+  // every mode, including kiosk (an explicit lock is always the operator's choice).
+  const onLock = useCallback(() => {
+    if (!authed || softLocked) return;
+    softLockAtRef.current = Date.now();
+    setSoftLocked(true);
+  }, [authed, softLocked]);
+
+  // Successful soft-lock unlock (biometric or password). The session was never
+  // dropped, so just lift the overlay and open a fresh kiosk re-auth window (the
+  // identity was just proven) — unifying the lock unlock with the re-auth gate.
+  const onUnlock = useCallback(() => {
+    lastAuthAtRef.current = Date.now();
+    setSoftLocked(false);
   }, []);
 
   // The manual-update modal lives in Settings and suppresses the full-screen
@@ -322,16 +367,17 @@ export default function App() {
     return () => { alive = false; window.clearInterval(id); };
   }, [authed]);
 
-  // Inactivity relock: after `loginTimeoutMin` with no user activity, drop the
-  // session (main process too) and return to the login screen with the username
-  // pre-filled. Any activity resets the timer. Kiosk mode opts out entirely — it
-  // "never logs out" and gates sensitive actions with a re-auth prompt instead.
+  // First tier — inactivity SOFT lock: after `loginTimeoutMin` with no activity,
+  // cover the app with the lock screen but KEEP the session alive, so the operator
+  // resumes with a biometric or password instead of a full re-login. Any activity
+  // resets the timer. Kiosk mode opts out entirely — it "never logs out" and gates
+  // sensitive actions with a re-auth prompt instead.
   useEffect(() => {
-    if (!authed || locked || settings.kioskMode) return;
+    if (!authed || locked || softLocked || settings.kioskMode) return;
     const ms = Math.min(60, Math.max(5, settings.loginTimeoutMin)) * 60_000;
     let timer: number;
-    const doLock = () => { logout(); setAuthed(false); setLocked(true); setConnOk(null); };
-    const reset = () => { window.clearTimeout(timer); timer = window.setTimeout(doLock, ms); };
+    const doSoftLock = () => { softLockAtRef.current = Date.now(); setSoftLocked(true); };
+    const reset = () => { window.clearTimeout(timer); timer = window.setTimeout(doSoftLock, ms); };
     const events: (keyof WindowEventMap)[] = ["mousemove", "mousedown", "keydown", "wheel", "touchstart"];
     events.forEach((ev) => window.addEventListener(ev, reset, { passive: true }));
     reset();
@@ -339,7 +385,28 @@ export default function App() {
       window.clearTimeout(timer);
       events.forEach((ev) => window.removeEventListener(ev, reset));
     };
-  }, [authed, locked, settings.loginTimeoutMin, settings.kioskMode]);
+  }, [authed, locked, softLocked, settings.loginTimeoutMin, settings.kioskMode]);
+
+  // Second tier — absolute (full) timeout: once soft-locked, the session may live
+  // at most `fullTimeoutHours` (floor 48h) before it's FULLY dropped and a real
+  // re-login is required. A biometric proves presence, never the password, so it
+  // can't keep a stale session alive forever. Measured from the lock moment and
+  // NOT reset by activity (the overlay is all that's on screen). Kiosk opts out.
+  useEffect(() => {
+    if (!softLocked || settings.kioskMode) return;
+    const capMs = Math.min(720, Math.max(48, settings.fullTimeoutHours)) * 3_600_000;
+    const remaining = Math.max(0, capMs - (Date.now() - softLockAtRef.current));
+    const doFullLogout = () => {
+      logout();
+      setSoftLocked(false);
+      setAuthed(false);
+      setLocked(true);
+      setConnOk(null);
+      setPage(HOME_PAGE);
+    };
+    const timer = window.setTimeout(doFullLogout, remaining);
+    return () => window.clearTimeout(timer);
+  }, [softLocked, settings.kioskMode, settings.fullTimeoutHours]);
 
   // ── Screen selection ──────────────────────────────────────────────────────
   let content: React.ReactNode;
@@ -419,12 +486,14 @@ export default function App() {
             <DevicesPage
               toast={toast}
               kiosk={settings.kioskMode}
+              view={deviceView}
               onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }}
               onOpenConnectionSettings={() => { setSettingsTab("connection"); navigate("settings"); }}
-              onOpenInventorySettings={() => { setSettingsTab("inventory"); navigate("settings"); }}
+              onOpenInventorySettings={() => { setSettingsTab("connection"); navigate("settings"); }}
+              onOpenReconciliation={() => navigate("inventory")}
             />
           )}
-          {page === "inventory" && <InventoryPage toast={toast} onOpenSettings={() => { setSettingsTab("inventory"); navigate("settings"); }} />}
+          {page === "inventory" && <InventoryPage toast={toast} onOpenSettings={() => { setSettingsTab("connection"); navigate("settings"); }} />}
           {page === "settings"  && <SettingsPage  toast={toast} onSettingsChange={reloadSettings} onUpdateModal={setSuppressTakeover} initialTab={settingsTab} />}
           {page === "console"   && devMode && <ConsolePage />}
         </Suspense>
@@ -482,11 +551,14 @@ export default function App() {
             <Sidebar
               active={page}
               onNavigate={navigate}
+              deviceView={deviceView}
+              onNavigateDevice={navigateDevice}
               devMode={devMode}
               inventoryEnabled={inventoryEnabled}
               userName={displayName || lastUsername}
               connOk={connOk}
               onLogout={onLogout}
+              onLock={onLock}
             />
             <main className="flex-1 overflow-hidden flex flex-col bg-white">
               {/* Keyed by page so a fresh element mounts on every sidebar
@@ -509,7 +581,16 @@ export default function App() {
       {reauth && (
         <ReAuthModal
           username={displayName || lastUsername}
+          biometricEnabled={settings.biometricEnabled}
           onResult={resolveReauth}
+        />
+      )}
+      {authed && softLocked && (
+        <LockScreen
+          username={displayName || lastUsername}
+          biometricEnabled={settings.biometricEnabled}
+          onUnlock={onUnlock}
+          onLogout={onLogout}
         />
       )}
       <Toaster position="bottom-right" richColors closeButton />
@@ -517,46 +598,142 @@ export default function App() {
   );
 }
 
-// Kiosk re-auth prompt. Rendered as an overlay OVER the live app (the users/devices
-// list stays visible behind it) — kiosk mode never logs out, it just re-confirms
-// the operator before a sensitive action once the re-auth window has lapsed.
-// Cancel aborts the action; a correct password verifies against the live session.
-function ReAuthModal({ username, onResult }: { username: string; onResult: (ok: boolean) => void }) {
+// Shared identity re-confirmation — the unified "prove it's you" flow used by BOTH
+// the kiosk re-auth gate (ReAuthModal) and the soft-lock screen (LockScreen). Offers
+// the OS biometric (when enabled AND available) OR the session password (reverify),
+// then calls onVerified. Owns the fields, biometric probe, busy + error state, and a
+// footer with a caller-supplied secondary action (Cancel / Terminar sessão). The
+// surrounding chrome (modal vs full-screen) is the caller's.
+function IdentityConfirm({
+  biometricEnabled,
+  reason,
+  onVerified,
+  secondaryLabel,
+  onSecondary,
+}: {
+  biometricEnabled: boolean;
+  reason: string;
+  onVerified: () => void;
+  secondaryLabel: string;
+  onSecondary: () => void;
+}) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [bio, setBio] = useState<BiometricInfo>({ available: false, kind: null });
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
+  useEffect(() => {
+    if (!biometricEnabled) { setBio({ available: false, kind: null }); return; }
+    let alive = true;
+    getBiometricInfo().then((info) => { if (alive) setBio(info); }).catch(() => {});
+    return () => { alive = false; };
+  }, [biometricEnabled]);
 
-  const submit = useCallback(async () => {
+  const submitPassword = useCallback(async () => {
     if (!password || busy) return;
     setBusy(true);
     setError("");
     try {
       const r = await reverify(password);
       if (r.ok) {
-        onResult(true);
-        return; // modal unmounts; no need to clear busy
+        onVerified();
+        return; // component unmounts; no need to clear busy
       }
       setError(r.error || "Palavra-passe incorreta.");
     } catch (e) {
-      // reverify is a throw-free IPC call today, but never leave the modal stuck
-      // "busy" (Cancel is the only way out then) if that ever changes.
+      // reverify is a throw-free IPC call today, but never leave the form stuck
+      // "busy" (the secondary action is the only way out then) if that changes.
       setError(e instanceof Error ? e.message : "Não foi possível confirmar a identidade.");
     }
     setBusy(false);
     setPassword("");
     inputRef.current?.focus();
-  }, [password, busy, onResult]);
+  }, [password, busy, onVerified]);
 
+  const runBiometric = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    const r = await biometricPrompt(reason);
+    if (r.ok) { onVerified(); return; }
+    setError(r.error || "Verificação biométrica falhada.");
+    setBusy(false);
+  }, [busy, reason, onVerified]);
+
+  return (
+    <>
+      {bio.available && (
+        <button
+          type="button"
+          onClick={runBiometric}
+          disabled={busy}
+          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-100 disabled:opacity-50"
+        >
+          <Fingerprint size={16} /> Usar {biometricLabel(bio.kind)}
+        </button>
+      )}
+      <input
+        ref={inputRef}
+        type="password"
+        value={password}
+        autoComplete="current-password"
+        disabled={busy}
+        onChange={(e) => { setPassword(e.target.value); setError(""); }}
+        // Stop keystrokes bubbling to window-level handlers behind the overlay
+        // (UserRow's / the create-wizard's Enter/Escape listeners) — otherwise the
+        // same Enter that confirms here re-fires the gated action underneath.
+        onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); submitPassword(); } }}
+        placeholder="Palavra-passe"
+        className={cn(
+          "w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-100 disabled:bg-zinc-50",
+          bio.available ? "mt-3" : "mt-5",
+        )}
+      />
+      {error && <p className="mt-2 text-xs font-medium text-red-600">{error}</p>}
+
+      <div className="mt-5 flex justify-end gap-2">
+        <button
+          type="button"
+          // Never disabled: the secondary action must always be a way out, even
+          // mid-verify (the caller clears any pending resolver on it).
+          onClick={onSecondary}
+          className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100"
+        >
+          {secondaryLabel}
+        </button>
+        <button
+          type="button"
+          onClick={submitPassword}
+          disabled={busy || !password}
+          className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
+        >
+          {busy && <Loader2 size={14} className="animate-spin" />}
+          Confirmar
+        </button>
+      </div>
+    </>
+  );
+}
+
+// Kiosk re-auth prompt. Rendered as an overlay OVER the live app (the users/devices
+// list stays visible behind it) — kiosk mode never logs out, it just re-confirms
+// the operator before a sensitive action once the re-auth window has lapsed.
+// Cancel aborts the action; a biometric or correct password verifies the session.
+function ReAuthModal({
+  username,
+  biometricEnabled,
+  onResult,
+}: {
+  username: string;
+  biometricEnabled: boolean;
+  onResult: (ok: boolean) => void;
+}) {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-zinc-900/50 backdrop-blur-sm">
       <div
         className="anim-popover w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl"
-        // Stop keystrokes bubbling to window-level handlers behind the overlay
-        // (UserRow's / the create-wizard's Enter/Escape listeners) — otherwise
-        // the same Enter that confirms here re-fires the gated action underneath.
         onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onResult(false); } }}
       >
         <div className="flex items-center gap-3">
@@ -566,45 +743,60 @@ function ReAuthModal({ username, onResult }: { username: string; onResult: (ok: 
           <div>
             <h2 className="text-base font-semibold text-zinc-800">Confirmar identidade</h2>
             <p className="text-xs text-zinc-500">
-              {username ? `Sessão de ${username}` : "Sessão ativa"} · confirma a palavra-passe para continuar
+              {username ? `Sessão de ${username}` : "Sessão ativa"} · confirma para continuar
             </p>
           </div>
         </div>
 
-        <input
-          ref={inputRef}
-          type="password"
-          value={password}
-          autoComplete="current-password"
-          disabled={busy}
-          onChange={(e) => { setPassword(e.target.value); setError(""); }}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); submit(); } }}
-          placeholder="Palavra-passe"
-          className="mt-5 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-100 disabled:bg-zinc-50"
+        <IdentityConfirm
+          biometricEnabled={biometricEnabled}
+          reason="Confirma a tua identidade para continuar"
+          onVerified={() => onResult(true)}
+          secondaryLabel="Cancelar"
+          onSecondary={() => onResult(false)}
         />
-        {error && <p className="mt-2 text-xs font-medium text-red-600">{error}</p>}
+      </div>
+    </div>
+  );
+}
 
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            // Never disabled: Cancel must always be a way out, even mid-verify —
-            // resolveReauth clears the pending resolver, so a late reverify result
-            // can't re-settle the gate after a cancel.
-            onClick={() => onResult(false)}
-            className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100"
-          >
-            Cancelar
-          </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={busy || !password}
-            className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
-          >
-            {busy && <Loader2 size={14} className="animate-spin" />}
-            Confirmar
-          </button>
+// Soft-lock screen — first-tier inactivity lock (or a manual "Bloquear"). A full,
+// opaque takeover over the live app: the session is STILL alive, so the operator
+// resumes with a biometric or the password (reverify) rather than a full re-login.
+// There's no "cancel" — the only ways out are unlock or an explicit sign-out.
+function LockScreen({
+  username,
+  biometricEnabled,
+  onUnlock,
+  onLogout,
+}: {
+  username: string;
+  biometricEnabled: boolean;
+  onUnlock: () => void;
+  onLogout: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-zinc-900/70 backdrop-blur-md">
+      <div className="anim-popover w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
+        <div className="flex items-center gap-3">
+          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-violet-100 text-violet-600">
+            <Lock size={20} />
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-zinc-800">Sessão bloqueada</h2>
+            <p className="truncate text-xs text-zinc-500">
+              {username ? `Sessão de ${username}` : "Sessão ativa"} · desbloqueia para continuar
+            </p>
+          </div>
         </div>
+
+        <IdentityConfirm
+          biometricEnabled={biometricEnabled}
+          reason="Desbloqueia a sessão"
+          onVerified={onUnlock}
+          secondaryLabel="Terminar sessão"
+          onSecondary={onLogout}
+        />
       </div>
     </div>
   );

@@ -25,6 +25,14 @@ contextBridge.exposeInMainWorld("authAPI", {
   reverify: (password: string) => ipcRenderer.invoke("auth:reverify", { password }),
 });
 
+// Biometric presence check (Touch ID / Windows Hello) for the soft-lock unlock
+// and kiosk re-auth gate. Only ever offered while a session is alive — proves
+// presence, not the password.
+contextBridge.exposeInMainWorld("biometricAPI", {
+  available: () => ipcRenderer.invoke("biometric:available"),
+  prompt: (reason: string) => ipcRenderer.invoke("biometric:prompt", { reason }),
+});
+
 contextBridge.exposeInMainWorld("appAPI", {
   getVersion: () => ipcRenderer.invoke("app:get-version"),
   getStartupInfo: () => ipcRenderer.invoke("app:startup-info"),

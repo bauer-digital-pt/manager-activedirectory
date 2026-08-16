@@ -149,7 +149,13 @@ function UserRow({
 
   return (
     <>
-      <tr className="group hover:bg-zinc-50/80 transition-colors">
+      <tr
+        className="group hover:bg-zinc-50/80 transition-colors select-none"
+        // Double-click anywhere on the row opens details; right-click opens the
+        // same actions menu the kebab does (parity with DeviceRow).
+        onDoubleClick={() => setModal("details")}
+        onContextMenu={(e) => { e.preventDefault(); setMenu(true); }}
+      >
         <td className="px-6 py-3.5">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-violet-100 flex items-center justify-center flex-shrink-0">
@@ -374,6 +380,28 @@ function UserRow({
                       )}
                     </div>
                     <ModalFooter>
+                      {/* Icon-only quick actions (hover = native tooltip). These
+                          switch the shared overlay to the matching confirm flow,
+                          so every action keeps its own confirmation step. */}
+                      <div className="mr-auto flex items-center gap-0.5">
+                        <IconAction
+                          icon={<KeyRound size={15} />}
+                          label="Repor palavra-passe"
+                          onClick={() => setModal("reset")}
+                        />
+                        <IconAction
+                          icon={<Unlock size={15} />}
+                          label={user.LockedOut ? "Desbloquear conta" : "Conta não bloqueada"}
+                          disabled={!user.LockedOut}
+                          onClick={() => setModal("unblock")}
+                        />
+                        <IconAction
+                          icon={<UserMinus size={15} />}
+                          label="Offboard"
+                          danger
+                          onClick={() => setModal("offboard")}
+                        />
+                      </div>
                       <Bind label="Esc / ↵" />
                       <button onClick={() => setModal(null)} className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors">Close</button>
                     </ModalFooter>
@@ -415,6 +443,27 @@ function MenuItem({ icon, label, bind, disabled, danger, onClick }: { icon: Reac
 
 function Bind({ label }: { label: string }) {
   return <Kbd>{label}</Kbd>;
+}
+
+// Icon-only action button with a native hover tooltip (title/aria-label). Used
+// in the details modal footer so the common actions are one click away without
+// re-opening the row dropdown.
+function IconAction({ icon, label, onClick, disabled, danger }: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean; danger?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={cn(
+        "p-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+        danger ? "text-red-500 hover:bg-red-50 hover:text-red-600" : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800",
+      )}
+    >
+      {icon}
+    </button>
+  );
 }
 
 function ModalHeader({ icon, title, subtitle, onClose }: { icon: React.ReactNode; title: string; subtitle: string; onClose: () => void }) {

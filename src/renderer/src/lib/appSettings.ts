@@ -9,6 +9,8 @@ export type { AppSettings } from "../../../shared/types";
 export const DEFAULT_SETTINGS: AppSettings = {
   devMode: false,
   loginTimeoutMin: 30,
+  fullTimeoutHours: 48,
+  biometricEnabled: false,
   lastUsername: "",
   kioskMode: false,
 };
@@ -21,10 +23,20 @@ function clampTimeout(n: unknown): number {
   return Math.min(60, Math.max(5, Math.round(v)));
 }
 
+// Absolute session cap (hours). Floored at 48h by design; capped at 720h (30d)
+// so the field can't be driven to something effectively "never expires".
+function clampFullTimeout(n: unknown): number {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return DEFAULT_SETTINGS.fullTimeoutHours;
+  return Math.min(720, Math.max(48, Math.round(v)));
+}
+
 function normalize(raw: Partial<AppSettings> | null | undefined): AppSettings {
   return {
     devMode: !!raw?.devMode,
     loginTimeoutMin: clampTimeout(raw?.loginTimeoutMin),
+    fullTimeoutHours: clampFullTimeout(raw?.fullTimeoutHours),
+    biometricEnabled: !!raw?.biometricEnabled,
     lastUsername: typeof raw?.lastUsername === "string" ? raw.lastUsername : "",
     kioskMode: !!raw?.kioskMode,
   };

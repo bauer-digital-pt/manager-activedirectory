@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, Menu, systemPreferences } from "electron";
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { spawn } from "child_process";
@@ -185,13 +185,22 @@ function computeStartupInfo() {
   }
 }
 
-const DEFAULT_SETTINGS: AppSettings = { devMode: false, loginTimeoutMin: 30, lastUsername: "", kioskMode: false };
+const DEFAULT_SETTINGS: AppSettings = {
+  devMode: false,
+  loginTimeoutMin: 30,
+  fullTimeoutHours: 48,
+  biometricEnabled: false,
+  lastUsername: "",
+  kioskMode: false,
+};
 
 const settingsStore = makeJsonStore<AppSettings>("settings.json", (raw) => {
   const r = (raw ?? {}) as Partial<AppSettings>;
   return {
     devMode: !!r.devMode,
     loginTimeoutMin: Math.min(60, Math.max(5, Number(r.loginTimeoutMin) || DEFAULT_SETTINGS.loginTimeoutMin)),
+    fullTimeoutHours: Math.min(720, Math.max(48, Number(r.fullTimeoutHours) || DEFAULT_SETTINGS.fullTimeoutHours)),
+    biometricEnabled: !!r.biometricEnabled,
     lastUsername: typeof r.lastUsername === "string" ? r.lastUsername : DEFAULT_SETTINGS.lastUsername,
     kioskMode: !!r.kioskMode,
   };
@@ -1124,6 +1133,58 @@ handle("auth:ping", async () => {
   return { ok: data.success !== false, error: data.error };
 });
 
+// --- Biometric (Touch ID / Windows Hello) IPC ---
+// Presence check for a soft-lock unlock or the kiosk re-auth gate. Biometrics
+// prove the operator is physically present, NOT that they know the password — so
+// the renderer only ever offers them while the session is STILL ALIVE (a soft
+// lock or the kiosk gate), never as a substitute for a full re-login. macOS uses
+// Electron's built-in Touch ID (LocalAuthentication, no native module); Windows
+// uses a WinRT UserConsentVerifier through PowerShell (Test-BiometricConsent.ps1).
+handle("biometric:available", async () => {
+  try {
+    if (process.platform === "darwin") {
+      const ok = systemPreferences.canPromptTouchID();
+      return { ok: true, available: ok, kind: ok ? "touchid" : null };
+    }
+    if (process.platform === "win32") {
+      // Report whether Hello is configured WITHOUT prompting the operator.
+      const r = await runPS("Test-BiometricConsent.ps1", ["check"], emitLog, undefined, 15000);
+      const data = (r.data ?? {}) as { available?: boolean };
+      return { ok: true, available: r.ok && !!data.available, kind: "windows-hello" };
+    }
+    return { ok: true, available: false, kind: null };
+  } catch (e) {
+    return { ok: true, available: false, kind: null, error: e instanceof Error ? e.message : String(e) };
+  }
+});
+
+handle("biometric:prompt", async (_e, rawPayload) => {
+  const p = (rawPayload ?? {}) as { reason?: string };
+  const reason = (p.reason ?? "").trim() || "Confirma a tua identidade";
+  // Refuse without a live session so a biometric can never stand in for a real
+  // password on a full login (only proves presence, not knowledge of the secret).
+  if (!session) return { ok: false, error: "Sessão expirada. Volta a iniciar sessão." };
+  try {
+    if (process.platform === "darwin") {
+      if (!systemPreferences.canPromptTouchID()) return { ok: false, error: "Touch ID indisponível." };
+      await systemPreferences.promptTouchID(reason);
+      return { ok: true };
+    }
+    if (process.platform === "win32") {
+      // Generous ceiling: the operator has to physically present finger/face/PIN.
+      const r = await runPS("Test-BiometricConsent.ps1", ["verify", reason], emitLog, undefined, 60000);
+      if (!r.ok) return { ok: false, error: r.error ?? "Falha na verificação biométrica." };
+      const data = (r.data ?? {}) as { success?: boolean; error?: string };
+      if (data.success !== true) return { ok: false, error: data.error ?? "Verificação biométrica cancelada." };
+      return { ok: true };
+    }
+    return { ok: false, error: "Biometria não suportada nesta plataforma." };
+  } catch (e) {
+    // promptTouchID rejects on cancel / mismatch — normalize to a clean message.
+    return { ok: false, error: e instanceof Error ? e.message : "Verificação biométrica cancelada." };
+  }
+});
+
 // --- Settings IPC ---
 handle("config:get-settings", () => readSettings());
 handle("config:set-settings", (_e, rawPayload) => {
@@ -1134,6 +1195,10 @@ handle("config:set-settings", (_e, rawPayload) => {
     loginTimeoutMin: p.loginTimeoutMin !== undefined
       ? Math.min(60, Math.max(5, Number(p.loginTimeoutMin) || current.loginTimeoutMin))
       : current.loginTimeoutMin,
+    fullTimeoutHours: p.fullTimeoutHours !== undefined
+      ? Math.min(720, Math.max(48, Number(p.fullTimeoutHours) || current.fullTimeoutHours))
+      : current.fullTimeoutHours,
+    biometricEnabled: p.biometricEnabled !== undefined ? !!p.biometricEnabled : current.biometricEnabled,
     lastUsername: p.lastUsername !== undefined ? String(p.lastUsername) : current.lastUsername,
     kioskMode: p.kioskMode !== undefined ? !!p.kioskMode : current.kioskMode,
   };

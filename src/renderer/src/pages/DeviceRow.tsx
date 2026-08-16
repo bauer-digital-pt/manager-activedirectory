@@ -1,7 +1,8 @@
 import { useState, useEffect, useId, useRef, memo } from "react";
-import { Laptop, Eye, X, Boxes } from "lucide-react";
+import { Laptop, Eye, X, Boxes, Copy } from "lucide-react";
 import { type ADComputer } from "../adAPI";
 import { cn } from "../lib/cn";
+import { useOutsideClick } from "../hooks/useOutsideClick";
 
 // Optional EZOffice enrichment for a device (joined by name in DeviceListPage).
 // A tiny view-model so the row stays decoupled from the raw inventory shapes;
@@ -15,7 +16,7 @@ export type DeviceAsset = {
 };
 
 // EZOffice reports lifecycle status as terse English tokens — surface them in PT.
-function ezStatusLabel(status?: string): string {
+export function ezStatusLabel(status?: string): string {
   switch ((status || "").toLowerCase()) {
     case "in use":     return "Em uso";
     case "available":  return "Disponível";
@@ -99,10 +100,21 @@ function cnOf(dn?: string): string | null {
   return m ? m[1] : dn;
 }
 
-function DeviceRow({ device, asset }: { device: ADComputer; asset?: DeviceAsset }) {
+function DeviceRow({ device, asset, toast }: { device: ADComputer; asset?: DeviceAsset; toast?: { success: (m: string) => void; error: (m: string) => void } }) {
   const [open, setOpen] = useState(false);
+  const [menu, setMenu] = useState(false);
   const titleId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
+  // Close the right-click context menu on an outside click.
+  const menuRef = useOutsideClick<HTMLDivElement>(menu, () => setMenu(false));
+
+  // Copy a value to the clipboard (right-click menu). Silent-safe if the API is
+  // unavailable; feedback via toast when the list passed one down.
+  const copy = async (text: string, ok: string) => {
+    setMenu(false);
+    try { await navigator.clipboard.writeText(text); toast?.success(ok); }
+    catch { toast?.error("Não foi possível copiar."); }
+  };
 
   // Esc / Enter close the (read-only) detail modal.
   useEffect(() => {
@@ -132,8 +144,11 @@ function DeviceRow({ device, asset }: { device: ADComputer; asset?: DeviceAsset 
   return (
     <>
       <tr
-        className="group hover:bg-zinc-50/80 transition-colors cursor-pointer"
-        onClick={() => setOpen(true)}
+        className="group hover:bg-zinc-50/80 transition-colors select-none"
+        // Double-click opens details; right-click opens the actions menu
+        // (parity with UserRow). The Eye button remains a single-click affordance.
+        onDoubleClick={() => setOpen(true)}
+        onContextMenu={(e) => { e.preventDefault(); setMenu(true); }}
       >
         <td className="px-6 py-3.5">
           <div className="flex items-center gap-3">
@@ -161,13 +176,29 @@ function DeviceRow({ device, asset }: { device: ADComputer; asset?: DeviceAsset 
         </td>
         <td className="px-6 py-3.5"><StatusBadge device={device} /></td>
         <td className="px-6 py-3.5 text-right">
-          <button
-            onClick={(e) => { e.stopPropagation(); setOpen(true); }}
-            title="Ver detalhes"
-            className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 opacity-0 group-hover:opacity-100 transition-colors"
-          >
-            <Eye size={15} />
-          </button>
+          <div className="relative inline-block" ref={menuRef}>
+            <button
+              onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+              title="Ver detalhes"
+              className={cn(
+                "p-1.5 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors",
+                menu ? "opacity-100 bg-zinc-100" : "opacity-0 group-hover:opacity-100",
+              )}
+            >
+              <Eye size={15} />
+            </button>
+
+            {menu && (
+              <div className="anim-popover absolute right-0 mt-1 w-52 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20 text-left">
+                <DeviceMenuItem icon={<Eye size={13} />} label="Abrir detalhes" onClick={() => { setMenu(false); setOpen(true); }} />
+                <div className="border-t border-zinc-100" />
+                <DeviceMenuItem icon={<Copy size={13} />} label="Copiar nome" onClick={() => copy(name, "Nome copiado")} />
+                {asset?.serial_number && (
+                  <DeviceMenuItem icon={<Copy size={13} />} label="Copiar nº de série" onClick={() => copy(asset!.serial_number!, "Nº de série copiado")} />
+                )}
+              </div>
+            )}
+          </div>
         </td>
       </tr>
 
@@ -263,6 +294,18 @@ function DeviceRow({ device, asset }: { device: ADComputer; asset?: DeviceAsset 
 export default memo(DeviceRow);
 
 /* -------------------------------------------------------------------------- */
+
+function DeviceMenuItem({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-zinc-700 hover:bg-zinc-50 transition-colors"
+    >
+      <span className="text-zinc-400">{icon}</span>
+      {label}
+    </button>
+  );
+}
 
 function ModalHeader({ icon, title, titleId, subtitle, onClose }: { icon: React.ReactNode; title: string; titleId?: string; subtitle: string; onClose: () => void }) {
   return (

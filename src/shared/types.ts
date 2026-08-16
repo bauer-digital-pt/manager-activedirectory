@@ -162,7 +162,19 @@ export interface OnboardState {
 // --- App settings (settings.json) ---
 export interface AppSettings {
   devMode: boolean;
+  // First (inactivity) tier: minutes idle before the session SOFT-locks. The
+  // session stays alive in memory — a soft lock is unlocked by re-confirming the
+  // operator's identity (biometric or password), never a full re-login. 5–60 min.
   loginTimeoutMin: number;
+  // Second (absolute) tier: hours a soft-locked session may live before it is
+  // FULLY logged out (session dropped, real password required again). Floor 48h.
+  // The whole 5min–fullTimeoutHours window is biometric-unlockable while alive.
+  fullTimeoutHours: number;
+  // Allow unlocking a soft lock / passing the kiosk re-auth gate with the OS
+  // biometric prompt (macOS Touch ID or Windows Hello) instead of the password.
+  // Defaults OFF: Windows Hello ships but stays disabled until validated on a
+  // real domain PC; the operator opts in from Definições → Conexões.
+  biometricEnabled: boolean;
   lastUsername: string;
   // Kiosk mode: a wall-mounted / always-on operator view. The session never
   // auto-logs-out on inactivity; Users + Devices auto-refresh so the live view

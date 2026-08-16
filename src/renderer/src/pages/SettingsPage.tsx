@@ -14,22 +14,30 @@ import SearchableSelect from "../components/SearchableSelect";
 import { cn } from "../lib/cn";
 import { inputCls } from "../components/ui/controls";
 import { FLAVOR, FLAVOR_UI, type AppFlavor } from "../lib/flavor";
+import { getBiometricInfo, biometricLabel, type BiometricInfo } from "../lib/biometric";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
-type Tab = "general" | "groups" | "devices" | "connection" | "inventory";
+type Tab = "general" | "groups" | "devices" | "connection";
 
 // The Agent installer doesn't manage user-onboarding groups or the inventory
-// dashboard — hide those tabs.
+// dashboard — hide the groups tab; the inventory section inside "Conexões" is
+// gated on the flavor separately.
 const TABS: { id: Tab; label: string; icon: React.ElementType; flavors?: AppFlavor[] }[] = (
   [
     { id: "general", label: "General", icon: SlidersHorizontal },
     { id: "groups", label: "Onboarding Groups", icon: Layers, flavors: ["manager"] },
     { id: "devices", label: "Dispositivos", icon: MonitorSmartphone },
-    { id: "connection", label: "AD Connection", icon: Server },
-    { id: "inventory", label: "Inventário", icon: Boxes, flavors: ["manager"] },
+    { id: "connection", label: "Conexões", icon: Server },
   ] as { id: Tab; label: string; icon: React.ElementType; flavors?: AppFlavor[] }[]
 ).filter((t) => !t.flavors || t.flavors.includes(FLAVOR));
+
+// Full-session-timeout slider reads in whole hours; show days when it divides
+// evenly (48h -> "2 dias") and fall back to hours otherwise.
+function fullTimeoutLabel(hours: number): string {
+  if (hours % 24 === 0) { const d = hours / 24; return `${d} ${d === 1 ? "dia" : "dias"}`; }
+  return `${hours}h`;
+}
 
 interface SettingsPageProps {
   toast: { success: ToastFn; error: ToastFn };
@@ -71,8 +79,28 @@ export default function SettingsPage({ toast, onSettingsChange, onUpdateModal, i
       {tab === "general" && <GeneralTab toast={toast} onSettingsChange={onSettingsChange} onUpdateModal={onUpdateModal} />}
       {tab === "groups" && <GroupsTab toast={toast} />}
       {tab === "devices" && <DevicesTab toast={toast} />}
-      {tab === "connection" && <ConnectionTab toast={toast} />}
-      {tab === "inventory" && <InventoryTab toast={toast} onSaved={onSettingsChange} />}
+      {tab === "connection" && <ConnectionsTab toast={toast} onSaved={onSettingsChange} />}
+    </div>
+  );
+}
+
+// "Conexões" merges the remote-AD connection and the inventory API into one tab.
+// The inventory block is Manager-only (the Agent has no inventory dashboard).
+function ConnectionsTab({ toast, onSaved }: {
+  toast: { success: ToastFn; error: ToastFn };
+  onSaved?: () => void;
+}) {
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="px-8 py-6 space-y-10 max-w-xl">
+        <ConnectionSection toast={toast} />
+        {FLAVOR === "manager" && (
+          <>
+            <div className="h-px bg-zinc-200" />
+            <InventorySection toast={toast} onSaved={onSaved} />
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -84,19 +112,31 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
 }) {
   const [devMode, setDevMode] = useState(false);
   const [timeout, setTimeoutMin] = useState(30);
+  const [fullTimeout, setFullTimeout] = useState(48);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [bioInfo, setBioInfo] = useState<BiometricInfo>({ available: false, kind: null });
   const [kioskMode, setKioskMode] = useState(false);
   const [version, setVersion] = useState("");
   const [showUpdate, setShowUpdate] = useState(false);
 
   useEffect(() => {
-    getSettings().then((s) => { setDevMode(s.devMode); setTimeoutMin(s.loginTimeoutMin); setKioskMode(s.kioskMode); });
+    getSettings().then((s) => {
+      setDevMode(s.devMode);
+      setTimeoutMin(s.loginTimeoutMin);
+      setFullTimeout(s.fullTimeoutHours);
+      setBiometricEnabled(s.biometricEnabled);
+      setKioskMode(s.kioskMode);
+    });
     getAppVersion().then(setVersion);
+    getBiometricInfo().then(setBioInfo);
   }, []);
 
   const persist = async (patch: Partial<AppSettings>) => {
     const next = await setSettings(patch);
     setDevMode(next.devMode);
     setTimeoutMin(next.loginTimeoutMin);
+    setFullTimeout(next.fullTimeoutHours);
+    setBiometricEnabled(next.biometricEnabled);
     setKioskMode(next.kioskMode);
     onSettingsChange?.();
   };
@@ -104,6 +144,12 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
   const toggleDev = async () => {
     await persist({ devMode: !devMode });
     toast.success(!devMode ? "Modo developer ativado" : "Modo developer desativado");
+  };
+
+  const toggleBiometric = async () => {
+    const next = !biometricEnabled;
+    await persist({ biometricEnabled: next });
+    toast.success(next ? "Desbloqueio biométrico ativado" : "Desbloqueio biométrico desativado");
   };
 
   const toggleKiosk = async () => {
@@ -141,14 +187,14 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
           </div>
         </section>
 
-        {/* Login timeout */}
+        {/* Login timeout — soft lock */}
         <section className="space-y-3">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Tempo de inatividade</h3>
             <p className="text-xs text-zinc-400 mt-0.5">
               {kioskMode
                 ? "Desativado em modo quiosque — a sessão nunca bloqueia por inatividade."
-                : "Ao fim deste tempo sem atividade, a sessão bloqueia e pede a palavra-passe."}
+                : "Ao fim deste tempo sem atividade, o ecrã bloqueia mas a sessão continua ativa — desbloqueia com a palavra-passe ou biometria."}
             </p>
           </div>
           <div className={cn("flex items-center gap-4", kioskMode && "opacity-40 pointer-events-none")}>
@@ -165,6 +211,62 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
               className="flex-1 accent-violet-600"
             />
             <span className="w-16 text-right text-sm font-medium tabular-nums text-zinc-700">{timeout} min</span>
+          </div>
+        </section>
+
+        {/* Full session timeout — absolute cap that forces a real re-login */}
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Tempo máximo de sessão</h3>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              {kioskMode
+                ? "Desativado em modo quiosque — a sessão nunca termina automaticamente."
+                : "Estando bloqueada, a sessão ainda pode ser desbloqueada durante este período. Passado este tempo é terminada por completo e obriga a iniciar sessão de novo. Mínimo 48h."}
+            </p>
+          </div>
+          <div className={cn("flex items-center gap-4", kioskMode && "opacity-40 pointer-events-none")}>
+            <input
+              type="range"
+              min={48}
+              max={720}
+              step={24}
+              value={fullTimeout}
+              disabled={kioskMode}
+              onChange={(e) => setFullTimeout(Number(e.target.value))}
+              onMouseUp={() => persist({ fullTimeoutHours: fullTimeout })}
+              onKeyUp={() => persist({ fullTimeoutHours: fullTimeout })}
+              className="flex-1 accent-violet-600"
+            />
+            <span className="w-20 text-right text-sm font-medium tabular-nums text-zinc-700">{fullTimeoutLabel(fullTimeout)}</span>
+          </div>
+        </section>
+
+        {/* Biometric unlock — Touch ID / Windows Hello */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Desbloqueio biométrico</h3>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                {bioInfo.available
+                  ? `Desbloqueia o ecrã e confirma ações com ${biometricLabel(bioInfo.kind)} em vez da palavra-passe.${bioInfo.kind === "windows-hello" ? " Windows Hello é experimental — valida antes de confiar." : ""}`
+                  : "Indisponível nesta máquina — Touch ID ou Windows Hello não está configurado."}
+              </p>
+            </div>
+            <button
+              onClick={toggleBiometric}
+              role="switch"
+              aria-checked={biometricEnabled}
+              disabled={!bioInfo.available}
+              className={cn(
+                "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+                biometricEnabled && bioInfo.available ? "bg-violet-600" : "bg-zinc-200"
+              )}
+            >
+              <span className={cn(
+                "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
+                biometricEnabled && bioInfo.available ? "translate-x-5" : "translate-x-0.5"
+              )} />
+            </button>
           </div>
         </section>
 
@@ -216,7 +318,7 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
   );
 }
 
-function ConnectionTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
+function ConnectionSection({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
   const [server, setServer] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -283,83 +385,81 @@ function ConnectionTab({ toast }: { toast: { success: ToastFn; error: ToastFn } 
   };
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="px-8 py-6 space-y-8 max-w-xl">
-        <div>
-          <h2 className="text-sm font-semibold text-zinc-900">Remote Active Directory</h2>
-          <p className="text-xs text-zinc-400 mt-0.5">
-            Point the app at a domain controller and authenticate with a specific account.
-            Leave the fields empty to use the local domain and the current Windows user.
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-900">Remote Active Directory</h2>
+        <p className="text-xs text-zinc-400 mt-0.5">
+          Point the app at a domain controller and authenticate with a specific account.
+          Leave the fields empty to use the local domain and the current Windows user.
+        </p>
+      </div>
+
+      <section className="space-y-4">
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Domain controller (IP or host)</label>
+          <input value={server} onChange={(e) => { setServer(e.target.value); setResult(null); }} placeholder="ex: 10.4.0.12 ou pt-srv-dc02.bmap.lis" className={inputCls} />
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Username</label>
+          <input value={username} onChange={(e) => { setUsername(e.target.value); setResult(null); }} placeholder="e.g. BMAP\administrador" className={inputCls} autoComplete="off" />
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Password</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => { setPassword(e.target.value); setPasswordTouched(true); setResult(null); }}
+            placeholder={hasStoredPassword && !passwordTouched ? "•••••••• (saved)" : "Enter password"}
+            className={inputCls}
+            autoComplete="new-password"
+          />
+          <p className="text-[11px] text-zinc-400">
+            Stored encrypted on this machine. Leave blank to keep the saved password.
           </p>
         </div>
+      </section>
 
-        <section className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Domain controller (IP or host)</label>
-            <input value={server} onChange={(e) => { setServer(e.target.value); setResult(null); }} placeholder="ex: 10.4.0.12 ou pt-srv-dc02.bmap.lis" className={inputCls} />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Username</label>
-            <input value={username} onChange={(e) => { setUsername(e.target.value); setResult(null); }} placeholder="e.g. BMAP\administrador" className={inputCls} autoComplete="off" />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => { setPassword(e.target.value); setPasswordTouched(true); setResult(null); }}
-              placeholder={hasStoredPassword && !passwordTouched ? "•••••••• (saved)" : "Enter password"}
-              className={inputCls}
-              autoComplete="new-password"
-            />
-            <p className="text-[11px] text-zinc-400">
-              Stored encrypted on this machine. Leave blank to keep the saved password.
-            </p>
-          </div>
-        </section>
-
-        {result && (
-          <div className={cn(
-            "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
-            result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
-          )}>
-            {result.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
-            <span className="truncate">{result.message}</span>
-          </div>
-        )}
-
-        <div className="flex items-center gap-2 pt-1">
-          <button
-            onClick={test}
-            disabled={testing || !server.trim()}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 transition-colors"
-          >
-            {testing ? <Loader2 size={14} className="animate-spin" /> : <Server size={14} />}
-            Test connection
-          </button>
-          <button
-            onClick={save}
-            disabled={saving}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors"
-          >
-            {saving ? <Loader2 size={14} className="animate-spin" /> : null}
-            Save
-          </button>
-          <button
-            onClick={clearConnection}
-            className="ml-auto text-xs text-zinc-400 hover:text-red-500 transition-colors"
-          >
-            Clear
-          </button>
+      {result && (
+        <div className={cn(
+          "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
+          result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
+        )}>
+          {result.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
+          <span className="truncate">{result.message}</span>
         </div>
+      )}
+
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          onClick={test}
+          disabled={testing || !server.trim()}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 transition-colors"
+        >
+          {testing ? <Loader2 size={14} className="animate-spin" /> : <Server size={14} />}
+          Test connection
+        </button>
+        <button
+          onClick={save}
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors"
+        >
+          {saving ? <Loader2 size={14} className="animate-spin" /> : null}
+          Save
+        </button>
+        <button
+          onClick={clearConnection}
+          className="ml-auto text-xs text-zinc-400 hover:text-red-500 transition-colors"
+        >
+          Clear
+        </button>
       </div>
     </div>
   );
 }
 
-function InventoryTab({ toast, onSaved }: {
+function InventorySection({ toast, onSaved }: {
   toast: { success: ToastFn; error: ToastFn };
   /** Called after the config changes so the shell can show/hide the sidebar tab. */
   onSaved?: () => void;
@@ -421,94 +521,92 @@ function InventoryTab({ toast, onSaved }: {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="px-8 py-6 space-y-8 max-w-xl">
-        <div>
-          <h2 className="text-sm font-semibold text-zinc-900">API de inventário</h2>
-          <p className="text-xs text-zinc-400 mt-0.5">
-            Ligação à API interna de inventário (pyexp-inventory) que cruza o Active Directory
-            com o EZOffice. Só de leitura. Deixa desativado para esconder o separador Inventário.
-          </p>
-          <p className="text-xs text-zinc-400 mt-1.5">
-            Cada pedido é assinado com as credenciais do teu início de sessão — não há token nem
-            conta de serviço. Usa um endereço <span className="font-medium text-zinc-500">https://</span> para
-            proteger a palavra-passe em rede.
-          </p>
-        </div>
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-900">API de inventário</h2>
+        <p className="text-xs text-zinc-400 mt-0.5">
+          Ligação à API interna de inventário (pyexp-inventory) que cruza o Active Directory
+          com o EZOffice. Só de leitura. Deixa desativado para esconder o separador Inventário.
+        </p>
+        <p className="text-xs text-zinc-400 mt-1.5">
+          Cada pedido é assinado com as credenciais do teu início de sessão — não há token nem
+          conta de serviço. Usa um endereço <span className="font-medium text-zinc-500">https://</span> para
+          proteger a palavra-passe em rede.
+        </p>
+      </div>
 
-        {/* Enabled toggle */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Ativar inventário</h3>
-              <p className="text-xs text-zinc-400 mt-0.5">Mostra o painel de reconciliação na barra lateral.</p>
-            </div>
-            <button
-              onClick={() => { setEnabled((v) => !v); setResult(null); }}
-              role="switch"
-              aria-checked={enabled}
-              className={cn(
-                "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
-                enabled ? "bg-violet-600" : "bg-zinc-200"
-              )}
-            >
-              <span className={cn(
-                "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
-                enabled ? "translate-x-5" : "translate-x-0.5"
-              )} />
-            </button>
+      {/* Enabled toggle */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Ativar inventário</h3>
+            <p className="text-xs text-zinc-400 mt-0.5">Mostra o painel de reconciliação na barra lateral.</p>
           </div>
-        </section>
-
-        <section className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Endereço da API</label>
-            <input
-              value={baseUrl}
-              onChange={(e) => { setBaseUrl(e.target.value); setResult(null); }}
-              placeholder="ex: http://10.4.4.69:8000"
-              className={inputCls}
-              autoComplete="off"
-            />
-            <p className="text-[11px] text-zinc-400">Endereço interno (http:// ou https://), sem barra final.</p>
-          </div>
-        </section>
-
-        {result && (
-          <div className={cn(
-            "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
-            result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
-          )}>
-            {result.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
-            <span className="truncate">{result.message}</span>
-          </div>
-        )}
-
-        <div className="flex items-center gap-2 pt-1">
           <button
-            onClick={test}
-            disabled={testing || !baseUrl.trim()}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 transition-colors"
+            onClick={() => { setEnabled((v) => !v); setResult(null); }}
+            role="switch"
+            aria-checked={enabled}
+            className={cn(
+              "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
+              enabled ? "bg-violet-600" : "bg-zinc-200"
+            )}
           >
-            {testing ? <Loader2 size={14} className="animate-spin" /> : <Boxes size={14} />}
-            Testar ligação
-          </button>
-          <button
-            onClick={save}
-            disabled={saving || (enabled && !baseUrl.trim())}
-            title={enabled && !baseUrl.trim() ? "Indica o endereço da API antes de ativar o inventário." : undefined}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {saving ? <Loader2 size={14} className="animate-spin" /> : null}
-            Guardar
-          </button>
-          <button
-            onClick={clearInventory}
-            className="ml-auto text-xs text-zinc-400 hover:text-red-500 transition-colors"
-          >
-            Limpar
+            <span className={cn(
+              "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
+              enabled ? "translate-x-5" : "translate-x-0.5"
+            )} />
           </button>
         </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Endereço da API</label>
+          <input
+            value={baseUrl}
+            onChange={(e) => { setBaseUrl(e.target.value); setResult(null); }}
+            placeholder="ex: http://10.4.4.69:8000"
+            className={inputCls}
+            autoComplete="off"
+          />
+          <p className="text-[11px] text-zinc-400">Endereço interno (http:// ou https://), sem barra final.</p>
+        </div>
+      </section>
+
+      {result && (
+        <div className={cn(
+          "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
+          result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
+        )}>
+          {result.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
+          <span className="truncate">{result.message}</span>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          onClick={test}
+          disabled={testing || !baseUrl.trim()}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 transition-colors"
+        >
+          {testing ? <Loader2 size={14} className="animate-spin" /> : <Boxes size={14} />}
+          Testar ligação
+        </button>
+        <button
+          onClick={save}
+          disabled={saving || (enabled && !baseUrl.trim())}
+          title={enabled && !baseUrl.trim() ? "Indica o endereço da API antes de ativar o inventário." : undefined}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {saving ? <Loader2 size={14} className="animate-spin" /> : null}
+          Guardar
+        </button>
+        <button
+          onClick={clearInventory}
+          className="ml-auto text-xs text-zinc-400 hover:text-red-500 transition-colors"
+        >
+          Limpar
+        </button>
       </div>
     </div>
   );

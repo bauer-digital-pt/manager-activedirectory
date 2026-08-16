@@ -46,7 +46,7 @@ export default function InventoryPage({
   onOpenSettings,
 }: {
   toast: { success: ToastFn; error: ToastFn };
-  /** Opens Settings → Inventário — offered when the reconciliation fails. */
+  /** Opens Settings → Conexões — offered when the reconciliation fails. */
   onOpenSettings?: () => void;
 }) {
   const [data, setData] = useState<Reconciliation | null>(reconCache.data);
@@ -380,7 +380,7 @@ function InventoryError({
       <p className="mt-2 max-w-[46ch] text-sm leading-relaxed text-zinc-500">{message}</p>
       <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-zinc-400">
         Verifica o endereço em{" "}
-        <span className="font-medium text-zinc-500">Definições → Inventário</span>.
+        <span className="font-medium text-zinc-500">Definições → Conexões</span>.
       </p>
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
         <button

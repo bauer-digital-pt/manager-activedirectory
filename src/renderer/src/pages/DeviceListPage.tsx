@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Search, ServerCrash, RotateCcw, RefreshCw, Settings, Boxes } from "lucide-react";
+import { Search, ServerCrash, RotateCcw, RefreshCw, Settings, Boxes, PackageSearch } from "lucide-react";
 import { adAPI, type ADComputer } from "../adAPI";
 import { inventoryAPI, type InventoryAsset, type InventorySourceDevice } from "../inventoryAPI";
 import { getInventoryConfig } from "../lib/inventoryConfig";
@@ -87,16 +87,25 @@ let devicesCache: DevicesCache = { devices: [], assets: new Map(), sourced: fals
 export default function DeviceListPage({
   toast,
   kiosk = false,
+  variant = "consolidated",
+  title = "Dispositivos",
   onOpenConnectionSettings,
   onOpenInventorySettings,
+  onOpenReconciliation,
 }: {
   toast: { success: ToastFn; error: ToastFn };
   /** Kiosk mode: silently refresh the fleet every 5 min for a live wall display. */
   kiosk?: boolean;
-  /** Opens Settings → AD Connection — offered when the AD device read fails. */
+  /** "ad" = raw AD objects (no EZOffice overlay); "consolidated" = AD + EZOffice. */
+  variant?: "ad" | "consolidated";
+  /** Heading for the list (varies by sub-view). */
+  title?: string;
+  /** Opens Settings → Conexões — offered when the AD device read fails. */
   onOpenConnectionSettings?: () => void;
-  /** Opens Settings → Inventário — offered when the inventory-API source fails (Mac/Linux). */
+  /** Opens Settings → Conexões — offered when the inventory-API source fails (Mac/Linux). */
   onOpenInventorySettings?: () => void;
+  /** Consolidated view only — jump to the reconciliation dashboard. */
+  onOpenReconciliation?: () => void;
 }) {
   const [devices, setDevices] = useState<ADComputer[]>(devicesCache.devices);
   const [assetByName, setAssetByName] = useState<Map<string, DeviceAsset>>(devicesCache.assets);
@@ -135,7 +144,9 @@ export default function DeviceListPage({
   }, []);
 
   const useInventorySource = invEnabled && (platform === "darwin" || platform === "linux" || forceMac);
-  const enrich = invEnabled;
+  // The "AD" sub-view is deliberately raw — no EZOffice overlay — so a viewer can
+  // see the directory exactly as AD holds it. "Consolidated" enriches when able.
+  const enrich = variant !== "ad" && invEnabled;
   // Include the API address in the key ONLY when a fetch actually hits it, so
   // changing the address (source or enrichment) re-queries, while a pure AD read
   // isn't needlessly invalidated by an unrelated inventory-URL edit.
@@ -272,7 +283,7 @@ export default function DeviceListPage({
       {/* Toolbar */}
       <div className="px-6 pt-5 pb-4 border-b border-zinc-200 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-zinc-900">Dispositivos</h2>
+          <h2 className="text-base font-semibold text-zinc-900">{title}</h2>
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
@@ -284,6 +295,17 @@ export default function DeviceListPage({
                 className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-56 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
               />
             </div>
+            {/* Consolidated view: quick link to the reconciliation dashboard. */}
+            {onOpenReconciliation && (
+              <button
+                onClick={onOpenReconciliation}
+                title="Abrir a reconciliação AD ↔ EZOffice"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-800 transition-colors"
+              >
+                <PackageSearch size={14} />
+                Reconciliação
+              </button>
+            )}
             <button
               onClick={() => load()}
               disabled={loading}
@@ -371,6 +393,7 @@ export default function DeviceListPage({
                   key={d.DistinguishedName || d.Name || `row-${i}`}
                   device={d}
                   asset={assetByName.get((d.Name || "").toLowerCase())}
+                  toast={toast}
                 />
               ))}
             </tbody>
@@ -429,12 +452,12 @@ function DevicesError({
         {sourced ? (
           <>
             Confirma o endereço da API em{" "}
-            <span className="font-medium text-zinc-500">Definições → Inventário</span>.
+            <span className="font-medium text-zinc-500">Definições → Conexões</span>.
           </>
         ) : (
           <>
             Verifica a ligação ao Active Directory em{" "}
-            <span className="font-medium text-zinc-500">Definições → Ligação AD</span>.
+            <span className="font-medium text-zinc-500">Definições → Conexões</span>.
           </>
         )}
       </p>
