@@ -189,7 +189,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   devMode: false,
   loginTimeoutMin: 30,
   fullTimeoutHours: 48,
-  biometricEnabled: false,
+  // ON by default — see the renderer's DEFAULT_SETTINGS note. The availability
+  // probe still gates the actual button, so a machine without Touch ID / Hello
+  // just falls back to the password.
+  biometricEnabled: true,
   lastUsername: "",
   kioskMode: false,
 };
@@ -200,7 +203,8 @@ const settingsStore = makeJsonStore<AppSettings>("settings.json", (raw) => {
     devMode: !!r.devMode,
     loginTimeoutMin: Math.min(60, Math.max(5, Number(r.loginTimeoutMin) || DEFAULT_SETTINGS.loginTimeoutMin)),
     fullTimeoutHours: Math.min(720, Math.max(48, Number(r.fullTimeoutHours) || DEFAULT_SETTINGS.fullTimeoutHours)),
-    biometricEnabled: !!r.biometricEnabled,
+    // Absent key → the (ON) default; only an explicit stored false disables it.
+    biometricEnabled: r.biometricEnabled === undefined ? DEFAULT_SETTINGS.biometricEnabled : !!r.biometricEnabled,
     lastUsername: typeof r.lastUsername === "string" ? r.lastUsername : DEFAULT_SETTINGS.lastUsername,
     kioskMode: !!r.kioskMode,
   };

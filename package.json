@@ -1,6 +1,6 @@
 {
   "name": "admanager",
-  "version": "1.0.38",
+  "version": "1.0.40",
   "description": "Active Directory Onboarding Manager — Bauer Media Audio Portugal",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -11,6 +11,7 @@
     "build:manager": "cross-env APP_FLAVOR=manager npm run build:renderer && cross-env APP_FLAVOR=manager electron-builder --config electron-builder.config.cjs --publish never",
     "build:agent": "cross-env APP_FLAVOR=agent npm run build:renderer && cross-env APP_FLAVOR=agent electron-builder --config electron-builder.config.cjs --publish never",
     "build:all": "npm run build:manager && npm run build:agent",
+    "build:portable": "cross-env APP_FLAVOR=manager npm run build:renderer && cross-env APP_FLAVOR=manager electron-builder --config electron-builder.config.cjs --win portable --publish never",
     "build": "npm run build:manager",
     "release:manager": "cross-env APP_FLAVOR=manager npm run build:renderer && cross-env APP_FLAVOR=manager electron-builder --config electron-builder.config.cjs --publish always",
     "release:agent": "cross-env APP_FLAVOR=agent npm run build:renderer && cross-env APP_FLAVOR=agent electron-builder --config electron-builder.config.cjs --publish always",

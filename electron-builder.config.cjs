@@ -81,6 +81,16 @@ module.exports = {
     signingHashAlgorithms: ["sha256"],
     signAndEditExecutable: true,
   },
+  portable: {
+    // Distinct filename so the release step can attach ONLY this file (never the
+    // nsis installer or latest.yml). Produced solely by an explicit
+    // `--win portable` build (see the build:portable npm script); the default
+    // published build stays nsis-only, so the auto-update feed is untouched.
+    artifactName: "${productName}-Portable-${version}.${ext}",
+    // A portable build ignores win.requestedExecutionLevel and needs its own, so
+    // match the installed app (requireAdministrator) and behave identically.
+    requestExecutionLevel: "admin",
+  },
   nsis: {
     oneClick: false,
     perMachine: true,

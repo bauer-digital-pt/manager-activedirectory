@@ -21,6 +21,10 @@ export default function DevicesPage(props: {
   kiosk?: boolean;
   /** Which Manager device sub-view to render (AD / EZOffice / Consolidados). */
   view?: DeviceView;
+  /** Switch the active sub-view from the in-page header tabs. */
+  onNavigateDevice?: (view: DeviceView) => void;
+  /** Show the AD/EZOffice/Consolidados header tabs (Manager + inventory enabled). */
+  showViewTabs?: boolean;
   /** Agent wizard "Abrir Definições" → the "Dispositivos" tab (shared with the Manager list). */
   onOpenDeviceSettings?: () => void;
   /** Manager device-list error recovery → the "Conexões" tab (AD read failed). */
@@ -32,22 +36,31 @@ export default function DevicesPage(props: {
 }) {
   if (IS_AGENT) return <PcOnboardingWizard {...props} />;
 
-  const { view = "consolidated", onOpenReconciliation, toast, onOpenInventorySettings } = props;
+  const { view = "consolidated", onNavigateDevice, showViewTabs, onOpenReconciliation, toast, onOpenInventorySettings } = props;
+
+  // The three views share an in-page tab switcher in their header (only when the
+  // inventory API is on — otherwise there's just the raw AD list, no tabs).
+  const tabs = showViewTabs && onNavigateDevice
+    ? { view, onSelect: onNavigateDevice }
+    : undefined;
 
   // The EZOffice asset inventory is its own list (source of truth for hardware),
   // not an AD list, so it renders a dedicated page rather than DeviceListPage.
   if (view === "ezoffice") {
-    return <EZOfficePage toast={toast} onOpenSettings={onOpenInventorySettings} />;
+    return <EZOfficePage toast={toast} tabs={tabs} onOpenSettings={onOpenInventorySettings} />;
   }
 
   // "ad" = raw AD objects (no EZOffice overlay); "consolidated" = AD enriched with
-  // the matching EZOffice asset, plus a link to the reconciliation dashboard.
+  // the matching EZOffice asset, plus a link to the reconciliation dashboard. With
+  // no tabs (inventory off) it's just "Dispositivos"; with tabs the active tab is
+  // the heading, so the static title only shows in the no-tabs case.
   return (
     <DeviceListPage
       toast={toast}
       kiosk={props.kiosk}
       variant={view === "ad" ? "ad" : "consolidated"}
-      title={view === "ad" ? "Dispositivos AD" : "Dispositivos Consolidados"}
+      title={tabs ? undefined : "Dispositivos"}
+      tabs={tabs}
       onOpenConnectionSettings={props.onOpenConnectionSettings}
       onOpenInventorySettings={onOpenInventorySettings}
       onOpenReconciliation={view === "consolidated" ? onOpenReconciliation : undefined}

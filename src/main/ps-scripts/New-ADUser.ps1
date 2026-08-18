@@ -30,6 +30,12 @@ $conn = Get-ADConn
 # Parent OU that holds the category folders. Kept in sync with Get-ADGroup-All.ps1.
 $BASE_OU = "OU=O365,OU=BMAP USERS,DC=bmap,DC=lis"
 
+# UPN / sign-in suffix. The AD domain DNS root is bmap.lis, but users sign in to
+# Microsoft 365 with their routable address, so the UserPrincipalName suffix must
+# be bauermedia.pt (a registered alternative UPN suffix in the forest) — NOT the
+# AD DNS root. Kept in sync with the email domain in CreateUserWizard (buildEmail).
+$UPN_SUFFIX = "bauermedia.pt"
+
 $mustChange  = ($ChangePasswordAtLogon -eq "true")
 $neverExpire = ($PasswordNeverExpires  -eq "true")
 
@@ -74,7 +80,7 @@ $newUserParams = @{
   Name                  = "$FirstName $LastName"
   DisplayName           = "$FirstName $LastName"
   SamAccountName        = $Username
-  UserPrincipalName     = "$Username@$((Get-ADDomain @conn).DNSRoot)"
+  UserPrincipalName     = "$Username@$UPN_SUFFIX"
   AccountPassword       = $securePass
   Enabled               = $true
   PasswordNeverExpires  = $neverExpire

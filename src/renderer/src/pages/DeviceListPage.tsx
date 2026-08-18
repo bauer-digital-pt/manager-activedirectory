@@ -5,7 +5,9 @@ import { inventoryAPI, type InventoryAsset, type InventorySourceDevice } from ".
 import { getInventoryConfig } from "../lib/inventoryConfig";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
+import type { DeviceView } from "../App";
 import DeviceRow, { deviceStatus, type DeviceAsset } from "./DeviceRow";
+import DeviceViewTabs from "./DeviceViewTabs";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
@@ -89,6 +91,7 @@ export default function DeviceListPage({
   kiosk = false,
   variant = "consolidated",
   title = "Dispositivos",
+  tabs,
   onOpenConnectionSettings,
   onOpenInventorySettings,
   onOpenReconciliation,
@@ -98,8 +101,10 @@ export default function DeviceListPage({
   kiosk?: boolean;
   /** "ad" = raw AD objects (no EZOffice overlay); "consolidated" = AD + EZOffice. */
   variant?: "ad" | "consolidated";
-  /** Heading for the list (varies by sub-view). */
+  /** Heading for the list — shown only when the header tabs aren't. */
   title?: string;
+  /** In-page AD/EZOffice/Consolidados switcher, shown in the header in place of the title. */
+  tabs?: { view: DeviceView; onSelect: (view: DeviceView) => void };
   /** Opens Settings → Conexões — offered when the AD device read fails. */
   onOpenConnectionSettings?: () => void;
   /** Opens Settings → Conexões — offered when the inventory-API source fails (Mac/Linux). */
@@ -283,7 +288,9 @@ export default function DeviceListPage({
       {/* Toolbar */}
       <div className="px-6 pt-5 pb-4 border-b border-zinc-200 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-zinc-900">{title}</h2>
+          {tabs
+            ? <DeviceViewTabs view={tabs.view} onSelect={tabs.onSelect} />
+            : <h2 className="text-base font-semibold text-zinc-900">{title}</h2>}
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />

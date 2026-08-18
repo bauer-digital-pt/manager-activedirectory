@@ -5,6 +5,8 @@ import { getInventoryConfig } from "../lib/inventoryConfig";
 import { ezStatusLabel } from "./DeviceRow";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
+import type { DeviceView } from "../App";
+import DeviceViewTabs from "./DeviceViewTabs";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
@@ -48,10 +50,13 @@ function StatusBadge({ status }: { status?: string }) {
 export default function EZOfficePage({
   toast: _toast,
   onOpenSettings,
+  tabs,
 }: {
   toast: { success: ToastFn; error: ToastFn };
   /** Opens Settings → Conexões — offered when the inventory read fails. */
   onOpenSettings?: () => void;
+  /** In-page AD/EZOffice/Consolidados switcher — replaces the static title when present. */
+  tabs?: { view: DeviceView; onSelect: (view: DeviceView) => void };
 }) {
   const [assets, setAssets] = useState<InventoryAsset[]>(assetsCache.assets);
   const [loading, setLoading] = useState(!assetsCache.loaded);
@@ -171,7 +176,9 @@ export default function EZOfficePage({
       {/* Toolbar */}
       <div className="px-6 pt-5 pb-4 border-b border-zinc-200 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-zinc-900">Dispositivos EZOffice</h2>
+          {tabs
+            ? <DeviceViewTabs view={tabs.view} onSelect={tabs.onSelect} />
+            : <h2 className="text-base font-semibold text-zinc-900">Dispositivos EZOffice</h2>}
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />

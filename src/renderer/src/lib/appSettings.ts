@@ -10,7 +10,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   devMode: false,
   loginTimeoutMin: 30,
   fullTimeoutHours: 48,
-  biometricEnabled: false,
+  // Biometric unlock is ON by default: the lock screen offers Touch ID / Windows
+  // Hello whenever the OS actually supports it (the availability probe still gates
+  // the button, so a machine without a sensor silently falls back to the password).
+  biometricEnabled: true,
   lastUsername: "",
   kioskMode: false,
 };
@@ -36,7 +39,8 @@ function normalize(raw: Partial<AppSettings> | null | undefined): AppSettings {
     devMode: !!raw?.devMode,
     loginTimeoutMin: clampTimeout(raw?.loginTimeoutMin),
     fullTimeoutHours: clampFullTimeout(raw?.fullTimeoutHours),
-    biometricEnabled: !!raw?.biometricEnabled,
+    // Absent key → the (ON) default; only an explicit stored false disables it.
+    biometricEnabled: raw?.biometricEnabled === undefined ? DEFAULT_SETTINGS.biometricEnabled : !!raw.biometricEnabled,
     lastUsername: typeof raw?.lastUsername === "string" ? raw.lastUsername : "",
     kioskMode: !!raw?.kioskMode,
   };

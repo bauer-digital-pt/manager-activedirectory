@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Users, Laptop, Server, Boxes, Layers, Settings, Terminal, User, LogOut, Lock, ChevronRight } from "lucide-react";
+import { Users, Laptop, Settings, Terminal, User, LogOut, Lock } from "lucide-react";
 import { cn } from "../lib/cn";
-import type { Page, DeviceView } from "../App";
+import type { Page } from "../App";
 import { initials } from "../lib/initials";
 import { useOutsideClick } from "../hooks/useOutsideClick";
 import { FLAVOR, IS_AGENT, type AppFlavor } from "../lib/flavor";
@@ -10,8 +10,9 @@ import brandFull from "../assets/logo_1.png";
 // `flavors` restricts an item to specific installers; omit = shown in both.
 // The Agent installer is the onboarding wizard only — no user administration; its
 // "devices" tab IS that wizard ("Onboarding PC"), whereas the Manager's is the
-// read-only fleet list ("Dispositivos"), which fans out into three sub-views via
-// a flyout (see DevicesNavItem) once the inventory API is enabled.
+// read-only fleet list ("Dispositivos"), which fans out into three sub-views (AD /
+// EZOffice / Consolidados) via an in-page tab switcher (see DeviceViewTabs) once
+// the inventory API is enabled.
 const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean; flavors?: AppFlavor[]; needsInventory?: boolean }[] = [
   { id: "users",     label: "Users",                                     icon: Users,    bind: "1", flavors: ["manager"] },
   { id: "devices",   label: IS_AGENT ? "Onboarding PC" : "Dispositivos", icon: Laptop,   bind: "2" },
@@ -19,24 +20,11 @@ const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev
   { id: "console",   label: "Console",                                   icon: Terminal, bind: "5", dev: true },
 ];
 
-// The three sub-views under "Dispositivos" (Manager only, inventory enabled).
-const DEVICE_VIEWS: { view: DeviceView; label: string; icon: React.ElementType }[] = [
-  { view: "ad",           label: "Dispositivos AD",           icon: Server },
-  { view: "ezoffice",     label: "Dispositivos EZOffice",     icon: Boxes },
-  { view: "consolidated", label: "Dispositivos Consolidados", icon: Layers },
-];
-
 interface SidebarProps {
   active: Page;
   onNavigate: (p: Page) => void;
-  /** Which device sub-view is active (highlights the matching flyout item). */
-  deviceView: DeviceView;
-  /** Navigate to a device sub-view (opens the Devices page on that view). */
-  onNavigateDevice: (view: DeviceView) => void;
   /** Console is only reachable when developer mode is on. */
   devMode: boolean;
-  /** The Dispositivos flyout (AD/EZOffice/Consolidados) needs the inventory API. */
-  inventoryEnabled: boolean;
   /** Logged-in user (display name preferred) — drives the avatar initials. */
   userName: string;
   /** Live connection state: true=up, false=down/timeout, null=checking. */
@@ -47,7 +35,7 @@ interface SidebarProps {
   onLock: () => void;
 }
 
-export default function Sidebar({ active, onNavigate, deviceView, onNavigateDevice, devMode, inventoryEnabled, userName, connOk, onLogout, onLock }: SidebarProps) {
+export default function Sidebar({ active, onNavigate, devMode, userName, connOk, onLogout, onLock }: SidebarProps) {
   const nav = NAV.filter(
     (n) =>
       (!n.dev || devMode) &&
@@ -57,9 +45,6 @@ export default function Sidebar({ active, onNavigate, deviceView, onNavigateDevi
   const [menuOpen, setMenuOpen] = useState(false);
   // Close the account menu on an outside click or Escape.
   const menuRef = useOutsideClick<HTMLDivElement>(menuOpen, () => setMenuOpen(false), { escape: true });
-  // The Dispositivos flyout is only offered on the Manager once the inventory API
-  // is on — otherwise there's a single view (AD only) and the item just navigates.
-  const showDeviceFlyout = !IS_AGENT && inventoryEnabled;
 
   const dotColor = connOk === false ? "#ef4444" : connOk === true ? "#1fd1bd" : "#f59e0b";
   const dotTitle = connOk === false ? "Sem ligação ao AD" : connOk === true ? "Ligado ao AD" : "A verificar ligação…";
@@ -79,21 +64,6 @@ export default function Sidebar({ active, onNavigate, deviceView, onNavigateDevi
       <nav className="flex-1 flex flex-col items-center justify-center gap-1 py-4">
         {nav.map(({ id, label, icon: Icon, bind }) => {
           const isActive = active === id;
-          // "Dispositivos" fans out into AD / EZOffice / Consolidados via a flyout
-          // (Manager + inventory on). Everywhere else it's a plain nav button.
-          if (id === "devices" && showDeviceFlyout) {
-            return (
-              <DevicesNavItem
-                key={id}
-                label={label}
-                bind={bind}
-                icon={Icon}
-                active={isActive}
-                deviceView={deviceView}
-                onNavigateDevice={onNavigateDevice}
-              />
-            );
-          }
           return (
             <button
               key={id}
@@ -164,83 +134,5 @@ export default function Sidebar({ active, onNavigate, deviceView, onNavigateDevi
         )}
       </div>
     </aside>
-  );
-}
-
-// The "Dispositivos" nav item with its sub-view flyout. The whole button opens a
-// popover listing AD / EZOffice / Consolidados; picking one navigates to that
-// view. A small chevron marks it as a dropdown; the icon lights up while any
-// device view is active.
-function DevicesNavItem({
-  label,
-  bind,
-  icon: Icon,
-  active,
-  deviceView,
-  onNavigateDevice,
-}: {
-  label: string;
-  bind: string;
-  icon: React.ElementType;
-  active: boolean;
-  deviceView: DeviceView;
-  onNavigateDevice: (view: DeviceView) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useOutsideClick<HTMLDivElement>(open, () => setOpen(false), { escape: true });
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        title={`${label}  [${bind}]`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={cn(
-          "relative w-10 h-10 flex items-center justify-center rounded-lg transition-colors",
-          active ? "text-white" : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700",
-        )}
-        style={active ? { backgroundColor: "#4700a3" } : undefined}
-      >
-        <Icon size={20} strokeWidth={active ? 2.2 : 1.8} />
-        {/* Dropdown affordance — the "setinha" requested for the title. */}
-        <ChevronRight
-          size={10}
-          className={cn(
-            "absolute bottom-0.5 right-0.5 transition-transform",
-            active ? "text-white/80" : "text-zinc-400",
-            open && "rotate-90",
-          )}
-        />
-      </button>
-
-      {open && (
-        <div
-          role="menu"
-          className="anim-menu absolute top-0 left-full ml-3 w-56 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-xl z-50"
-        >
-          <p className="px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">{label}</p>
-          {DEVICE_VIEWS.map(({ view, label: viewLabel, icon: ViewIcon }) => {
-            const on = active && deviceView === view;
-            return (
-              <button
-                key={view}
-                type="button"
-                role="menuitem"
-                onClick={() => { setOpen(false); onNavigateDevice(view); }}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors",
-                  on ? "bg-violet-50 text-violet-700" : "text-zinc-700 hover:bg-zinc-100",
-                )}
-              >
-                <ViewIcon size={16} className={on ? "text-violet-600" : "text-zinc-400"} />
-                {viewLabel}
-                {on && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-violet-500" />}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
   );
 }

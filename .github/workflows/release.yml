@@ -75,6 +75,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release:manager
 
+      # Build a PORTABLE Manager .exe (a single self-contained exe that runs with
+      # no install) and attach it to the SAME GitHub Release as an extra download.
+      # Like the Agent attach below, this is a plain release asset — NEVER a feed
+      # publish: we build with --publish never and upload ONLY the *-Portable-*.exe,
+      # never a latest.yml, so the Manager auto-update feed stays nsis-only and the
+      # fleet is never affected. build:portable re-bakes the Manager renderer, so it
+      # is correct regardless of the Agent build that follows. Portable builds do
+      # NOT auto-update (there is no installer) — that is inherent to a portable app.
+      - name: Build Manager portable (no publish)
+        run: npm run build:portable
+
+      - name: Attach Manager portable to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          echo "Uploading Manager portable to release $VERSION"
+          gh release upload "$VERSION" release/manager/*Portable*.exe --clobber
+
       # Build the Agent flavor too (separate APP_FLAVOR bake, separate output
       # dir release/agent), but NEVER publish it — see the header comment. This
       # runs after the Manager publish so a failure here can't block the fleet

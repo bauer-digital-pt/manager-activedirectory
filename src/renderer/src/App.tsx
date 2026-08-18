@@ -487,6 +487,8 @@ export default function App() {
               toast={toast}
               kiosk={settings.kioskMode}
               view={deviceView}
+              onNavigateDevice={navigateDevice}
+              showViewTabs={inventoryEnabled}
               onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }}
               onOpenConnectionSettings={() => { setSettingsTab("connection"); navigate("settings"); }}
               onOpenInventorySettings={() => { setSettingsTab("connection"); navigate("settings"); }}
@@ -551,10 +553,7 @@ export default function App() {
             <Sidebar
               active={page}
               onNavigate={navigate}
-              deviceView={deviceView}
-              onNavigateDevice={navigateDevice}
               devMode={devMode}
-              inventoryEnabled={inventoryEnabled}
               userName={displayName || lastUsername}
               connOk={connOk}
               onLogout={onLogout}
@@ -610,18 +609,25 @@ function IdentityConfirm({
   onVerified,
   secondaryLabel,
   onSecondary,
+  autoPrompt = false,
 }: {
   biometricEnabled: boolean;
   reason: string;
   onVerified: () => void;
   secondaryLabel: string;
   onSecondary: () => void;
+  // Fire the OS biometric prompt automatically as soon as it's known available
+  // (the lock screen: "come back → Touch ID"). A cancel/failure here is silent —
+  // the button + password stay as the fallback, no scary error before any action.
+  autoPrompt?: boolean;
 }) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [bio, setBio] = useState<BiometricInfo>({ available: false, kind: null });
   const inputRef = useRef<HTMLInputElement>(null);
+  // Guard so the auto-prompt fires at most once per mount.
+  const autoPromptedRef = useRef(false);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
   useEffect(() => {
@@ -652,22 +658,32 @@ function IdentityConfirm({
     inputRef.current?.focus();
   }, [password, busy, onVerified]);
 
-  const runBiometric = useCallback(async () => {
+  const runBiometric = useCallback(async (silent = false) => {
     if (busy) return;
     setBusy(true);
     setError("");
     const r = await biometricPrompt(reason);
     if (r.ok) { onVerified(); return; }
-    setError(r.error || "Verificação biométrica falhada.");
+    // An auto-prompt the operator didn't ask for shouldn't shout on cancel — just
+    // fall back to the button + password. A manual attempt surfaces the reason.
+    if (!silent) setError(r.error || "Verificação biométrica falhada.");
     setBusy(false);
   }, [busy, reason, onVerified]);
+
+  // Lock screen: as soon as biometrics report available, prompt once automatically
+  // so the operator gets Touch ID / Hello instead of reaching for the password.
+  useEffect(() => {
+    if (!autoPrompt || autoPromptedRef.current || !bio.available) return;
+    autoPromptedRef.current = true;
+    void runBiometric(true);
+  }, [autoPrompt, bio.available, runBiometric]);
 
   return (
     <>
       {bio.available && (
         <button
           type="button"
-          onClick={runBiometric}
+          onClick={() => runBiometric()}
           disabled={busy}
           className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-100 disabled:opacity-50"
         >
@@ -796,6 +812,7 @@ function LockScreen({
           onVerified={onUnlock}
           secondaryLabel="Terminar sessão"
           onSecondary={onLogout}
+          autoPrompt
         />
       </div>
     </div>

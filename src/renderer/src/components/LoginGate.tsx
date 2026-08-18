@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Lock, LogIn, User, AlertCircle, Server, ChevronDown } from "lucide-react";
+import { Loader2, Lock, LogIn, User, AlertCircle, Server } from "lucide-react";
 import AuthShell from "./AuthShell";
 import { login, type LoginResult } from "../lib/auth";
 import { getInventoryConfig } from "../lib/inventoryConfig";
@@ -170,34 +170,27 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
             </div>
           </div>
 
-          {/* Off-Windows only: optional API-address override, collapsed by default.
-              Blank keeps the saved/default address; this is the only pre-login way
-              to point the app at the right API when the default is unreachable. */}
-          {NON_WINDOWS && (
+          {/* Off-Windows only: optional API-address override. Hidden on a clean
+              login screen (nothing to configure yet) and revealed only after a
+              failed login, when a wrong/unreachable default is the likely cause —
+              the only pre-login way to point the app at the right API. */}
+          {NON_WINDOWS && showConn && (
             <div className="space-y-1.5">
-              <button
-                type="button"
-                onClick={() => setShowConn((v) => !v)}
-                disabled={busy}
-                className="flex items-center gap-1.5 text-xs font-medium text-white/50 transition-colors hover:text-white/80 disabled:opacity-60"
-              >
-                <ChevronDown size={13} className={showConn ? "rotate-180 transition-transform" : "transition-transform"} />
+              <label className="text-xs font-semibold uppercase tracking-wider text-white/70">
                 Ligação à API de inventário
-              </button>
-              {showConn && (
-                <div className="relative">
-                  <Server size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
-                  <input
-                    value={baseUrl}
-                    onChange={(e) => { setBaseUrl(e.target.value); setError(null); }}
-                    placeholder="http://10.4.4.69:8000"
-                    autoComplete="off"
-                    spellCheck={false}
-                    disabled={busy}
-                    className={inputCls}
-                  />
-                </div>
-              )}
+              </label>
+              <div className="relative">
+                <Server size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
+                <input
+                  value={baseUrl}
+                  onChange={(e) => { setBaseUrl(e.target.value); setError(null); }}
+                  placeholder="http://10.4.4.69:8000"
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={busy}
+                  className={inputCls}
+                />
+              </div>
             </div>
           )}
 
