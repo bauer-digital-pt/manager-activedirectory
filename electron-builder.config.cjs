@@ -90,6 +90,16 @@ module.exports = {
     // A portable build ignores win.requestedExecutionLevel and needs its own, so
     // match the installed app (requireAdministrator) and behave identically.
     requestExecutionLevel: "admin",
+    // Fixed unpack dir so the app ALWAYS self-extracts to %TEMP%\ADManager
+    // instead of a per-build UUID folder (electron-builder's default, which
+    // changes on every release). This makes it a stable target that a single
+    // Defender ASR path exclusion can cover on managed PCs:
+    //   %LOCALAPPDATA%\Temp\ADManager\*  (a.k.a. C:\Users\*\AppData\Local\Temp\ADManager\*)
+    // The ASR rule "Block executable files from running unless they meet a
+    // prevalence, age, or trusted list criterion" blocks this unsigned, freshly
+    // built exe running from temp; a stable path is what makes the exclusion
+    // (or a code-signing cert, the real fix) practical instead of per-version.
+    unpackDirName: "ADManager",
   },
   nsis: {
     oneClick: false,
