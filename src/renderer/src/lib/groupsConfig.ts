@@ -57,6 +57,8 @@ declare global {
       getVersion(): Promise<string>;
       getStartupInfo?(): Promise<{ version: string; justUpdated: boolean; previousVersion?: string }>;
       getSsid?(): Promise<{ ok: boolean; data?: { connected: boolean; ssid: string | null; ssids?: string[] }; error?: string }>;
+      // Present only in Electron: open an http/https URL in the default browser.
+      openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
       platform: string;
     };
     windowAPI?: {

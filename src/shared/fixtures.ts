@@ -109,21 +109,47 @@ export function mockMembers(): InventoryMember[] {
   ];
 }
 
-// EZOffice assets. IT-01/IT-02/ADM-01 have matching AD devices (in sync by
-// serial); ADM-01 is assigned to the inactive Ana → orphan; MKT-01 has no
-// matching device → "no source object" orphan.
+// EZOffice assets. The four laptops match AD devices by name (→ "both" rows):
+// ADM-01 is assigned to the inactive Ana → orphan; MKT-01 has no matching device
+// → "no source object" orphan. The rest are PERIPHERALS EZOffice tracks but AD
+// never sees (mice, power adapters, monitors, …) — they become asset-only rows in
+// the consolidated device list, exercising the peripheral union (req. A), the
+// per-category icons (req. D), and the EZOffice lifecycle states (req. E). They're
+// marked exempt so they don't distort the reconciliation orphan/missing counts.
 export function mockAssets(): InventoryAsset[] {
-  const a = (
+  const laptop = (
     asset_id: string, name: string, serial_number: string, status: string, assigned_user_email: string,
   ): InventoryAsset => ({
     asset_id, name, serial_number, category: "Laptops", status,
     purchased_on: "", assigned_user_email, exempt: false,
   });
+  const periph = (
+    asset_id: string, name: string, serial_number: string, category: string,
+    status: string, assigned_user_email: string,
+  ): InventoryAsset => ({
+    asset_id, name, serial_number, category, status,
+    purchased_on: "", assigned_user_email, exempt: true,
+  });
   return [
-    a("1", "PT-LPT-IT-01",  "5CD1234ABC", "in use",    "joao.silva@bmap.lis"),
-    a("2", "PT-LPT-IT-02",  "5CD5678DEF", "in use",    "maria.costa@bmap.lis"),
-    a("3", "PT-LPT-ADM-01", "5CD9999XYZ", "in use",    "ana.ferreira@bmap.lis"),
-    a("4", "PT-LPT-MKT-01", "5CDNOSRC00", "available", ""),
+    laptop("1", "PT-LPT-IT-01",  "5CD1234ABC", "in use",    "joao.silva@bmap.lis"),
+    laptop("2", "PT-LPT-IT-02",  "5CD5678DEF", "in use",    "maria.costa@bmap.lis"),
+    laptop("3", "PT-LPT-ADM-01", "5CD9999XYZ", "in use",    "ana.ferreira@bmap.lis"),
+    laptop("4", "PT-LPT-MKT-01", "5CDNOSRC00", "available", ""),
+    periph("10", "MOU-LOGI-018",     "MX20231",    "Mice",            "in use",    "joao.silva@bmap.lis"),
+    periph("11", "MOU-LOGI-044",     "MX20244",    "Mice",            "available", ""),
+    periph("12", "KEY-KEYCHRON-003", "KC77720",    "Keyboards",       "in use",    "maria.costa@bmap.lis"),
+    periph("13", "PWR-HP-65W-07",    "PA65W0007",  "Power Adapters",  "in use",    "joao.silva@bmap.lis"),
+    periph("14", "PWR-HP-65W-08",    "PA65W0008",  "Power Adapters",  "available", ""),
+    periph("15", "MON-DELL-U2723-1", "CN0MON273",  "Monitors",        "in use",    "tiago.gomes@bmap.lis"),
+    periph("16", "MON-DELL-U2723-2", "CN0MON274",  "Monitors",        "broken",    ""),
+    periph("17", "HS-JABRA-65",      "JB65001",    "Headsets",        "in use",    "rita.lopes@bmap.lis"),
+    periph("18", "DOCK-WD19-02",     "WD19TB002",  "Docking Stations","in use",    "pedro.sousa@bmap.lis"),
+    periph("19", "WEB-LOGI-C920",    "C920X1234",  "Webcams",         "available", ""),
+    periph("20", "PHN-IPH-13-04",    "IPH13X004",  "Phones",          "in use",    "tiago.gomes@bmap.lis"),
+    periph("21", "TAB-IPAD-A2",      "IPADA2X01",  "Tablets",         "retired",   ""),
+    periph("22", "PRN-RICOH-IT",     "RICOH0IT1",  "Printers",        "in use",    ""),
+    periph("23", "KVM-CABLE-HDMI",   "HDMI2M0099", "Cables",          "available", ""),
+    periph("24", "SPK-JBL-GO",       "JBLGO0055",  "Speakers",        "lost",      ""),
   ];
 }
 

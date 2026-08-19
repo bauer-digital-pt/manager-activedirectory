@@ -1,4 +1,5 @@
 import { execFile } from "child_process";
+import { existsSync } from "fs";
 import { join } from "path";
 import { app } from "electron";
 import type { ADConnection } from "../shared/types";
@@ -10,9 +11,31 @@ export type { ADConnection } from "../shared/types";
 // PowerShell scripts can't be run from inside app.asar (execFile needs a real
 // file path), so they are shipped via electron-builder `extraResources` and
 // resolved from resourcesPath when packaged. In dev they live in the source tree.
-const SCRIPTS_DIR = app.isPackaged
+//
+// We keep BOTH locations as ordered candidates (primary first, matching the old
+// packaged-vs-dev behaviour) and, per call, use the first that actually holds the
+// requested script. This means a packaged install whose resources/ps-scripts is
+// missing/incomplete — or an app run unpackaged from a tree without the scripts —
+// yields a clear, actionable error naming the script and the dirs we searched,
+// instead of handing PowerShell a bogus `-File` path and surfacing its opaque
+// "The argument … to the -File parameter does not exist" message at login.
+const PRIMARY_SCRIPTS_DIR = app.isPackaged
   ? join(process.resourcesPath, "ps-scripts")
   : join(app.getAppPath(), "src", "main", "ps-scripts");
+const FALLBACK_SCRIPTS_DIR = app.isPackaged
+  ? join(app.getAppPath(), "src", "main", "ps-scripts")
+  : join(process.resourcesPath, "ps-scripts");
+const SCRIPTS_DIRS = Array.from(new Set([PRIMARY_SCRIPTS_DIR, FALLBACK_SCRIPTS_DIR]));
+
+// Resolve a script name to a real, existing path. Returns null when the script
+// is absent from every candidate dir (a broken/incomplete install).
+function resolveScriptPath(script: string): string | null {
+  for (const dir of SCRIPTS_DIRS) {
+    const p = join(dir, script);
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
 
 // Set MOCK_PS=1 in env to intercept all PS calls and return fake data
 const MOCK_MODE = process.env.MOCK_PS === "1";
@@ -239,7 +262,29 @@ export function runPS(
   }
 
   return new Promise((resolve) => {
-    const scriptPath = join(SCRIPTS_DIR, script);
+    const ts = Date.now();
+
+    // Resolve the script to a real file first. If it's missing from every
+    // candidate dir the install is broken/incomplete — fail fast with an
+    // actionable message (and log where we looked) instead of letting
+    // PowerShell reject a non-existent `-File` path with an opaque error.
+    const scriptPath = resolveScriptPath(script);
+    if (!scriptPath) {
+      const searched = SCRIPTS_DIRS.join("  |  ");
+      if (log) {
+        log({
+          id: ts.toString(36), ts, script, args,
+          stdout: "", stderr: `script not found in: ${searched}`,
+          exitCode: null, ok: false, durationMs: 0, mocked: false,
+        });
+      }
+      resolve({
+        ok: false,
+        error: `Não foi possível localizar o script "${script}". A instalação da aplicação parece incompleta ou corrompida — reinstala a versão mais recente. (Procurado em: ${searched})`,
+      });
+      return;
+    }
+
     const psArgs = [
       "-NoProfile",
       "-NonInteractive",
@@ -249,8 +294,6 @@ export function runPS(
       scriptPath,
       ...args,
     ];
-
-    const ts = Date.now();
 
     const env = { ...process.env };
     if (conn?.server)   env.AD_SERVER   = conn.server;

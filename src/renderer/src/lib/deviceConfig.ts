@@ -31,6 +31,8 @@ export const EMPTY_DEVICE_CONFIG: DeviceConfig = {
   printerSource: "",
   smlPlayerSource: "",
   smlPlayerIni: "",
+  ezofficeUrlTemplate: "",
+  screenConnectUrlTemplate: "",
 };
 
 // Coerce arbitrary stored/bridged data into a well-formed config so a corrupt
@@ -60,6 +62,8 @@ function normalize(raw: unknown): DeviceConfig {
     printerSource: typeof p.printerSource === "string" ? p.printerSource : "",
     smlPlayerSource: typeof p.smlPlayerSource === "string" ? p.smlPlayerSource : "",
     smlPlayerIni: typeof p.smlPlayerIni === "string" ? p.smlPlayerIni : "",
+    ezofficeUrlTemplate: typeof p.ezofficeUrlTemplate === "string" ? p.ezofficeUrlTemplate : "",
+    screenConnectUrlTemplate: typeof p.screenConnectUrlTemplate === "string" ? p.screenConnectUrlTemplate : "",
   };
 }
 

@@ -10,9 +10,8 @@ import brandFull from "../assets/logo_1.png";
 // `flavors` restricts an item to specific installers; omit = shown in both.
 // The Agent installer is the onboarding wizard only — no user administration; its
 // "devices" tab IS that wizard ("Onboarding PC"), whereas the Manager's is the
-// read-only fleet list ("Dispositivos"), which fans out into three sub-views (AD /
-// EZOffice / Consolidados) via an in-page tab switcher (see DeviceViewTabs) once
-// the inventory API is enabled.
+// single consolidated fleet list ("Dispositivos") — the union of every AD computer
+// object and every EZOffice asset, enriched and joined by name.
 const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean; flavors?: AppFlavor[]; needsInventory?: boolean }[] = [
   { id: "users",     label: "Users",                                     icon: Users,    bind: "1", flavors: ["manager"] },
   { id: "devices",   label: IS_AGENT ? "Onboarding PC" : "Dispositivos", icon: Laptop,   bind: "2" },

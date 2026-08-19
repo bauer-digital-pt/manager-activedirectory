@@ -37,6 +37,9 @@ contextBridge.exposeInMainWorld("appAPI", {
   getVersion: () => ipcRenderer.invoke("app:get-version"),
   getStartupInfo: () => ipcRenderer.invoke("app:startup-info"),
   getSsid: () => ipcRenderer.invoke("app:get-ssid"),
+  // Open an http/https URL in the user's default browser (device detail panel
+  // external links). Protocol-validated in the main process.
+  openExternal: (url: string) => ipcRenderer.invoke("app:open-external", url),
   platform: process.platform,
 });
 
@@ -70,6 +73,10 @@ contextBridge.exposeInMainWorld("adAPI", {
   resetPassword: (params: { username: string; newPassword: string }) =>
     ipcRenderer.invoke("ad:reset-password", params),
   unlockUser: (username: string) => ipcRenderer.invoke("ad:unlock-user", username),
+  // Reversible device write: enable/disable a computer account (gated by a kiosk
+  // re-auth in the renderer). Off-Windows returns adWriteUnavailable().
+  setDeviceState: (params: { identity: string; action: "enable" | "disable" }) =>
+    ipcRenderer.invoke("ad:set-device-state", params),
   searchUsers: (query: string) => ipcRenderer.invoke("ad:search-users", query),
   offboardUser: (params: { username: string; confirmUsername: string; adminPassword: string }) =>
     ipcRenderer.invoke("ad:offboard-user", params),

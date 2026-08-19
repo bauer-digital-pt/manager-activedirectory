@@ -30,12 +30,6 @@ import brandMark from "./assets/logo_2.png";
 
 export type Page = "users" | "devices" | "inventory" | "settings" | "console";
 
-// The three device views behind the single "Dispositivos" sidebar item:
-//  • ad           — raw AD computer objects, no EZOffice overlay.
-//  • ezoffice     — the EZOffice asset inventory (source of truth for hardware).
-//  • consolidated — AD list enriched with the matching EZOffice asset (default).
-export type DeviceView = "ad" | "ezoffice" | "consolidated";
-
 // Landing page per flavor: the Manager opens on Users; the Agent installer is the
 // onboarding wizard, so it opens straight on Devices (no Users page at all).
 const HOME_PAGE: Page = IS_AGENT ? "devices" : "users";
@@ -50,8 +44,6 @@ export default function App() {
   // mapping; reset to "general" whenever we leave Settings so a plain sidebar
   // click always lands on the first tab.
   const [settingsTab, setSettingsTab] = useState<"general" | "groups" | "devices" | "connection">("general");
-  // Which of the three device sub-views the "Dispositivos" item opens on.
-  const [deviceView, setDeviceView] = useState<DeviceView>("consolidated");
   // Whether the inventory API is configured+enabled — gates the sidebar tab, the
   // hotkey, and the page. Manager-only; the Agent never surfaces the inventory.
   const [inventoryEnabled, setInventoryEnabled] = useState(false);
@@ -129,15 +121,6 @@ export default function App() {
     if (page === p) return;
     if (!confirmNav()) return;
     setPage(p);
-  }, [page]);
-
-  // Switch the active device sub-view (from the sidebar "Dispositivos" flyout).
-  // Changing view while already on Devices needs no nav guard (Manager's device
-  // list has no unsaved state); coming from elsewhere goes through the guard.
-  const navigateDevice = useCallback((view: DeviceView) => {
-    if (page !== "devices" && !confirmNav()) return;
-    setDeviceView(view);
-    if (page !== "devices") setPage("devices");
   }, [page]);
 
   useEffect(() => {
@@ -533,13 +516,11 @@ export default function App() {
             <DevicesPage
               toast={toast}
               kiosk={settings.kioskMode}
-              view={deviceView}
-              onNavigateDevice={navigateDevice}
-              showViewTabs={inventoryEnabled}
+              ensureFreshAuth={ensureFreshAuth}
               onOpenDeviceSettings={() => { setSettingsTab("devices"); navigate("settings"); }}
               onOpenConnectionSettings={() => { setSettingsTab("connection"); navigate("settings"); }}
               onOpenInventorySettings={() => { setSettingsTab("connection"); navigate("settings"); }}
-              onOpenReconciliation={() => navigate("inventory")}
+              onOpenReconciliation={inventoryEnabled ? () => navigate("inventory") : undefined}
             />
           )}
           {page === "inventory" && <InventoryPage toast={toast} onOpenSettings={() => { setSettingsTab("connection"); navigate("settings"); }} />}

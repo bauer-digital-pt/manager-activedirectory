@@ -213,6 +213,11 @@ export interface DeviceConfig {
   // SMLPlayer installer + the Main.ini copied into %APPDATA%\SMLPlayer7 after it.
   smlPlayerSource: string;
   smlPlayerIni: string;
+  // Optional deep-link templates for the device detail panel's external actions.
+  // Admin-configured (never fabricated); may use {name}, {serial}, {id}
+  // placeholders. Empty = the corresponding button is hidden.
+  ezofficeUrlTemplate: string;
+  screenConnectUrlTemplate: string;
 }
 
 // --- Startup / version info ---

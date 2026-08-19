@@ -57,6 +57,9 @@ declare global {
       createUser(params: Record<string, string>): Promise<PSResult>;
       resetPassword(params: { username: string; newPassword: string }): Promise<PSResult>;
       unlockUser(username: string): Promise<PSResult>;
+      // Reversible device write: enable/disable a computer account. Gated by a
+      // kiosk re-auth in the renderer; off-Windows it returns adWriteUnavailable().
+      setDeviceState(params: { identity: string; action: "enable" | "disable" }): Promise<PSResult>;
       // Free-text AD user search for the PC-onboarding "prepared for" picker.
       searchUsers(query: string): Promise<PSResult<ADUserLite[]>>;
       // Offboard: disable + move to the morgue OU. Guarded in main by a username
@@ -221,6 +224,16 @@ const mockAPI: Window["adAPI"] = {
     return { ok: true };
   },
   resetPassword: async () => { await delay(); return { ok: true }; },
+  setDeviceState: async ({ identity, action }) => {
+    await delay(600);
+    if (!identity) return { ok: false, error: "Dispositivo em falta." };
+    if (action !== "enable" && action !== "disable") return { ok: false, error: "Ação inválida." };
+    // ?devicewritefail exercises the error path in the detail panel.
+    if (new URLSearchParams(location.search).has("devicewritefail")) {
+      return { ok: false, error: "Falha simulada ao alterar o estado do dispositivo." };
+    }
+    return { ok: true };
+  },
   unlockUser: async (u) => {
     await delay();
     for (const g of Object.values(MOCK_USERS)) {
@@ -386,6 +399,7 @@ export const adAPI = {
   getGroupMembers:      (g: string) => window.adAPI.getGroupMembers(g),
   createUser:           (p: Record<string, string>) => window.adAPI.createUser(p),
   resetPassword:        (p: { username: string; newPassword: string }) => window.adAPI.resetPassword(p),
+  setDeviceState:       (p: { identity: string; action: "enable" | "disable" }) => window.adAPI.setDeviceState(p),
   unlockUser:           (u: string) => window.adAPI.unlockUser(u),
   searchUsers:          (q: string) => window.adAPI.searchUsers(q),
   offboardUser:         (p: { username: string; confirmUsername: string; adminPassword: string }) => window.adAPI.offboardUser(p),

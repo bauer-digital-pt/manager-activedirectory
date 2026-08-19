@@ -1,13 +1,20 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Search, ServerCrash, RotateCcw, RefreshCw, Settings, Boxes, PackageSearch } from "lucide-react";
+import {
+  Search, ServerCrash, RotateCcw, RefreshCw, Settings, Boxes, PackageSearch,
+  Tag, Activity, Building2, Layers, ArrowUpNarrowWide, ArrowDownWideNarrow, X,
+} from "lucide-react";
 import { adAPI, type ADComputer } from "../adAPI";
 import { inventoryAPI, type InventoryAsset, type InventorySourceDevice } from "../inventoryAPI";
 import { getInventoryConfig } from "../lib/inventoryConfig";
+import { getDeviceConfig } from "../lib/deviceConfig";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
-import type { DeviceView } from "../App";
-import DeviceRow, { deviceStatus, type DeviceAsset } from "./DeviceRow";
-import DeviceViewTabs from "./DeviceViewTabs";
+import DeviceRow, { type UrlTemplates } from "./DeviceRow";
+import FilterDropdown, { type FilterOption } from "../components/ui/FilterDropdown";
+import {
+  type ConsolidatedDevice, type DeviceSource, type StateId,
+  fromAD, fromSource, consolidate, deviceState, STATE_RANK,
+} from "../lib/devices";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
@@ -19,79 +26,60 @@ function toArray<T>(data: unknown): T[] {
   return [data as T];
 }
 
-// The inventory API's AD view (ldap3, snake_case) → the ADComputer shape the
-// table already renders. It carries no DNS / ManagedBy / created / enabled flag,
-// so those stay undefined (Enabled included — the row shows "Estado desconhecido"
-// rather than fabricating "Ativo"); last_seen (ISO-8601) maps onto LastLogonDate,
-// which the row's date helpers parse like the PowerShell "yyyy-MM-dd HH:mm:ss" stamp.
-function fromSourceDevice(d: InventorySourceDevice): ADComputer {
-  return {
-    Name: d.name,
-    OperatingSystem: d.platform || undefined,
-    OperatingSystemVersion: d.os_version || undefined,
-    OU: d.department || undefined,
-    LastLogonDate: d.last_seen ?? null,
-    DistinguishedName: "",
-  };
+/* ------------------------------- sorting ---------------------------------- */
+
+// "Ordenar por" options. "estado" is the default: bucketed by STATE_RANK
+// (attention states first, healthy last), alphabetical within each bucket.
+type SortBy = "estado" | "nome" | "recente" | "criacao";
+const SORT_OPTIONS: FilterOption[] = [
+  { value: "estado",  label: "Estado (padrão)" },
+  { value: "nome",    label: "Nome" },
+  { value: "recente", label: "Último início de sessão" },
+  { value: "criacao", label: "Data de criação" },
+];
+
+// Parse a PowerShell "yyyy-MM-dd HH:mm:ss" or ISO-8601 stamp into a comparable
+// epoch, or null when absent/unparseable (nulls always sort last).
+function toTime(v?: string | null): number | null {
+  if (!v) return null;
+  const t = Date.parse(v.includes("T") ? v : v.replace(" ", "T"));
+  return Number.isNaN(t) ? null : t;
+}
+function nameCmp(a: ConsolidatedDevice, b: ConsolidatedDevice): number {
+  return (a.displayName || a.name).localeCompare(b.displayName || b.name, "pt");
 }
 
-// Build the enrichment map joining EZOffice detail onto a device row. The key is
-// the device name (lowercased) because that's the only identifier an ADComputer
-// row and an EZOffice asset share — neither the PowerShell nor the inventory row
-// exposes a serial to join on. On the Mac path the source devices seed serial +
-// holder first (so a device EZOffice doesn't know still shows them), then the
-// EZOffice assets overlay, being authoritative for category/status.
-function buildAssetMap(
-  assets: InventoryAsset[] | null,
-  sources: InventorySourceDevice[] | null,
-): Map<string, DeviceAsset> {
-  const map = new Map<string, DeviceAsset>();
-  if (sources) {
-    for (const s of sources) {
-      const k = (s.name || "").toLowerCase();
-      if (!k) continue;
-      map.set(k, {
-        serial_number: s.serial_number || undefined,
-        assigned_user_email: s.assigned_user_email || undefined,
-      });
-    }
-  }
-  if (assets) {
-    for (const a of assets) {
-      const k = (a.name || "").toLowerCase();
-      if (!k) continue;
-      const prev = map.get(k) ?? {};
-      map.set(k, {
-        serial_number: a.serial_number || prev.serial_number,
-        category: a.category || undefined,
-        status: a.status || undefined,
-        assigned_user_email: a.assigned_user_email || prev.assigned_user_email,
-      });
-    }
-  }
-  return map;
-}
+// PT labels for the Estado filter, keyed by the StateId deviceState() returns.
+const STATE_LABEL: Record<StateId, string> = {
+  disabled: "Desativado", broken: "Avariado", lost: "Perdido", inactive: "Inativo",
+  retired: "Abatido", available: "Disponível", inuse: "Em uso", active: "Ativo",
+  unknown: "Desconhecido",
+};
+const SOURCE_LABEL: Record<DeviceSource, string> = {
+  ad: "Active Directory", ezoffice: "EZOffice", both: "AD + EZOffice",
+};
+
+/* --------------------------------- cache ---------------------------------- */
 
 // Module-level cache so returning from another page (e.g. Settings) is instant
-// and doesn't re-query the whole fleet. A first-ever mount has loaded=false. `key`
-// records the source+enrichment signature the cache was built for, so toggling
-// inventory (or a non-Windows host) triggers a one-off refresh.
+// and doesn't re-query the whole fleet. `key` records the source+enrichment
+// signature the cache was built for, so toggling inventory (or a non-Windows
+// host) triggers a one-off refresh. Holds the RAW base rows + assets so the
+// consolidation stays a pure, memoised derivation.
 type DevicesCache = {
-  devices: ADComputer[];
-  assets: Map<string, DeviceAsset>;
+  base: ConsolidatedDevice[];
+  assets: InventoryAsset[] | null;
   sourced: boolean;
   loaded: boolean;
   error: string | null;
   key: string;
 };
-let devicesCache: DevicesCache = { devices: [], assets: new Map(), sourced: false, loaded: false, error: null, key: "" };
+let devicesCache: DevicesCache = { base: [], assets: null, sourced: false, loaded: false, error: null, key: "" };
 
 export default function DeviceListPage({
   toast,
   kiosk = false,
-  variant = "consolidated",
-  title = "Dispositivos",
-  tabs,
+  ensureFreshAuth,
   onOpenConnectionSettings,
   onOpenInventorySettings,
   onOpenReconciliation,
@@ -99,27 +87,40 @@ export default function DeviceListPage({
   toast: { success: ToastFn; error: ToastFn };
   /** Kiosk mode: silently refresh the fleet every 5 min for a live wall display. */
   kiosk?: boolean;
-  /** "ad" = raw AD objects (no EZOffice overlay); "consolidated" = AD + EZOffice. */
-  variant?: "ad" | "consolidated";
-  /** Heading for the list — shown only when the header tabs aren't. */
-  title?: string;
-  /** In-page AD/EZOffice/Consolidados switcher, shown in the header in place of the title. */
-  tabs?: { view: DeviceView; onSelect: (view: DeviceView) => void };
+  /** Threaded to each row to gate the enable/disable write behind a re-auth. */
+  ensureFreshAuth?: () => Promise<boolean>;
   /** Opens Settings → Conexões — offered when the AD device read fails. */
   onOpenConnectionSettings?: () => void;
   /** Opens Settings → Conexões — offered when the inventory-API source fails (Mac/Linux). */
   onOpenInventorySettings?: () => void;
-  /** Consolidated view only — jump to the reconciliation dashboard. */
+  /** Jump to the reconciliation dashboard (AD ↔ EZOffice). */
   onOpenReconciliation?: () => void;
 }) {
-  const [devices, setDevices] = useState<ADComputer[]>(devicesCache.devices);
-  const [assetByName, setAssetByName] = useState<Map<string, DeviceAsset>>(devicesCache.assets);
+  const [base, setBase] = useState<ConsolidatedDevice[]>(devicesCache.base);
+  const [assets, setAssets] = useState<InventoryAsset[] | null>(devicesCache.assets);
   const [sourced, setSourced] = useState(devicesCache.sourced);
   const [loading, setLoading] = useState(!devicesCache.loaded);
   const [error, setError] = useState<string | null>(devicesCache.error);
-  const [activeDept, setActiveDept] = useState<string | null>(null);
+
+  // Four filter TYPES (null = "all") + the sort control — same UX as the Users page.
+  const [categoria, setCategoria] = useState<string | null>(null);
+  const [estado, setEstado] = useState<string | null>(null);
+  const [departamento, setDepartamento] = useState<string | null>(null);
+  const [fonte, setFonte] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<SortBy>("estado");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // Admin-configured deep-link templates (EZOffice / ScreenConnect) from Settings.
+  const [urlTemplates, setUrlTemplates] = useState<UrlTemplates>({ ezoffice: "", screenConnect: "" });
+  useEffect(() => {
+    let alive = true;
+    getDeviceConfig()
+      .then((c) => { if (alive) setUrlTemplates({ ezoffice: c.ezofficeUrlTemplate, screenConnect: c.screenConnectUrlTemplate }); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // Lazy render: mount the first slice of rows and grow on scroll so a large
   // fleet doesn't build thousands of DOM rows at once.
@@ -134,9 +135,12 @@ export default function DeviceListPage({
   // Where the list comes from + whether to enrich it with EZOffice data. Windows
   // always reads AD directly (native PowerShell); a Mac/Linux Manager has no local
   // AD access, so — when the inventory API is enabled — it sources the fleet from
-  // that API instead. `?macfallback` forces this path in the browser preview.
+  // that API instead. Browser preview: ?macfallback forces the source path and
+  // ?inv forces enrichment so the consolidated list (peripherals included) shows.
   const platform = window.appAPI?.platform ?? "browser";
-  const forceMac = platform === "browser" && new URLSearchParams(location.search).has("macfallback");
+  const params = new URLSearchParams(location.search);
+  const forceMac = platform === "browser" && params.has("macfallback");
+  const forceInv = platform === "browser" && (params.has("inv") || params.has("macfallback"));
   const [invReady, setInvReady] = useState(false);
   const [invEnabled, setInvEnabled] = useState(false);
   const [invBaseUrl, setInvBaseUrl] = useState("");
@@ -148,13 +152,11 @@ export default function DeviceListPage({
     return () => { alive = false; };
   }, []);
 
-  const useInventorySource = invEnabled && (platform === "darwin" || platform === "linux" || forceMac);
-  // The "AD" sub-view is deliberately raw — no EZOffice overlay — so a viewer can
-  // see the directory exactly as AD holds it. "Consolidated" enriches when able.
-  const enrich = variant !== "ad" && invEnabled;
+  const useInventorySource = (invEnabled && (platform === "darwin" || platform === "linux")) || forceMac;
+  const enrich = invEnabled || forceInv;
   // Include the API address in the key ONLY when a fetch actually hits it, so
-  // changing the address (source or enrichment) re-queries, while a pure AD read
-  // isn't needlessly invalidated by an unrelated inventory-URL edit.
+  // changing the address re-queries, while a pure AD read isn't needlessly
+  // invalidated by an unrelated inventory-URL edit.
   const usesApi = useInventorySource || enrich;
   const cacheKey = `${useInventorySource ? "inv" : "ad"}|${enrich ? "enr" : "raw"}|${usesApi ? invBaseUrl : "-"}`;
 
@@ -171,36 +173,34 @@ export default function DeviceListPage({
       ? inventoryAPI.getAssets().then((r) => (r.ok && r.data ? r.data : null)).catch(() => null)
       : Promise.resolve(null);
 
-    const run = async (): Promise<{ list: ADComputer[]; map: Map<string, DeviceAsset> }> => {
+    const run = async (): Promise<{ base: ConsolidatedDevice[]; assets: InventoryAsset[] | null }> => {
       if (useInventorySource) {
-        const [devRes, assets] = await Promise.all([inventoryAPI.getADDevices(), assetsP]);
+        const [devRes, a] = await Promise.all([inventoryAPI.getADDevices(), assetsP]);
         if (!devRes.ok) throw new Error(devRes.error ?? "Não foi possível obter os dispositivos da API de inventário.");
-        const sources = toArray<InventorySourceDevice>(devRes.data);
-        return { list: sources.map(fromSourceDevice), map: buildAssetMap(assets, sources) };
+        return { base: toArray<InventorySourceDevice>(devRes.data).map(fromSource), assets: a };
       }
-      const [devRes, assets] = await Promise.all([adAPI.getDevices(), assetsP]);
+      const [devRes, a] = await Promise.all([adAPI.getDevices(), assetsP]);
       if (!devRes.ok) throw new Error(devRes.error ?? "Não foi possível carregar os dispositivos do Active Directory.");
-      return { list: toArray<ADComputer>(devRes.data), map: buildAssetMap(assets, null) };
+      return { base: toArray<ADComputer>(devRes.data).map(fromAD), assets: a };
     };
 
     run()
-      .then(({ list, map }) => {
+      .then(({ base: b, assets: a }) => {
         setLoading(false);
-        setDevices(list); setAssetByName(map); setSourced(useInventorySource); setError(null);
-        devicesCache = { devices: list, assets: map, sourced: useInventorySource, loaded: true, error: null, key };
+        setBase(b); setAssets(a); setSourced(useInventorySource); setError(null);
+        devicesCache = { base: b, assets: a, sourced: useInventorySource, loaded: true, error: null, key };
       })
       .catch((e) => {
         // Background hiccup: keep the last-good fleet untouched (no blank, no error).
         if (background) return;
         setLoading(false);
-        setDevices([]); setAssetByName(new Map()); setSourced(useInventorySource);
-        // Explicit, recoverable error — never a misleading "no devices".
+        setBase([]); setAssets(null); setSourced(useInventorySource);
         const fallback = useInventorySource
           ? "Não foi possível contactar a API de inventário."
           : "Não foi possível comunicar com o Active Directory.";
         const err = typeof e?.message === "string" && e.message ? e.message : fallback;
         setError(err);
-        devicesCache = { devices: [], assets: new Map(), sourced: useInventorySource, loaded: true, error: err, key };
+        devicesCache = { base: [], assets: null, sourced: useInventorySource, loaded: true, error: err, key };
       });
   }, [useInventorySource, enrich, cacheKey]);
 
@@ -211,20 +211,59 @@ export default function DeviceListPage({
     if (!devicesCache.loaded || devicesCache.key !== cacheKey) load();
   }, [invReady, cacheKey, load]);
 
-  // Kiosk: silently refresh the fleet every 5 minutes so the live view stays
-  // current on a wall display without any operator action.
+  // Kiosk: silently refresh every 5 minutes so a wall display stays current.
   useEffect(() => {
     if (!kiosk || !invReady) return;
     const id = setInterval(() => load(true), 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [kiosk, invReady, load]);
 
-  // Distinct department folders (OU) present in the fleet, for the filter pills.
-  const departments = useMemo(() => {
+  // The single, consolidated + enriched list (req. A): AD objects overlaid with
+  // their matching EZOffice asset, plus asset-only rows for peripherals AD never
+  // sees. A pure, memoised derivation of the raw base + assets.
+  const devices = useMemo(() => consolidate(base, assets), [base, assets]);
+
+  // Patch a single row's enabled flag in place after a successful toggle, so the
+  // state badge updates without a full refetch. Keyed by the consolidated key
+  // (= the AD base row's key), and mirrored into the cache.
+  const onToggledEnabled = useCallback((key: string, enabled: boolean) => {
+    setBase((prev) => {
+      const next = prev.map((d) => (d.key === key ? { ...d, enabled } : d));
+      devicesCache = { ...devicesCache, base: next };
+      return next;
+    });
+  }, []);
+
+  // Filter option lists, drawn from the loaded fleet so each dropdown only offers
+  // values that actually exist (parity with the Users page).
+  const categoriaOptions = useMemo<FilterOption[]>(() => {
     const set = new Set<string>();
-    for (const d of devices) if (d.OU) set.add(d.OU);
-    return Array.from(set).sort();
+    for (const d of devices) if (d.category) set.add(d.category);
+    return [...set].sort((a, b) => a.localeCompare(b, "pt")).map((c) => ({ value: c, label: c }));
   }, [devices]);
+  const departamentoOptions = useMemo<FilterOption[]>(() => {
+    const set = new Set<string>();
+    for (const d of devices) if (d.department) set.add(d.department);
+    return [...set].sort((a, b) => a.localeCompare(b, "pt")).map((d) => ({ value: d, label: d }));
+  }, [devices]);
+  const estadoOptions = useMemo<FilterOption[]>(() => {
+    const set = new Set<StateId>();
+    for (const d of devices) set.add(deviceState(d).id);
+    return [...set]
+      .sort((a, b) => STATE_RANK[a] - STATE_RANK[b])
+      .map((id) => ({ value: id, label: STATE_LABEL[id] }));
+  }, [devices]);
+  const fonteOptions = useMemo<FilterOption[]>(() => {
+    const set = new Set<DeviceSource>();
+    for (const d of devices) set.add(d.source);
+    const order: DeviceSource[] = ["both", "ad", "ezoffice"];
+    return order.filter((s) => set.has(s)).map((s) => ({ value: s, label: SOURCE_LABEL[s] }));
+  }, [devices]);
+
+  const anyFilterActive = !!(categoria || estado || departamento || fonte || search.trim());
+  const clearFilters = useCallback(() => {
+    setCategoria(null); setEstado(null); setDepartamento(null); setFonte(null); setSearch("");
+  }, []);
 
   // Type-to-search (parity with the Users list): any printable key focuses the
   // search box. Bail while a detail modal is open so we don't steal its keys.
@@ -244,30 +283,52 @@ export default function DeviceListPage({
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  // Filter by all four types + free-text, then sort. Recomputes only when an
+  // input actually changes.
   const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-    return devices.filter((d) => {
-      const matchesDept = !activeDept || d.OU === activeDept;
-      if (!q) return matchesDept;
-      const a = assetByName.get((d.Name || "").toLowerCase());
-      const matchesSearch =
-        d.Name?.toLowerCase().includes(q) ||
-        d.DNSHostName?.toLowerCase().includes(q) ||
-        d.Description?.toLowerCase().includes(q) ||
-        d.OperatingSystem?.toLowerCase().includes(q) ||
-        d.OU?.toLowerCase().includes(q) ||
-        a?.serial_number?.toLowerCase().includes(q) ||
-        a?.assigned_user_email?.toLowerCase().includes(q);
-      return matchesDept && matchesSearch;
+    const q = search.trim().toLowerCase();
+    const list = devices.filter((d) => {
+      if (categoria && (d.category ?? "") !== categoria) return false;
+      if (departamento && (d.department ?? "") !== departamento) return false;
+      if (fonte && d.source !== fonte) return false;
+      if (estado && deviceState(d).id !== estado) return false;
+      if (q) {
+        const hay = [
+          d.name, d.displayName, d.dnsHostName, d.serialNumber, d.category,
+          d.department, d.operatingSystem, d.assignedUserEmail, d.description,
+        ];
+        if (!hay.some((v) => v?.toLowerCase().includes(q))) return false;
+      }
+      return true;
     });
-  }, [devices, activeDept, search, assetByName]);
 
-  // Reset the window only when the operator changes a filter — deliberately NOT
-  // keyed on `devices`, so a kiosk background refresh swaps the data in place
-  // without collapsing the scrolled-open window and yanking a wall display back
-  // to the top every 5 min. A shrunk/grown result set is handled by the
-  // filtered.slice + hasMore below without needing a reset. (Matches UsersPage.)
-  useEffect(() => { setVisibleCount(PAGE); }, [search, activeDept]);
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...list].sort((a, b) => {
+      switch (sortBy) {
+        case "nome":
+          return dir * nameCmp(a, b);
+        case "recente":
+        case "criacao": {
+          const ta = toTime(sortBy === "recente" ? a.lastLogonDate : a.whenCreated);
+          const tb = toTime(sortBy === "recente" ? b.lastLogonDate : b.whenCreated);
+          if (ta === null && tb === null) return nameCmp(a, b);
+          if (ta === null) return 1;   // missing timestamps always sort last
+          if (tb === null) return -1;
+          return dir * (ta - tb) || nameCmp(a, b);
+        }
+        case "estado":
+        default:
+          return dir * (STATE_RANK[deviceState(a).id] - STATE_RANK[deviceState(b).id]) || nameCmp(a, b);
+      }
+    });
+  }, [devices, categoria, departamento, fonte, estado, search, sortBy, sortDir]);
+
+  // Reset the render window whenever the filter/sort inputs change. Deliberately
+  // NOT keyed on `devices`, so a kiosk background refresh swaps data in place
+  // without yanking a wall display back to the top.
+  useEffect(() => {
+    setVisibleCount(PAGE);
+  }, [search, categoria, estado, departamento, fonte, sortBy, sortDir]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
@@ -280,17 +341,12 @@ export default function DeviceListPage({
     }
   };
 
-  // Small at-a-glance breakdown for the footer.
-  const activeCount = useMemo(() => filtered.filter((d) => deviceStatus(d).tone === "emerald").length, [filtered]);
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Toolbar */}
       <div className="px-6 pt-5 pb-4 border-b border-zinc-200 space-y-4">
         <div className="flex items-center justify-between">
-          {tabs
-            ? <DeviceViewTabs view={tabs.view} onSelect={tabs.onSelect} />
-            : <h2 className="text-base font-semibold text-zinc-900">{title}</h2>}
+          <h2 className="text-base font-semibold text-zinc-900">Dispositivos</h2>
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
@@ -302,7 +358,6 @@ export default function DeviceListPage({
                 className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-56 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
               />
             </div>
-            {/* Consolidated view: quick link to the reconciliation dashboard. */}
             {onOpenReconciliation && (
               <button
                 onClick={onOpenReconciliation}
@@ -324,34 +379,77 @@ export default function DeviceListPage({
           </div>
         </div>
 
-        {/* Department pills */}
-        {(loading || departments.length > 0) && (
+        {/* Filter types + sort control (same layout as the Users page) */}
+        {loading ? (
+          <div className="flex items-center gap-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-8 w-28 rounded-lg bg-zinc-100 animate-pulse" />
+            ))}
+          </div>
+        ) : (
           <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => setActiveDept(null)}
-              className={cn(
-                "px-3 py-1 rounded-full text-xs font-medium transition-colors",
-                !activeDept ? "bg-violet-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200",
-              )}
-            >
-              Todos
-            </button>
-            {loading
-              ? Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} className="h-6 w-16 rounded-full bg-zinc-100 animate-pulse" />
-                ))
-              : departments.map((d) => (
-                  <button
-                    key={d}
-                    onClick={() => setActiveDept(activeDept === d ? null : d)}
-                    className={cn(
-                      "px-3 py-1 rounded-full text-xs font-medium transition-colors",
-                      activeDept === d ? "bg-violet-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200",
-                    )}
-                  >
-                    {d}
-                  </button>
-                ))}
+            <FilterDropdown
+              label="Categoria"
+              icon={<Tag size={13} />}
+              allLabel="Todas"
+              value={categoria}
+              options={categoriaOptions}
+              onChange={setCategoria}
+            />
+            <FilterDropdown
+              label="Estado"
+              icon={<Activity size={13} />}
+              allLabel="Todos"
+              value={estado}
+              options={estadoOptions}
+              onChange={setEstado}
+            />
+            <FilterDropdown
+              label="Departamento"
+              icon={<Building2 size={13} />}
+              allLabel="Todos"
+              value={departamento}
+              options={departamentoOptions}
+              onChange={setDepartamento}
+            />
+            <FilterDropdown
+              label="Fonte"
+              icon={<Layers size={13} />}
+              allLabel="Todas"
+              value={fonte}
+              options={fonteOptions}
+              onChange={setFonte}
+            />
+
+            {/* Sort: choose the key, then toggle asc/desc. */}
+            <div className="ml-auto flex items-center gap-1.5">
+              <FilterDropdown
+                label="Ordenar por"
+                allowAll={false}
+                value={sortBy}
+                options={SORT_OPTIONS}
+                onChange={(v) => setSortBy((v as SortBy) ?? "estado")}
+              />
+              <button
+                type="button"
+                onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                title={sortDir === "asc" ? "Ascendente" : "Descendente"}
+                className="inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white p-1.5 text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700"
+              >
+                {sortDir === "asc" ? <ArrowUpNarrowWide size={15} /> : <ArrowDownWideNarrow size={15} />}
+              </button>
+            </div>
+
+            {anyFilterActive && (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600"
+              >
+                <X size={13} />
+                Limpar
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -380,7 +478,7 @@ export default function DeviceListPage({
           />
         ) : filtered.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-sm text-zinc-400">
-            {search || activeDept ? "Nenhum dispositivo corresponde aos filtros" : "Nenhum dispositivo encontrado"}
+            {anyFilterActive ? "Nenhum dispositivo corresponde aos filtros" : "Nenhum dispositivo encontrado"}
           </div>
         ) : (
           <table className="anim-fade-in w-full">
@@ -388,19 +486,21 @@ export default function DeviceListPage({
               <tr className="border-b border-zinc-100">
                 <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Dispositivo</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Departamento</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider hidden md:table-cell">Sistema</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider hidden md:table-cell">Categoria</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider hidden sm:table-cell">Último início de sessão</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Estado</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider"><span className="sr-only">Detalhes</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-50">
-              {visible.map((d, i) => (
+              {visible.map((d) => (
                 <DeviceRow
-                  key={d.DistinguishedName || d.Name || `row-${i}`}
+                  key={d.key}
                   device={d}
-                  asset={assetByName.get((d.Name || "").toLowerCase())}
                   toast={toast}
+                  ensureFreshAuth={ensureFreshAuth}
+                  urlTemplates={urlTemplates}
+                  onToggledEnabled={onToggledEnabled}
                 />
               ))}
             </tbody>
@@ -418,10 +518,7 @@ export default function DeviceListPage({
         <div className="px-6 py-3 border-t border-zinc-100">
           <span className="text-xs text-zinc-400">
             {filtered.length} {filtered.length === 1 ? "dispositivo" : "dispositivos"}
-            {/* The API source carries no enabled flag, so an "ativos" count there
-                would be a fabricated 0 — only show it on the AD (Windows) path. */}
-            {!sourced && <>{" — "}{activeCount} {activeCount === 1 ? "ativo" : "ativos"}</>}
-            {(search || activeDept) && " — filtrado"}
+            {anyFilterActive && " — filtrado"}
           </span>
         </div>
       )}

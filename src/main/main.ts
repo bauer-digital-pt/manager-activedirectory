@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, Menu, systemPreferences } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, Menu, systemPreferences, shell } from "electron";
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { spawn, execFile } from "child_process";
@@ -240,6 +240,8 @@ const deviceConfigStore = makeJsonStore<DeviceConfig>("device-config.json", (raw
     printerSource: typeof r.printerSource === "string" ? r.printerSource : "",
     smlPlayerSource: typeof r.smlPlayerSource === "string" ? r.smlPlayerSource : "",
     smlPlayerIni: typeof r.smlPlayerIni === "string" ? r.smlPlayerIni : "",
+    ezofficeUrlTemplate: typeof r.ezofficeUrlTemplate === "string" ? r.ezofficeUrlTemplate : "",
+    screenConnectUrlTemplate: typeof r.screenConnectUrlTemplate === "string" ? r.screenConnectUrlTemplate : "",
   };
 });
 // Dev-only convenience: when PowerShell is mocked (MOCK_PS=1) and nothing has
@@ -252,7 +254,7 @@ function demoDeviceConfig(): DeviceConfig {
   for (const d of ["ADM", "RCM", "CDD", "MKT", "NWS", "RTO", "COM", "DIG", "EVT", "HR", "IT", "LEG"]) {
     ouMap[d] = `OU=${d},OU=O365,OU=BMAP Devices,DC=bmap,DC=lis`;
   }
-  return { ouMap, anyConnectSource: "", screenConnectSource: "", printerMap: { ADM: ["ADM"], IT: ["PRO", "MRK"] }, printerSource: "", smlPlayerSource: "", smlPlayerIni: "" };
+  return { ouMap, anyConnectSource: "", screenConnectSource: "", printerMap: { ADM: ["ADM"], IT: ["PRO", "MRK"] }, printerSource: "", smlPlayerSource: "", smlPlayerIni: "", ezofficeUrlTemplate: "", screenConnectUrlTemplate: "" };
 }
 function readDeviceConfig(): DeviceConfig {
   const cfg = deviceConfigStore.read();
@@ -895,6 +897,21 @@ handle("ad:offboard-user", async (_e, rawParams) => {
   return ps("Offboard-ADUser.ps1", [username]);
 });
 
+// Enable/disable a computer object. A reversible AD write, so it's gated in the
+// renderer by the kiosk re-auth (ensureFreshAuth) like reset/unlock — no admin
+// password re-confirm (that's reserved for the destructive user offboard). Runs
+// with the logged-in session credentials (bind-as-user); never on the API path,
+// where AD writes stay on Windows.
+handle("ad:set-device-state", async (_e, rawParams) => {
+  if (AD_VIA_API) return adWriteUnavailable();
+  const p = (rawParams ?? {}) as { identity?: string; action?: string };
+  const identity = (p.identity ?? "").trim();
+  const action = (p.action ?? "").trim().toLowerCase();
+  if (!identity) return { ok: false, error: "Dispositivo em falta." };
+  if (action !== "enable" && action !== "disable") return { ok: false, error: "Ação inválida." };
+  return ps("Set-ADComputerState.ps1", [identity, action]);
+});
+
 // --- PC onboarding (the machine this app is running on) ---
 
 // The PC status probe (esp. the Windows Update COM search) is slow and, by
@@ -1213,6 +1230,22 @@ handle("config:set-settings", (_e, rawPayload) => {
 // --- App / window IPC ---
 handle("app:get-version", () => app.getVersion());
 handle("app:startup-info", () => startupInfo);
+
+// Open an external URL in the user's default browser (device detail panel:
+// EZOffice / ScreenConnect deep links). Only http/https is allowed — never a
+// file:, javascript:, or app-scheme URL — so a bad/hand-edited template can't be
+// turned into local code execution. The URL originates from an admin-configured
+// template + an explicit user click, never from untrusted directory data alone.
+handle("app:open-external", async (_e, rawUrl): Promise<{ ok: boolean; error?: string }> => {
+  const url = typeof rawUrl === "string" ? rawUrl.trim() : "";
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return { ok: false, error: "URL inválido." }; }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, error: "Só são permitidos endereços http/https." };
+  }
+  await shell.openExternal(url);
+  return { ok: true };
+});
 
 // Report the currently-associated Wi-Fi SSID so the renderer can gate login on
 // the office network BEFORE any AD work (see the WifiGate). Runs on every
@@ -1686,6 +1719,8 @@ handle("config:set-device-config", (_e, rawPayload) => {
     printerSource: p.printerSource !== undefined ? String(p.printerSource) : current.printerSource,
     smlPlayerSource: p.smlPlayerSource !== undefined ? String(p.smlPlayerSource) : current.smlPlayerSource,
     smlPlayerIni: p.smlPlayerIni !== undefined ? String(p.smlPlayerIni) : current.smlPlayerIni,
+    ezofficeUrlTemplate: p.ezofficeUrlTemplate !== undefined ? String(p.ezofficeUrlTemplate) : current.ezofficeUrlTemplate,
+    screenConnectUrlTemplate: p.screenConnectUrlTemplate !== undefined ? String(p.screenConnectUrlTemplate) : current.screenConnectUrlTemplate,
   };
   writeDeviceConfig(next);
   return next;

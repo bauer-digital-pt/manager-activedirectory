@@ -813,6 +813,37 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
             />
             <p className="text-[11px] text-zinc-400">Copiado para %APPDATA%\SMLPlayer7 depois de abrir/fechar a aplicação.</p>
           </div>
+
+          <div className="pt-4 mt-2 border-t border-zinc-100 space-y-1">
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Links externos</h3>
+            <p className="text-xs text-zinc-400">
+              Modelos de URL para os botões de ação no painel de detalhes de cada dispositivo. Podes usar{" "}
+              <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] text-zinc-600">{"{name}"}</code>,{" "}
+              <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] text-zinc-600">{"{serial}"}</code> ou{" "}
+              <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] text-zinc-600">{"{id}"}</code> — são
+              substituídos pelos dados do dispositivo. Deixa em branco para esconder o botão.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">EZOffice (link do ativo)</label>
+            <input
+              value={config.ezofficeUrlTemplate}
+              onChange={(e) => setConfig((c) => ({ ...c, ezofficeUrlTemplate: e.target.value }))}
+              onBlur={() => persist(config)}
+              placeholder="ex: https://bauermedia.ezofficeinventory.com/assets?search={name}"
+              className={inputCls}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">ScreenConnect (link da sessão)</label>
+            <input
+              value={config.screenConnectUrlTemplate}
+              onChange={(e) => setConfig((c) => ({ ...c, screenConnectUrlTemplate: e.target.value }))}
+              onBlur={() => persist(config)}
+              placeholder="ex: https://sc.bmap.lis/Host#Access/All%20Machines//{name}"
+              className={inputCls}
+            />
+          </div>
           <button
             onClick={async () => { await persist(config); toast.success("Definições de dispositivos guardadas"); }}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
