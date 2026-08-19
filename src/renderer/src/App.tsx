@@ -7,6 +7,7 @@ import TitleBar from "./components/TitleBar";
 import LoginGate from "./components/LoginGate";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SetupRequired from "./components/SetupRequired";
+import WifiGate from "./components/WifiGate";
 import UpdateAvailable from "./components/UpdateAvailable";
 import UsersPage from "./pages/Users/UsersPage";
 // Secondary pages are code-split so the initial bundle carries only the login
@@ -22,8 +23,10 @@ import { getBiometricInfo, biometricPrompt, biometricLabel, type BiometricInfo }
 import { getSettings, type AppSettings, DEFAULT_SETTINGS } from "./lib/appSettings";
 import { getInventoryConfig } from "./lib/inventoryConfig";
 import { confirmNav } from "./lib/navGuard";
+import { getWifiStatus, isWrongWifi, type WifiStatus } from "./lib/wifi";
 import { IS_AGENT, FLAVOR_UI } from "./lib/flavor";
 import logo from "./assets/bauer-media-logo.svg";
+import brandMark from "./assets/logo_2.png";
 
 export type Page = "users" | "devices" | "inventory" | "settings" | "console";
 
@@ -96,6 +99,12 @@ export default function App() {
 
   // --- Connection status dot ---
   const [connOk, setConnOk] = useState<boolean | null>(null);
+
+  // --- Wrong-Wi-Fi pre-login gate ---
+  // Latest detected Wi-Fi status (null = undetermined → never blocks). `wifiChecking`
+  // drives the "Verificar novamente" spinner on the gate.
+  const [wifiStatus, setWifiStatus] = useState<WifiStatus | null>(null);
+  const [wifiChecking, setWifiChecking] = useState(false);
   // While a manual update check modal is open, suppress the full-screen takeover.
   const [suppressTakeover, setSuppressTakeover] = useState(false);
 
@@ -367,6 +376,30 @@ export default function App() {
     return () => { alive = false; window.clearInterval(id); };
   }, [authed]);
 
+  // Wrong-Wi-Fi gate: probe the associated SSID up front and on an interval, plus
+  // whenever the window regains focus (so switching networks is picked up right
+  // away). The POLL runs regardless of `authed` (cheap, and keeps the status warm
+  // so the gate is instant at the login screen); the GATE itself only shows
+  // pre-login (see the !authed branch below) so it never interrupts a logged-in
+  // operator. Recovering the correct network drops the gate on the next probe.
+  const probeWifi = useCallback(
+    () => getWifiStatus().then(setWifiStatus).catch(() => setWifiStatus(null)),
+    [],
+  );
+  useEffect(() => {
+    probeWifi();
+    const id = window.setInterval(probeWifi, 10000);
+    const onFocus = () => probeWifi();
+    window.addEventListener("focus", onFocus);
+    return () => { window.clearInterval(id); window.removeEventListener("focus", onFocus); };
+  }, [probeWifi]);
+
+  const recheckWifi = useCallback(async () => {
+    setWifiChecking(true);
+    await probeWifi();
+    setWifiChecking(false);
+  }, [probeWifi]);
+
   // First tier — inactivity SOFT lock: after `loginTimeoutMin` with no activity,
   // cover the app with the lock screen but KEEP the session alive, so the operator
   // resumes with a biometric or password instead of a full re-login. Any activity
@@ -411,6 +444,10 @@ export default function App() {
   // ── Screen selection ──────────────────────────────────────────────────────
   let content: React.ReactNode;
 
+  // Only ever blocks on a positively-identified wrong network; undetermined
+  // (off-Windows, IPC error, wired) resolves to false, so login proceeds.
+  const wrongWifi = isWrongWifi(wifiStatus);
+
   if (moduleMissing === null) {
     // Still checking — a light splash avoids flashing the app (or a black window).
     content = (
@@ -421,6 +458,16 @@ export default function App() {
           <span className="text-xs text-zinc-400">A iniciar…</span>
         </div>
       </div>
+    );
+  } else if (!authed && wrongWifi) {
+    // Wrong Wi-Fi takes precedence over every other PRE-LOGIN screen (setup,
+    // update): AD work needs the office network, so warn immediately instead of
+    // letting login fail cryptically ("sem sequer pedir login"). Applies to BOTH
+    // flavors. Gated on !authed so it never yanks a logged-in operator out of an
+    // in-progress onboarding wizard (whose state is component-local) — a network
+    // blip mid-task surfaces as connection errors, not lost work.
+    content = (
+      <WifiGate ssid={wifiStatus?.ssid ?? null} onRecheck={recheckWifi} rechecking={wifiChecking} />
     );
   } else if (!IS_AGENT && moduleMissing && !continueAnyway) {
     // Module missing and not dismissed — RSAT setup is a precondition for login.
@@ -828,33 +875,67 @@ function PageFallback() {
   );
 }
 
-// The Agent's slim-installer chrome: a single card floated in the middle of the
-// page, no sidebar. The card sizes to its content and centers vertically, but
-// caps at the viewport (scrolling internally) so a long onboarding run still
-// fits. Settings — reached via the wizard's deep-link or the hidden hotkeys —
-// gets a wider card and a Back button, since there's no sidebar to return with.
+// The Agent's slim-installer chrome — no sidebar. The onboarding surface
+// ("devices") is a full-bleed, Windows-Setup-style experience: the Bauer purple
+// gradient fills the screen with slow-drifting glow blobs and the brand mark
+// pinned top-left, and the wizard renders light-on-dark directly over it (no
+// card). Settings — reached via the wizard's deep-link or the hidden hotkeys —
+// keeps a legible white card floated on the same backdrop, with a Back button
+// since there's no sidebar to return with.
 function AgentShell({ page, onBack, children }: { page: Page; onBack: () => void; children: React.ReactNode }) {
-  const wide = page !== "devices";
+  const onboarding = page === "devices";
   return (
-    <div className="flex flex-1 overflow-y-auto bg-gradient-to-b from-zinc-100 to-zinc-200/60 px-6 py-8">
+    <div className="relative flex flex-1 flex-col overflow-hidden bg-[#1a0538]">
+      {/* Brand backdrop — the same identity as the login/status screens, spread
+          full-bleed. The gradient is the base; drifting blobs give it life. */}
       <div
-        className={cn(
-          "mx-auto my-auto flex max-h-full w-full flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl shadow-zinc-900/10",
-          wide ? "max-w-[820px]" : "max-w-[600px]",
-        )}
-      >
-        {page !== "devices" && (
-          <div className="flex items-center border-b border-zinc-200 px-3 py-2">
-            <button
-              onClick={onBack}
-              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
-            >
-              <ChevronLeft size={14} /> Voltar ao onboarding
-            </button>
-          </div>
-        )}
-        {children}
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "linear-gradient(152deg, rgba(87,19,189,0.86) 0%, rgba(71,0,163,0.92) 52%, rgba(55,0,125,0.96) 100%)",
+        }}
+      />
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div
+          className="oobe-blob absolute -top-24 -left-16 h-96 w-96 rounded-full"
+          style={{ background: "radial-gradient(closest-side, rgba(255,255,255,0.10), transparent)", ["--bx" as string]: "40px", ["--by" as string]: "30px" }}
+        />
+        <div
+          className="oobe-blob absolute -bottom-28 -right-16 h-[28rem] w-[28rem] rounded-full"
+          style={{ background: "radial-gradient(closest-side, rgba(31,209,189,0.16), transparent)", ["--bx" as string]: "-36px", ["--by" as string]: "-28px", animationDelay: "3s" }}
+        />
+        <div
+          className="oobe-blob absolute bottom-10 left-1/3 h-64 w-64 rounded-full"
+          style={{ background: "radial-gradient(closest-side, rgba(120,60,220,0.28), transparent)", ["--bx" as string]: "24px", ["--by" as string]: "-40px", animationDelay: "6s" }}
+        />
       </div>
+
+      {/* Brand mark, top-left — anchors the surface to Bauer. */}
+      <div className="relative z-10 flex shrink-0 items-center gap-3 px-8 pt-7">
+        <img src={brandMark} alt="Bauer Media" className="h-8 w-auto" />
+        {FLAVOR_UI.eyebrow && <span className="text-sm font-semibold tracking-wide text-white/90">{FLAVOR_UI.eyebrow}</span>}
+      </div>
+
+      {onboarding ? (
+        // Full-bleed OOBE: the wizard owns the whole surface (it centers itself).
+        <div className="relative z-10 flex flex-1 flex-col overflow-hidden">{children}</div>
+      ) : (
+        // Settings / console: a legible white card floated on the backdrop.
+        <div className="relative z-10 flex flex-1 overflow-y-auto px-6 pb-8 pt-4">
+          <div className="mx-auto my-auto flex max-h-full w-full max-w-[820px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-white shadow-2xl shadow-black/30">
+            <div className="flex items-center border-b border-zinc-200 px-3 py-2">
+              <button
+                onClick={onBack}
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
+              >
+                <ChevronLeft size={14} /> Voltar ao onboarding
+              </button>
+            </div>
+            {children}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

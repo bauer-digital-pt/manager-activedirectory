@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld("biometricAPI", {
 contextBridge.exposeInMainWorld("appAPI", {
   getVersion: () => ipcRenderer.invoke("app:get-version"),
   getStartupInfo: () => ipcRenderer.invoke("app:startup-info"),
+  getSsid: () => ipcRenderer.invoke("app:get-ssid"),
   platform: process.platform,
 });
 

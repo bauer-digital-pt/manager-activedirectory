@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Laptop, RefreshCw, Check, AlertTriangle, ServerCrash, Loader2, Play,
-  RotateCcw, CheckCircle2, Languages, ShieldCheck, Monitor, Network,
+  RotateCcw, Languages, ShieldCheck, Monitor, Network,
   Power, X, Printer, AppWindow, ArrowRight, ChevronLeft,
 } from "lucide-react";
 import type { ExternalToast } from "sonner";
@@ -9,6 +9,7 @@ import { adAPI, isBrowserMock, type PCStatus, type OnboardStep, type OnboardStat
 import { getDeviceConfig, EMPTY_DEVICE_CONFIG, type DeviceConfig } from "../lib/deviceConfig";
 import { setNavGuard } from "../lib/navGuard";
 import SearchableSelect from "../components/SearchableSelect";
+import { StepIcon, AuraBadge } from "../components/onboarding/StepIcon";
 import { cn } from "../lib/cn";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -500,261 +501,267 @@ export default function PcOnboardingWizard({
   const failedView = stepViews.find((v) => v.state === "error") ?? null;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="px-6 pt-5 pb-4 border-b border-zinc-200 flex items-center justify-between">
+    <div className="relative flex flex-1 flex-col overflow-hidden text-white">
+      {/* Slim OOBE top bar — identity of the surface + a re-evaluate control.
+          The brand mark itself lives on the AgentShell backdrop behind this. */}
+      <div className="flex shrink-0 items-center justify-between px-8 pt-7 pb-2">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
-            <Laptop size={17} />
-          </div>
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-white ring-1 ring-white/15">
+            <Laptop size={18} />
+          </span>
           <div>
-            <h2 className="text-base font-semibold text-zinc-900">Onboarding do PC</h2>
-            <p className="text-xs text-zinc-400">Este computador (a sessão atual)</p>
+            <h2 className="text-sm font-semibold text-white">Onboarding do PC</h2>
+            <p className="text-xs text-white/50">Este computador (a sessão atual)</p>
           </div>
         </div>
         <button
           onClick={() => load(true)}
           disabled={loading || busy}
           title="Reavaliar este PC"
-          className="inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/[0.06] p-2 text-white/70 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <RefreshCw size={14} className={cn((loading || busy) && "animate-spin")} />
+          <RefreshCw size={15} className={cn((loading || busy) && "animate-spin")} />
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-5">
-        {loading ? (
-          <div className="space-y-3 max-w-3xl">
-            <div className="h-20 bg-zinc-50 rounded-xl animate-pulse" />
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="h-16 bg-zinc-50 rounded-lg animate-pulse" />
-            ))}
-          </div>
-        ) : error ? (
-          <StatusError message={error} onRetry={() => load(true)} />
-        ) : status ? (
-          <div className="max-w-3xl space-y-5">
-            {/* ── STEP 1 (idle): explanation + a single start button ── */}
-            {phase === "idle" && wizardStep === "intro" && (
-              <div className="anim-step rounded-xl border border-zinc-200 p-6 space-y-6">
-                <StepHeader step={1} title="Introdução" />
-                <div className="flex items-start gap-3.5">
-                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-600">
-                    <Laptop size={22} />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-zinc-900">Onboarding automático deste PC</h3>
-                    <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
-                      A app trata de tudo: definições regionais, Cisco AnyConnect, ScreenConnect
-                      e, por fim, junta o PC ao domínio, renomeia-o e move-o para a pasta correta.
-                      No final o PC <strong className="font-semibold text-zinc-700">reinicia sozinho</strong>.
-                      Depois do reinício, basta voltar a iniciar sessão no Windows e na app — o
-                      resto continua automaticamente.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setWizardStep("config")}
-                  className="inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
-                >
-                  Começar <ArrowRight size={16} />
-                </button>
-              </div>
-            )}
-
-            {/* ── STEP 2 (idle): department (+ number right away) & prepared-for ── */}
-            {phase === "idle" && wizardStep === "config" && (
-              <div className="anim-step rounded-xl border border-zinc-200 p-5 space-y-5">
-                <StepHeader step={2} title="Configuração" />
-
-                <div className="space-y-2">
-                  <label className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Departamento</label>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      value={dept}
-                      onChange={(e) => setDept(e.target.value)}
-                      className="px-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
-                    >
-                      {departments.length === 0 && <option value="">—</option>}
-                      {departments.map((d) => <option key={d} value={d}>{d}</option>)}
-                    </select>
-                    <span className="text-sm text-zinc-400">→</span>
-                    <code className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm rounded-md font-mono bg-zinc-100 text-zinc-700">
-                      {nextNameLoading ? (
-                        <><Loader2 size={12} className="animate-spin text-zinc-400" /><span className="text-zinc-400">a obter número…</span></>
-                      ) : nextName ? (
-                        nextName
-                      ) : (
-                        <>PT-LPT-{dept || "…"}-<span className="text-zinc-400">nº</span></>
-                      )}
-                    </code>
-                  </div>
-                  <p className="text-xs text-zinc-400">
-                    O número é o mais baixo disponível na AD (01, 02, 03…).
+      <div className="flex flex-1 overflow-y-auto px-6 pb-10">
+        <div className="mx-auto my-auto w-full max-w-xl py-6">
+          {loading ? (
+            <div className="flex flex-col items-center gap-6 py-10">
+              <div className="h-28 w-28 animate-pulse rounded-[28%] bg-white/[0.06]" />
+              <div className="h-5 w-52 animate-pulse rounded-full bg-white/[0.06]" />
+              <div className="h-3.5 w-72 animate-pulse rounded-full bg-white/[0.05]" />
+            </div>
+          ) : error ? (
+            <StatusError message={error} onRetry={() => load(true)} />
+          ) : status ? (
+            <div key={`${phase}-${wizardStep}`} className="oobe-enter">
+              {/* ── INTRO: a warm welcome + the whole plan, then a single start ── */}
+              {phase === "idle" && wizardStep === "intro" && (
+                <div className="flex flex-col items-center text-center">
+                  <AuraBadge pulse size={124}>
+                    <Laptop size={54} strokeWidth={1.5} />
+                  </AuraBadge>
+                  <h1 className="mt-7 text-2xl font-semibold leading-tight text-white">Vamos preparar este PC</h1>
+                  <p className="mt-3 max-w-md text-sm leading-relaxed text-white/60">
+                    A app trata de tudo automaticamente: definições regionais, aplicações essenciais
+                    e a junção ao domínio. No fim o PC <strong className="font-semibold text-white/90">reinicia sozinho</strong> —
+                    depois é só voltar a iniciar sessão e o resto continua.
                   </p>
-                </div>
-
-                {/* Who the machine is being prepared for — stamped onto the AD
-                    computer object's description during the domain step. Optional. */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Computador preparado para</label>
-                  <SearchableSelect
-                    className="max-w-md"
-                    value={preparedFor?.sam ?? ""}
-                    selectedLabel={preparedFor?.name}
-                    onChange={(sam) => {
-                      if (!sam) { setPreparedFor(null); return; }
-                      const u = userResults.find((x) => x.SamAccountName === sam);
-                      setPreparedFor({ sam, name: u?.DisplayName || preparedFor?.name || sam });
-                    }}
-                    options={userResults.map((u) => ({
-                      value: u.SamAccountName,
-                      label: u.DisplayName || u.SamAccountName,
-                      sublabel: u.SamAccountName + (u.Enabled === false ? " · desativado" : ""),
-                    }))}
-                    onSearch={searchUsers}
-                    loading={userSearching}
-                    clearable
-                    clearLabel="Sem utilizador"
-                    placeholder="Procurar utilizador…"
-                    searchPlaceholder="Nome ou username…"
-                    emptyText="Escreve pelo menos 2 letras…"
-                    disabled={busy}
-                  />
-                  <p className="text-xs text-zinc-400">
-                    Opcional. Fica na descrição do computador na Active Directory
-                    {preparedFor ? <> (<span className="font-medium text-zinc-500">{preparedForDescription(preparedFor)}</span>)</> : null}.
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 pt-1">
+                  <div className="mt-6 flex flex-wrap justify-center gap-2">
+                    {STEPS.map((s) => (
+                      <span key={s.key} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs text-white/70">
+                        <s.icon size={13} className="text-white/50" /> {s.label}
+                      </span>
+                    ))}
+                  </div>
                   <button
-                    onClick={() => setWizardStep("intro")}
-                    disabled={busy}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-zinc-500 rounded-lg hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:opacity-50"
+                    onClick={() => setWizardStep("config")}
+                    className="group mt-9 inline-flex items-center justify-center gap-2 rounded-xl bg-white px-7 py-3 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]"
                   >
-                    <ChevronLeft size={15} /> Voltar
-                  </button>
-                  <button
-                    onClick={startOnboarding}
-                    disabled={!dept || busy}
-                    className="ml-auto inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-violet-600"
-                  >
-                    {starting ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-                    {starting ? "A iniciar…" : "Iniciar onboarding"}
+                    Começar <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" />
                   </button>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* ── RUNNING: one step at a time, big, with a progress bar ── */}
-            {phase === "running" && activeStep && (
-              <RunningCard
-                views={stepViews}
-                active={activeStep}
-                index={activeIndex}
-                total={visibleSteps.length}
-                actionLine={activeActionLine}
-                onCancel={cancelRun}
-              />
-            )}
+              {/* ── CONFIG: department (+ live number) & who it's prepared for ── */}
+              {phase === "idle" && wizardStep === "config" && (
+                <div className="w-full">
+                  <div className="text-center">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/40">Configuração</p>
+                    <h1 className="mt-2 text-2xl font-semibold leading-tight text-white">Antes de começar</h1>
+                    <p className="mt-2 text-sm text-white/55">Escolhe o departamento — o nome do PC aparece logo.</p>
+                  </div>
 
-            {/* ── PAUSED: a step failed or the run was cancelled mid-way ── */}
-            {phase === "paused" && (
-              <PausedCard
-                views={stepViews}
-                failed={failedView}
-                doneCount={doneCount}
-                total={visibleSteps.length}
-                onContinue={continueOnboarding}
-                onCancel={cancelOnboarding}
-                busy={busy}
-              />
-            )}
-
-            {/* ── REBOOT: all steps done, one reboot needed (+ recap) ── */}
-            {phase === "reboot" && (
-              <div className="space-y-4">
-                <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-5 space-y-4">
-                  <div className="flex items-start gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-600 text-white flex-shrink-0">
-                      <Power size={18} />
+                  <div className="mt-8 space-y-6 rounded-2xl border border-white/10 bg-white/[0.04] p-6 backdrop-blur-sm">
+                    <div className="space-y-2.5">
+                      <label className="text-xs font-semibold uppercase tracking-wider text-white/60">Departamento</label>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <select
+                          value={dept}
+                          onChange={(e) => setDept(e.target.value)}
+                          className="rounded-lg border border-white/15 bg-white/[0.07] px-3.5 py-2.5 text-sm text-white transition-all focus:border-white/30 focus:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/20 [&>option]:text-zinc-900"
+                        >
+                          {departments.length === 0 && <option value="">—</option>}
+                          {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                        <ArrowRight size={15} className="text-white/30" />
+                        <code className="inline-flex items-center gap-1.5 rounded-lg bg-black/25 px-3 py-2.5 font-mono text-sm text-teal-200 ring-1 ring-white/10">
+                          {nextNameLoading ? (
+                            <><Loader2 size={12} className="animate-spin text-white/40" /><span className="text-white/40">a obter número…</span></>
+                          ) : nextName ? (
+                            nextName
+                          ) : (
+                            <>PT-LPT-{dept || "…"}-<span className="text-white/40">nº</span></>
+                          )}
+                        </code>
+                      </div>
+                      <p className="text-xs text-white/40">O número é o mais baixo disponível na AD (01, 02, 03…).</p>
                     </div>
-                    <div className="min-w-0">
-                      <h3 className="text-sm font-semibold text-zinc-900">
-                        {rebootCountdown === null ? "Reinício pendente" : "Tudo pronto — reinício necessário"}
-                      </h3>
-                      <p className="mt-1 text-xs leading-relaxed text-zinc-600">
-                        Os passos foram aplicados. O PC precisa de reiniciar para concluir a junção ao
-                        domínio e a renomeação. Depois do reinício, inicia sessão no Windows e na app e o
-                        onboarding termina automaticamente.
+
+                    {/* Who the machine is being prepared for — stamped onto the AD
+                        computer object's description during the domain step. Optional. */}
+                    <div className="space-y-2">
+                      <label className="text-xs font-semibold uppercase tracking-wider text-white/60">Computador preparado para</label>
+                      <SearchableSelect
+                        className="max-w-md"
+                        value={preparedFor?.sam ?? ""}
+                        selectedLabel={preparedFor?.name}
+                        onChange={(sam) => {
+                          if (!sam) { setPreparedFor(null); return; }
+                          const u = userResults.find((x) => x.SamAccountName === sam);
+                          setPreparedFor({ sam, name: u?.DisplayName || preparedFor?.name || sam });
+                        }}
+                        options={userResults.map((u) => ({
+                          value: u.SamAccountName,
+                          label: u.DisplayName || u.SamAccountName,
+                          sublabel: u.SamAccountName + (u.Enabled === false ? " · desativado" : ""),
+                        }))}
+                        onSearch={searchUsers}
+                        loading={userSearching}
+                        clearable
+                        clearLabel="Sem utilizador"
+                        placeholder="Procurar utilizador…"
+                        searchPlaceholder="Nome ou username…"
+                        emptyText="Escreve pelo menos 2 letras…"
+                        disabled={busy}
+                      />
+                      <p className="text-xs text-white/40">
+                        Opcional. Fica na descrição do computador na Active Directory
+                        {preparedFor ? <> (<span className="font-medium text-white/60">{preparedForDescription(preparedFor)}</span>)</> : null}.
                       </p>
-                      {rebootCountdown !== null && (
-                        <p className="mt-2 text-sm font-medium text-violet-700">
-                          A reiniciar automaticamente em {rebootCountdown}s…
-                        </p>
-                      )}
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
+
+                  <div className="mt-6 flex items-center gap-3">
+                    <button
+                      onClick={() => setWizardStep("intro")}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-50"
+                    >
+                      <ChevronLeft size={15} /> Voltar
+                    </button>
+                    <button
+                      onClick={startOnboarding}
+                      disabled={!dept || busy}
+                      className="ml-auto inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
+                    >
+                      {starting ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                      {starting ? "A iniciar…" : "Iniciar onboarding"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── RUNNING: one step at a time, big and alive, with progress ── */}
+              {phase === "running" && activeStep && (
+                <RunningCard
+                  views={stepViews}
+                  active={activeStep}
+                  index={activeIndex}
+                  total={visibleSteps.length}
+                  actionLine={activeActionLine}
+                  onCancel={cancelRun}
+                />
+              )}
+
+              {/* ── PAUSED: a step failed or the run was cancelled mid-way ── */}
+              {phase === "paused" && (
+                <PausedCard
+                  views={stepViews}
+                  failed={failedView}
+                  doneCount={doneCount}
+                  total={visibleSteps.length}
+                  onContinue={continueOnboarding}
+                  onCancel={cancelOnboarding}
+                  busy={busy}
+                />
+              )}
+
+              {/* ── REBOOT: all steps done, one reboot needed (+ recap) ── */}
+              {phase === "reboot" && (
+                <div className="flex flex-col items-center text-center">
+                  {rebootCountdown !== null ? (
+                    <RebootRing seconds={rebootCountdown} total={REBOOT_SECONDS} />
+                  ) : (
+                    <AuraBadge size={124}>
+                      <Power size={52} strokeWidth={1.5} />
+                    </AuraBadge>
+                  )}
+                  <h1 className="mt-7 text-2xl font-semibold leading-tight text-white">
+                    {rebootCountdown === null ? "Reinício pendente" : "Tudo pronto"}
+                  </h1>
+                  <p className="mt-3 max-w-md text-sm leading-relaxed text-white/60">
+                    Os passos foram aplicados. O PC precisa de reiniciar para concluir a junção ao
+                    domínio e a renomeação — depois inicia sessão outra vez e o onboarding termina sozinho.
+                  </p>
+                  {rebootCountdown !== null && (
+                    <p className="mt-3 text-sm font-medium text-teal-200">A reiniciar automaticamente em {rebootCountdown}s…</p>
+                  )}
+                  <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
                     <button
                       onClick={doReboot}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
+                      className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]"
                     >
-                      <Power size={15} /> Reiniciar agora
+                      <Power size={16} /> Reiniciar agora
                     </button>
                     {rebootCountdown !== null && (
                       <button
                         onClick={() => setRebootCountdown(null)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-white transition-colors"
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 px-5 py-3 text-sm font-medium text-white/80 transition-colors hover:bg-white/10"
                       >
                         Adiar reinício
                       </button>
                     )}
-                    <button
-                      onClick={cancelOnboarding}
-                      className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-zinc-400 hover:text-red-500 transition-colors"
-                    >
-                      <X size={13} /> Cancelar onboarding
-                    </button>
+                  </div>
+                  <button
+                    onClick={cancelOnboarding}
+                    className="mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white/40 transition-colors hover:text-white/80"
+                  >
+                    <X size={13} /> Cancelar onboarding
+                  </button>
+                  <div className="mt-9 w-full text-left">
+                    <RecapList views={recapViews} title="Passos aplicados" doneCount={recapDone} total={visibleSteps.length} />
                   </div>
                 </div>
-                <RecapList views={recapViews} title="Passos aplicados" doneCount={recapDone} total={visibleSteps.length} />
-              </div>
-            )}
+              )}
 
-            {/* ── REBOOTING: the OS is going down (no-op off Windows) ── */}
-            {phase === "rebooting" && (
-              <div className="flex flex-col items-center gap-4 rounded-xl border border-zinc-200 p-8 text-center">
-                <Loader2 size={30} className="animate-spin text-violet-600" />
-                <div>
-                  <h3 className="text-base font-semibold text-zinc-900">A reiniciar…</h3>
-                  <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-zinc-500">
+              {/* ── REBOOTING: the OS is going down (no-op off Windows) ── */}
+              {phase === "rebooting" && (
+                <div className="flex flex-col items-center text-center">
+                  <AuraBadge pulse size={124}>
+                    <Loader2 size={50} className="animate-spin" strokeWidth={1.6} />
+                  </AuraBadge>
+                  <h1 className="mt-7 text-2xl font-semibold leading-tight text-white">A reiniciar…</h1>
+                  <p className="mt-3 max-w-md text-sm leading-relaxed text-white/60">
                     O PC vai reiniciar para concluir o onboarding. Volta a iniciar sessão no Windows
                     e na app — o resto continua sozinho.
                   </p>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* ── DONE: success + recap ── */}
-            {phase === "done" && (
-              <div className="rounded-xl border border-zinc-200 p-6 space-y-6">
+              {/* ── DONE: celebration + recap ── */}
+              {phase === "done" && (
                 <div className="flex flex-col items-center text-center">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 ring-1 ring-emerald-200">
-                    <CheckCircle2 size={30} />
-                  </div>
-                  <h3 className="mt-4 text-base font-semibold text-zinc-900">Onboarding concluído</h3>
-                  <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-zinc-500">
-                    Este PC (<span className="font-medium text-zinc-700">{status.hostname}</span>) cumpre
-                    todos os requisitos.
+                  <AuraBadge tone="success" burst size={124}>
+                    <span className="oobe-pop inline-flex">
+                      <svg width={58} height={58} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                        <path className="oobe-draw" d="M5 12.5 10 17.5 19 7" style={{ ["--len" as string]: "26" }} />
+                      </svg>
+                    </span>
+                  </AuraBadge>
+                  <h1 className="mt-7 text-2xl font-semibold leading-tight text-white">Onboarding concluído</h1>
+                  <p className="mt-3 max-w-md text-sm leading-relaxed text-white/60">
+                    Este PC (<span className="font-medium text-white/90">{status.hostname}</span>) cumpre todos os requisitos.
                   </p>
+                  <div className="mt-9 w-full text-left">
+                    <RecapList views={recapViews} title="Resumo" doneCount={recapDone} total={visibleSteps.length} />
+                  </div>
                 </div>
-                <RecapList views={recapViews} title="Resumo" doneCount={recapDone} total={visibleSteps.length} />
-              </div>
-            )}
-          </div>
-        ) : null}
+              )}
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -762,44 +769,37 @@ export default function PcOnboardingWizard({
 
 /* -------------------------------------------------------------------------- */
 
-// The small "1 · Passo 1 de 3" header that reinforces the step-by-step flow.
-function StepHeader({ step, title }: { step: number; title: string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-violet-100 px-1.5 text-xs font-semibold text-violet-700 tabular-nums">{step}</span>
-      <span className="text-xs font-semibold text-zinc-700">{title}</span>
-      <span className="text-xs text-zinc-300">·</span>
-      <span className="text-xs text-zinc-400">Passo {step} de 3</span>
-    </div>
-  );
-}
-
 // A step's view state, shared by the progress bar and the recap list.
 type StepView = { def: StepDef; state: StepState["state"]; message?: string };
 
 // Segmented progress bar — one segment per step, coloured by its state. Reads as
 // "quanto falta" at a glance while keeping the focus on the single current step.
+// Light-on-dark for the OOBE backdrop: teal = done, violet = running, the rest
+// recede into a faint track.
 function RunProgressBar({ views }: { views: StepView[] }) {
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1.5">
       {views.map(({ def, state }) => (
         <div
           key={def.key}
           className={cn(
-            "h-1.5 flex-1 rounded-full transition-colors",
-            state === "done" ? "bg-violet-600"
-              : state === "running" ? "bg-violet-400 animate-pulse"
-              : state === "error" ? "bg-red-400"
-              : "bg-zinc-200"
+            "h-1.5 flex-1 overflow-hidden rounded-full transition-colors",
+            state === "done" ? "bg-teal-300"
+              : state === "running" ? "relative bg-violet-300"
+              : state === "error" ? "bg-amber-300"
+              : "bg-white/12"
           )}
-        />
+        >
+          {state === "running" && <span className="oobe-sheen absolute inset-y-0 left-0 w-1/3 bg-white/60" />}
+        </div>
       ))}
     </div>
   );
 }
 
-// RUNNING page — a single step, big and centred, with the exact action it's
-// taking right now and a progress bar above it. One step per page.
+// RUNNING page — a single step, big and centred, its bespoke icon alive with the
+// sonar aura + orbit, the exact action it's taking, and progress above. The
+// immersive core of the OOBE.
 function RunningCard({
   views, active, index, total, actionLine, onCancel,
 }: {
@@ -810,36 +810,29 @@ function RunningCard({
   actionLine: string;
   onCancel: () => void;
 }) {
-  const Icon = active.icon;
   return (
-    <div className="rounded-xl border border-zinc-200 p-6 sm:p-7 space-y-7">
-      <div className="space-y-2.5">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-            Passo {index + 1} de {total}
-          </span>
+    <div className="flex flex-col items-center text-center">
+      <div className="mb-8 w-full space-y-2.5">
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-semibold uppercase tracking-[0.14em] text-white/45">Passo {index + 1} de {total}</span>
           <button
             onClick={onCancel}
-            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700"
+            className="inline-flex items-center gap-1.5 rounded-md border border-white/15 px-2.5 py-1 font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white"
           >
             <X size={12} /> Cancelar
           </button>
         </div>
         <RunProgressBar views={views} />
       </div>
-      <div className="flex flex-col items-center py-2 text-center">
-        <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-50 text-violet-600 ring-1 ring-violet-100">
-          <Icon size={28} />
-          <span className="absolute -bottom-1.5 -right-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-white ring-1 ring-violet-100">
-            <Loader2 size={13} className="animate-spin text-violet-600" />
-          </span>
-        </div>
-        <h3 className="mt-4 text-base font-semibold text-zinc-900">{active.label}</h3>
-        <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-zinc-500">{actionLine}</p>
-        <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-3 py-1 text-xs font-medium text-violet-700">
-          <Loader2 size={12} className="animate-spin" /> A executar agora…
-        </p>
-      </div>
+      <StepIcon step={active.key} state="running" size={132} />
+      <h1 className="mt-7 text-2xl font-semibold leading-tight text-white">{active.label}</h1>
+      <p className="mt-3 max-w-md text-sm leading-relaxed text-white/60">{actionLine}</p>
+      <p className="mt-6 inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.06] px-3.5 py-1.5 text-xs font-medium text-white/70">
+        A executar agora
+        <span className="oobe-dot">.</span>
+        <span className="oobe-dot" style={{ animationDelay: "0.2s" }}>.</span>
+        <span className="oobe-dot" style={{ animationDelay: "0.4s" }}>.</span>
+      </p>
     </div>
   );
 }
@@ -856,37 +849,32 @@ function PausedCard({
   onCancel: () => void;
   busy: boolean;
 }) {
-  const Icon = failed ? failed.def.icon : AlertTriangle;
   return (
-    <div className="rounded-xl border border-zinc-200 p-6 sm:p-7 space-y-6">
-      <div className="space-y-2.5">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Onboarding em pausa</span>
-          <span className="text-xs font-medium text-zinc-400 tabular-nums">{doneCount}/{total}</span>
+    <div className="flex flex-col items-center text-center">
+      <div className="mb-8 w-full space-y-2.5">
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-semibold uppercase tracking-[0.14em] text-white/45">Onboarding em pausa</span>
+          <span className="font-medium tabular-nums text-white/45">{doneCount}/{total}</span>
         </div>
         <RunProgressBar views={views} />
       </div>
-      <div className="flex flex-col items-center py-1 text-center">
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-red-50 text-red-500 ring-1 ring-red-100">
-          <Icon size={28} />
-        </div>
-        <h3 className="mt-4 text-base font-semibold text-zinc-900">{failed ? failed.def.label : "Um passo não terminou"}</h3>
-        <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-red-600">
-          {failed?.message ?? "Corrige o que for preciso e continua."}
-        </p>
-        <p className="mt-1.5 text-xs text-zinc-400">Os passos já concluídos não voltam a correr.</p>
-      </div>
-      <div className="flex items-center gap-2">
+      {failed
+        ? <StepIcon step={failed.def.key} state="error" size={124} />
+        : <AuraBadge tone="error" size={124}><AlertTriangle size={50} strokeWidth={1.6} /></AuraBadge>}
+      <h1 className="mt-7 text-2xl font-semibold leading-tight text-white">{failed ? failed.def.label : "Um passo não terminou"}</h1>
+      <p className="mt-3 max-w-md text-sm leading-relaxed text-amber-200">{failed?.message ?? "Corrige o que for preciso e continua."}</p>
+      <p className="mt-2 text-xs text-white/40">Os passos já concluídos não voltam a correr.</p>
+      <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
         <button
           onClick={onContinue}
           disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02] disabled:opacity-50 disabled:hover:scale-100"
         >
-          <Play size={15} /> Tentar novamente
+          <Play size={16} /> Tentar novamente
         </button>
         <button
           onClick={onCancel}
-          className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-zinc-400 transition-colors hover:text-red-500"
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-white/40 transition-colors hover:text-white/80"
         >
           <X size={13} /> Cancelar onboarding
         </button>
@@ -895,7 +883,34 @@ function PausedCard({
   );
 }
 
+// The auto-reboot countdown as a shrinking ring around the power glyph — the
+// OOBE equivalent of Windows Setup's "restarting in N seconds".
+function RebootRing({ seconds, total }: { seconds: number; total: number }) {
+  const r = 52;
+  const circumference = 2 * Math.PI * r;
+  const frac = Math.max(0, Math.min(1, seconds / total));
+  return (
+    <span className="relative inline-flex h-32 w-32 items-center justify-center">
+      <svg viewBox="0 0 120 120" className="h-32 w-32 -rotate-90">
+        <circle cx="60" cy="60" r={r} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="5" />
+        <circle
+          cx="60" cy="60" r={r} fill="none"
+          stroke="rgb(94,229,213)" strokeWidth="5" strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - frac)}
+          style={{ transition: "stroke-dashoffset 1s linear" }}
+        />
+      </svg>
+      <span className="absolute inset-0 flex flex-col items-center justify-center text-white">
+        <Power size={22} className="text-white/70" />
+        <span className="mt-0.5 text-2xl font-semibold tabular-nums">{seconds}</span>
+      </span>
+    </span>
+  );
+}
+
 // Compact recap of every step, shown on the reboot + done pages ("resumo").
+// Glassy rows on the dark backdrop; each row carries its bespoke step glyph.
 function RecapList({
   views, title, doneCount, total,
 }: {
@@ -905,31 +920,25 @@ function RecapList({
   total: number;
 }) {
   return (
-    <div className="rounded-xl border border-zinc-200 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-100">
-        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">{title}</p>
-        <span className="text-xs font-medium text-zinc-400 tabular-nums">{doneCount}/{total}</span>
+    <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur-sm">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-white/45">{title}</p>
+        <span className="text-xs font-medium tabular-nums text-white/45">{doneCount}/{total}</span>
       </div>
-      <ul className="divide-y divide-zinc-50">
+      <ul className="divide-y divide-white/[0.06]">
         {views.map(({ def, state }) => {
-          const Icon = def.icon;
           const done = state === "done";
           const errored = state === "error";
           return (
             <li key={def.key} className="flex items-center gap-3 px-4 py-2.5">
-              <span className={cn(
-                "flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg",
-                done ? "bg-emerald-50 text-emerald-600" : errored ? "bg-red-50 text-red-500" : "bg-zinc-100 text-zinc-400"
-              )}>
-                {done ? <Check size={14} /> : <Icon size={14} />}
-              </span>
-              <span className="flex-1 text-sm text-zinc-700">{def.label}</span>
+              <StepIcon step={def.key} state={done ? "done" : errored ? "error" : "idle"} size={30} />
+              <span className="flex-1 text-sm text-white/85">{def.label}</span>
               {done ? (
-                <Check size={15} className="text-emerald-500" />
+                <Check size={16} className="text-teal-300" />
               ) : errored ? (
-                <AlertTriangle size={14} className="text-red-500" />
+                <AlertTriangle size={14} className="text-amber-300" />
               ) : (
-                <span className="text-xs text-zinc-300">—</span>
+                <span className="text-xs text-white/25">—</span>
               )}
             </li>
           );
@@ -941,15 +950,15 @@ function RecapList({
 
 function StatusError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-50 text-amber-600 ring-1 ring-amber-200/70">
-        <ServerCrash size={26} strokeWidth={2} />
-      </div>
-      <h3 className="mt-5 text-base font-semibold text-zinc-900">Não foi possível avaliar este PC</h3>
-      <p className="mt-2 max-w-[46ch] text-sm leading-relaxed text-zinc-500">{message}</p>
+    <div className="flex flex-col items-center justify-center py-10 text-center">
+      <AuraBadge tone="error" size={104}>
+        <ServerCrash size={44} strokeWidth={1.7} />
+      </AuraBadge>
+      <h3 className="mt-6 text-lg font-semibold text-white">Não foi possível avaliar este PC</h3>
+      <p className="mt-2 max-w-[46ch] text-sm leading-relaxed text-white/55">{message}</p>
       <button
         onClick={onRetry}
-        className="mt-6 inline-flex items-center gap-1.5 rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700"
+        className="mt-6 inline-flex items-center gap-1.5 rounded-xl bg-white px-5 py-2.5 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]"
       >
         <RotateCcw size={15} /> Tentar novamente
       </button>

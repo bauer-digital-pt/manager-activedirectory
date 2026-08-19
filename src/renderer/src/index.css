@@ -118,6 +118,73 @@
    rather than a hard cut. Kept short to stay out of the way of frequent use. */
 .anim-page    { animation: fade-in 160ms ease-out; }
 
+/* ── Agent OOBE (out-of-box setup) motion ───────────────────────────────────
+   The Agent onboarding is a full-bleed, Windows-Setup-style experience on the
+   Bauer purple backdrop. These tokens drive the ambient backdrop, the sonar
+   "aura" around the live step, the bespoke per-step icon internals, and the
+   celebratory finish. All are decorative and collapse under reduce-motion. */
+
+/* Ambient backdrop: slow-drifting radial glow blobs behind the setup content. */
+@keyframes oobe-blob-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(var(--bx, 24px), var(--by, -20px)) scale(1.12); }
+}
+.oobe-blob { animation: oobe-blob-drift 16s ease-in-out infinite; will-change: transform; }
+
+/* Phase entrance — content rises + fades as each setup phase mounts (keyed). */
+@keyframes oobe-rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+.oobe-enter { animation: oobe-rise 340ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* Sonar aura — concentric rings ping outward from the running step icon. Two
+   rings, staggered, give a continuous "working" pulse. */
+@keyframes oobe-aura {
+  0%   { transform: scale(0.65); opacity: 0.5; }
+  70%  { opacity: 0; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+.oobe-aura { animation: oobe-aura 2.4s cubic-bezier(0.16, 1, 0.3, 1) infinite; }
+
+/* Orbiting satellite dot that circles the live icon badge. */
+@keyframes oobe-orbit { to { transform: rotate(360deg); } }
+.oobe-orbit { animation: oobe-orbit 5.5s linear infinite; transform-origin: center; }
+
+/* Completion — check pops in; a ring bursts outward once on the done screen. */
+@keyframes oobe-pop { 0% { transform: scale(0); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
+.oobe-pop { animation: oobe-pop 440ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@keyframes oobe-burst { 0% { transform: scale(0.55); opacity: 0.65; } 100% { transform: scale(2.6); opacity: 0; } }
+.oobe-burst { animation: oobe-burst 1.1s ease-out forwards; }
+@keyframes oobe-draw { to { stroke-dashoffset: 0; } }
+.oobe-draw { stroke-dasharray: var(--len, 40); stroke-dashoffset: var(--len, 40); animation: oobe-draw 560ms ease-out 120ms forwards; }
+
+/* Progress bar sheen — a soft highlight sweeps across the filled track. */
+@keyframes oobe-sheen { 0% { transform: translateX(-140%); } 100% { transform: translateX(360%); } }
+.oobe-sheen { animation: oobe-sheen 2s ease-in-out infinite; }
+
+/* ── Bespoke per-step icon internals ── run continuously while a step executes.
+   Each keyframe animates one glyph so every step reads as a distinct action. */
+@keyframes oobe-globe   { to { transform: rotate(360deg); } }                                  /* regional: globe meridians spin */
+.si-globe { animation: oobe-globe 8s linear infinite; transform-box: fill-box; transform-origin: center; }
+
+@keyframes oobe-shield  { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }  /* anyconnect: shield breathes */
+.si-shield { animation: oobe-shield 1.9s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+
+@keyframes oobe-scan    { 0% { transform: translateY(0); opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { transform: translateY(var(--scan, 9px)); opacity: 0; } } /* screenconnect: scan line */
+.si-scan { animation: oobe-scan 1.9s ease-in-out infinite; }
+
+@keyframes oobe-eq      { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } } /* smlplayer: equalizer bars */
+.si-bar { animation: oobe-eq 0.9s ease-in-out infinite; transform-origin: bottom; }
+
+@keyframes oobe-paper   { 0% { transform: translateY(-5px); opacity: 0; } 25% { opacity: 1; } 100% { transform: translateY(8px); opacity: 0.15; } } /* printers: sheet feeds out */
+.si-paper { animation: oobe-paper 1.9s ease-in-out infinite; }
+
+@keyframes oobe-node    { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }                     /* domain: nodes light up */
+.si-node { animation: oobe-node 1.6s ease-in-out infinite; }
+@keyframes oobe-link    { 0% { stroke-dashoffset: var(--len, 22); } 55% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: 0; } } /* domain: links draw */
+.si-link { stroke-dasharray: var(--len, 22); animation: oobe-link 1.8s ease-in-out infinite; }
+
+@keyframes oobe-ellipsis { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }                     /* rotating reassurance dots */
+.oobe-dot { animation: oobe-ellipsis 1.4s ease-in-out infinite; }
+
 /* Respect the OS "reduce motion" setting: collapse every transition/animation
    to an instant change — EXCEPT the loading indicators (spinner, skeleton
    pulse, install sweep), which communicate live state rather than decoration

@@ -22,6 +22,10 @@ const brand = {
     productName: "AD Manager",
     output: "release/manager",
     repo: "manager-activedirectory",
+    // Fixed %TEMP% subfolder the portable self-extracts into (see portable block).
+    // Distinct per flavor so the Manager and Agent portables never share/clobber
+    // the same temp dir, and so each gets its own Defender ASR path exclusion.
+    unpackDir: "ADManager",
   },
   agent: {
     appId: "pt.bauermedia.adagent",
@@ -31,6 +35,7 @@ const brand = {
     output: "release/agent",
     // Separate update repo — the fleet-safety guarantee above lives here.
     repo: "agent-activedirectory",
+    unpackDir: "ADAgent",
   },
 }[flavor];
 
@@ -90,16 +95,17 @@ module.exports = {
     // A portable build ignores win.requestedExecutionLevel and needs its own, so
     // match the installed app (requireAdministrator) and behave identically.
     requestExecutionLevel: "admin",
-    // Fixed unpack dir so the app ALWAYS self-extracts to %TEMP%\ADManager
-    // instead of a per-build UUID folder (electron-builder's default, which
-    // changes on every release). This makes it a stable target that a single
-    // Defender ASR path exclusion can cover on managed PCs:
-    //   %LOCALAPPDATA%\Temp\ADManager\*  (a.k.a. C:\Users\*\AppData\Local\Temp\ADManager\*)
+    // Fixed unpack dir so the app ALWAYS self-extracts to %TEMP%\<flavor dir>
+    // (ADManager / ADAgent) instead of a per-build UUID folder (electron-builder's
+    // default, which changes on every release). This makes it a stable target that
+    // a single Defender ASR path exclusion can cover on managed PCs:
+    //   %LOCALAPPDATA%\Temp\ADManager\*  and  ...\Temp\ADAgent\*
+    //   (a.k.a. C:\Users\*\AppData\Local\Temp\{ADManager,ADAgent}\*)
     // The ASR rule "Block executable files from running unless they meet a
     // prevalence, age, or trusted list criterion" blocks this unsigned, freshly
     // built exe running from temp; a stable path is what makes the exclusion
     // (or a code-signing cert, the real fix) practical instead of per-version.
-    unpackDirName: "ADManager",
+    unpackDirName: brand.unpackDir,
   },
   nsis: {
     oneClick: false,

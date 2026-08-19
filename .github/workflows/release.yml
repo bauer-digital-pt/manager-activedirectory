@@ -12,15 +12,16 @@ name: Release
 # The Agent is a SEPARATE product with its own auto-update feed
 # (agent-activedirectory). That feed repo does not exist yet, and the default
 # GITHUB_TOKEN is scoped to THIS repo only so it could not publish there anyway.
-# So we BUILD the Agent installer on every release and ATTACH it to the SAME
-# GitHub Release as an extra downloadable .exe. This is a plain release asset, NOT
-# a feed publish: we upload ONLY the .exe, never the Agent's latest.yml (which
-# would collide with the Manager's and hijack the fleet), so the Manager feed
-# stays Manager-only and electron-updater clients never cross-update to the Agent.
-# `build:agent` bakes `--publish never` so a tag push can't trip electron-builder's
-# CI auto-publish into the (missing) agent feed repo. To turn on real Agent
-# auto-update later: create the public agent-activedirectory repo, add a cross-repo
-# token secret, and swap the Agent build step for `npm run release:agent`.
+# So we BUILD the Agent as a PORTABLE .exe on every release and ATTACH it to the
+# SAME GitHub Release as an extra downloadable .exe. This is a plain release asset,
+# NOT a feed publish: a portable target emits no latest.yml at all, and we upload
+# ONLY the .exe, so the Manager feed stays Manager-only and electron-updater
+# clients never cross-update to the Agent. `build:agent` bakes `--win portable
+# --publish never` so a tag push can't trip electron-builder's CI auto-publish into
+# the (missing) agent feed repo. A portable does NOT auto-update (there is no
+# installer) — that is inherent. To turn on real Agent auto-update later: switch
+# build:agent back to an nsis installer, create the public agent-activedirectory
+# repo, add a cross-repo token secret, and use `npm run release:agent`.
 on:
   push:
     tags:
@@ -96,20 +97,21 @@ jobs:
           gh release upload "$VERSION" release/manager/*Portable*.exe --clobber
 
       # Build the Agent flavor too (separate APP_FLAVOR bake, separate output
-      # dir release/agent), but NEVER publish it — see the header comment. This
-      # runs after the Manager publish so a failure here can't block the fleet
-      # update that already went out. No GH_TOKEN: `--publish never` needs none.
-      - name: Build Agent installer (no publish)
+      # dir release/agent), as a PORTABLE .exe, but NEVER publish it — see the
+      # header comment. Runs after the Manager publish so a failure here can't
+      # block the fleet update that already went out. No GH_TOKEN: `--publish
+      # never` needs none. The Agent portable self-extracts to %TEMP%\ADAgent.
+      - name: Build Agent portable (no publish)
         run: npm run build:agent
 
-      # Attach the Agent .exe to the SAME GitHub Release as an extra download.
-      # ONLY the .exe — never the Agent's latest.yml (same filename as the
-      # Manager's; uploading it would hijack the fleet's update feed). The release
-      # is tagged v<version> (electron-builder's default), computed from
-      # package.json so this works on both tag push and manual dispatch. The
-      # on-disk name has spaces ("AD Agent Setup <version>.exe"); the bash glob
-      # expands it as a single path.
-      - name: Attach Agent installer to the GitHub Release
+      # Attach the Agent portable .exe to the SAME GitHub Release as an extra
+      # download. A portable emits no latest.yml, so there is nothing that could
+      # hijack the Manager's update feed. The release is tagged v<version>
+      # (electron-builder's default), computed from package.json so this works on
+      # both tag push and manual dispatch. The on-disk name has a space
+      # ("AD Agent-Portable-<version>.exe"); the bash glob expands it as a single
+      # path.
+      - name: Attach Agent portable to the GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash

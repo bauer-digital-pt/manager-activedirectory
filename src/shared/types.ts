@@ -17,6 +17,21 @@ export interface PSResult<T = unknown> {
   error?: string;
 }
 
+// --- Wi-Fi network identity (pre-login gate) ---
+// Reported by the main process before any AD work. `connected` is true only when
+// the machine is actively associated with a wireless network; `ssid` is that
+// network's name (null when wired / no Wi-Fi / undetectable). `ssids` carries
+// EVERY associated network when more than one wireless interface is connected —
+// the policy allows the machine if ANY of them is the office network, so a second
+// NIC on a guest SSID can't falsely lock out a user who IS on WiFiBMAP.
+// Deliberately makes NO judgement about right/wrong — that policy lives in the
+// renderer (lib/wifi.ts isWrongWifi).
+export interface WifiStatus {
+  connected: boolean;
+  ssid: string | null;
+  ssids?: string[];
+}
+
 // --- Remote AD connection (plaintext, in-flight) ---
 // The credentials handed to the PowerShell runner. The at-rest, safeStorage-
 // encrypted variant (StoredConnection) stays private to the main process.

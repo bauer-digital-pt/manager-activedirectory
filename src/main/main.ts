@@ -1,12 +1,12 @@
 import { app, BrowserWindow, ipcMain, safeStorage, Menu, systemPreferences } from "electron";
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
-import { spawn } from "child_process";
+import { spawn, execFile } from "child_process";
 import electronUpdater from "electron-updater";
 import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
 import { DEFAULT_DC } from "../shared/constants";
 import { BUILD_FLAVOR, FLAVOR_META } from "../shared/flavor";
-import type { AppSettings, DeviceConfig, OnboardState, StartupInfo, PSResult, InventoryHealth, ADGroup, ADUser, ADUserLite, ADComputer } from "../shared/types";
+import type { AppSettings, DeviceConfig, OnboardState, StartupInfo, PSResult, InventoryHealth, ADGroup, ADUser, ADUserLite, ADComputer, WifiStatus } from "../shared/types";
 import {
   pushLog,
   getHistory,
@@ -1213,6 +1213,50 @@ handle("config:set-settings", (_e, rawPayload) => {
 // --- App / window IPC ---
 handle("app:get-version", () => app.getVersion());
 handle("app:startup-info", () => startupInfo);
+
+// Report the currently-associated Wi-Fi SSID so the renderer can gate login on
+// the office network BEFORE any AD work (see the WifiGate). Runs on every
+// platform but only Windows actually detects — that's the only place the app
+// ships. NON-Windows (macOS dev, off-Windows Manager) reports "not connected"
+// so the gate never fires there; likewise any parse/exec failure resolves to
+// "not connected" (ok:false) and the renderer treats an unknown network as
+// allowed — we only ever BLOCK on a positively-identified wrong SSID, never on
+// uncertainty. Uses `netsh wlan show interfaces`: the SSID line is present only
+// while associated (wired / no adapter ⇒ no SSID ⇒ connected:false ⇒ allow).
+handle("app:get-ssid", async (): Promise<PSResult<WifiStatus>> => {
+  if (process.platform !== "win32") {
+    return { ok: true, data: { connected: false, ssid: null } };
+  }
+  try {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile(
+        "netsh",
+        ["wlan", "show", "interfaces"],
+        { encoding: "utf8", timeout: 5000, windowsHide: true },
+        (err, out) => {
+          // netsh exits non-zero when the WLAN service is stopped or there is no
+          // wireless adapter; that's a legitimate "no Wi-Fi", not a failure.
+          if (err && !out) reject(err);
+          else resolve(out || "");
+        },
+      );
+    });
+    // Match every SSID line but NOT "BSSID" (`^\s*SSID` can't align on the 'B').
+    // The value is empty/absent when an adapter is present but disconnected. A
+    // machine can have more than one connected wireless interface, so collect ALL
+    // of them — the renderer allows login if ANY is the office network, so a
+    // second NIC on a guest SSID never falsely locks out someone on WiFiBMAP.
+    const ssids = [...stdout.matchAll(/^\s*SSID\s*:\s*(.+?)\s*$/gm)]
+      .map((m) => (m[1] ? m[1].trim() : ""))
+      .filter((s) => s.length > 0);
+    return {
+      ok: true,
+      data: { connected: ssids.length > 0, ssid: ssids[0] ?? null, ssids },
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+});
 
 // Frameless window controls driven by the renderer TitleBar. Raw ipcMain.on
 // (fire-and-forget, no result) so they don't spam the Console.

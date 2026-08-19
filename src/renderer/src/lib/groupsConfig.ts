@@ -56,6 +56,7 @@ declare global {
     appAPI?: {
       getVersion(): Promise<string>;
       getStartupInfo?(): Promise<{ version: string; justUpdated: boolean; previousVersion?: string }>;
+      getSsid?(): Promise<{ ok: boolean; data?: { connected: boolean; ssid: string | null; ssids?: string[] }; error?: string }>;
       platform: string;
     };
     windowAPI?: {
