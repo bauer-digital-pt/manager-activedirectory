@@ -7,18 +7,19 @@ import SearchableSelect from "../../components/SearchableSelect";
 import { cn } from "../../lib/cn";
 import { setNavGuard } from "../../lib/navGuard";
 import { Kbd } from "../../components/ui/Kbd";
-import { inputCls } from "../../components/ui/controls";
+import { Button } from "../../components/ui/Button";
+import { inputCls, focusRing } from "../../components/ui/controls";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
 type Step = "group" | "info" | "address" | "password" | "confirm";
 
 const STEPS: { id: Step; label: string }[] = [
-  { id: "group",    label: "Group"    },
-  { id: "info",     label: "Details"  },
-  { id: "address",  label: "Address"  },
-  { id: "password", label: "Password" },
-  { id: "confirm",  label: "Confirm"  },
+  { id: "group",    label: "Grupo"         },
+  { id: "info",     label: "Detalhes"      },
+  { id: "address",  label: "Morada"        },
+  { id: "password", label: "Palavra-passe" },
+  { id: "confirm",  label: "Confirmar"     },
 ];
 
 interface Form {
@@ -141,6 +142,12 @@ export default function CreateUserWizard({
   );
   useEffect(() => {
     if (!dirty) { setNavGuard(null); return; }
+    // confirmNav() is synchronous — it must return a boolean immediately so the
+    // caller (App's navigate) can proceed to the clicked destination or abort.
+    // A styled async ConfirmDialog can't satisfy that contract without losing the
+    // navigation target, so this guard stays on the native confirm (matching the
+    // PC-onboarding wizard's guard); the styled dialog is reserved for the app's
+    // button-triggered async confirmations.
     setNavGuard(() =>
       window.confirm("Tens um utilizador por criar que ainda não foi guardado. Sair e perder os dados?")
     );
@@ -432,10 +439,10 @@ export default function CreateUserWizard({
       // copying the template user's groups) didn't fully succeed — surface it
       // so it isn't silently lost behind the success toast.
       const warning = (r.data as { warning?: string } | undefined)?.warning;
-      toast.success(`User ${form.username} created successfully`);
+      toast.success(`Utilizador ${form.username} criado com sucesso`);
       if (warning) toast.error(warning);
       onClose();
-    } else toast.error(r.error ?? "Failed to create user");
+    } else toast.error(r.error ?? "Não foi possível criar o utilizador");
   };
 
   // Suggestions lead with what the OU's members actually have (ouTitles/…),
@@ -451,20 +458,23 @@ export default function CreateUserWizard({
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="px-6 py-4 border-b border-zinc-200 flex items-center gap-3">
-        <button
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={onClose}
-          className="p-1.5 rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors"
+          aria-label="Voltar"
+          className="text-zinc-400 hover:text-zinc-600"
         >
           <ArrowLeft size={16} />
-        </button>
+        </Button>
         <div>
-          <h2 className="text-base font-semibold text-zinc-900">New User</h2>
-          <p className="text-xs text-zinc-400 mt-0.5">Add a new user to Active Directory</p>
+          <h2 className="text-base font-semibold text-zinc-900">Novo utilizador</h2>
+          <p className="text-xs text-zinc-500 mt-0.5">Adicionar um novo utilizador ao Active Directory</p>
         </div>
       </div>
 
       {/* Step indicator */}
-      <div className="px-6 py-3 border-b border-zinc-100 flex items-center gap-1">
+      <div className="px-6 py-3 border-b border-zinc-100 flex flex-wrap items-center gap-1 gap-y-2">
         {STEPS.map((s, i) => {
           const done = i < stepIdx;
           const current = i === stepIdx;
@@ -472,7 +482,7 @@ export default function CreateUserWizard({
             <div key={s.id} className="flex items-center gap-1">
               <div className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all",
-                current ? "bg-violet-600 text-white" :
+                current ? "bg-brand text-white" :
                 done    ? "bg-violet-100 text-violet-700" :
                           "bg-zinc-100 text-zinc-400"
               )}>
@@ -487,19 +497,23 @@ export default function CreateUserWizard({
         })}
       </div>
 
-      {/* Content */}
-      <div className={cn(
-        "flex-1 overflow-y-auto flex flex-col items-center px-6 py-8",
-        step === "group" ? "justify-start" : "justify-center"
-      )}>
-        <div key={step} className="anim-step w-full max-w-md space-y-5">
+      {/* Content — the scroll container purposely does NOT use justify-center:
+          a card taller than the viewport would then overflow ABOVE the top edge
+          and become unscrollable (First/Last name unreachable on short windows).
+          Instead the card centres itself with `my-auto`, which collapses to 0
+          once it overflows, keeping it fully scrollable from the top. */}
+      <div className="flex-1 overflow-y-auto flex flex-col items-center px-6 py-8">
+        <div key={step} className={cn(
+          "anim-step w-full max-w-md space-y-5",
+          step !== "group" && "my-auto"
+        )}>
 
           {/* ── Step: Group ── */}
           {step === "group" && (
             <>
               <div>
-                <h3 className="text-sm font-semibold text-zinc-900">Select a group</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">The user will be onboarded into this group.</p>
+                <h3 className="text-sm font-semibold text-zinc-900">Selecionar um grupo</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">O utilizador será integrado neste grupo.</p>
               </div>
               <div className="rounded-xl border border-zinc-200 overflow-hidden divide-y divide-zinc-100">
                 {groups.map((g) => {
@@ -507,17 +521,19 @@ export default function CreateUserWizard({
                   return (
                     <button
                       key={g.Name}
+                      type="button"
                       ref={active ? activeGroupRef : undefined}
                       onClick={() => set("groupName", g.Name)}
                       className={cn(
                         "w-full flex items-center justify-between px-4 py-3 text-left transition-colors",
-                        active ? "bg-violet-50" : "bg-white hover:bg-zinc-50"
+                        active ? "bg-violet-50" : "bg-white hover:bg-zinc-50",
+                        focusRing,
                       )}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className={cn(
                           "w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold flex-shrink-0",
-                          active ? "bg-violet-600 text-white" : "bg-zinc-100 text-zinc-500"
+                          active ? "bg-brand text-white" : "bg-zinc-100 text-zinc-500"
                         )}>
                           {g.Name?.[0] ?? "?"}
                         </div>
@@ -562,8 +578,8 @@ export default function CreateUserWizard({
                     searchPlaceholder="Procurar utilizador…"
                     emptyText="Nenhum utilizador nesta pasta"
                   />
-                  <p className="text-xs text-zinc-400">
-                    O novo utilizador fica na pasta <span className="font-medium text-zinc-500">{form.groupName}</span>
+                  <p className="text-xs text-zinc-500">
+                    O novo utilizador fica na pasta <span className="font-medium text-zinc-700">{form.groupName}</span>
                     {form.copyFromUser && " e herda os grupos do utilizador escolhido"}.
                   </p>
                 </div>
@@ -575,16 +591,16 @@ export default function CreateUserWizard({
           {step === "info" && (
             <>
               <div>
-                <h3 className="text-sm font-semibold text-zinc-900">User details</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">Fill in the user's personal information.</p>
+                <h3 className="text-sm font-semibold text-zinc-900">Detalhes do utilizador</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">Preenche os dados pessoais do utilizador.</p>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="First name">
+                <Field label="Nome próprio">
                   <input ref={firstNameRef} value={form.firstName}
                     onChange={(e) => set("firstName", e.target.value)}
                     onBlur={suggestDefaults} placeholder="João" className={inputCls} />
                 </Field>
-                <Field label="Last name">
+                <Field label="Apelido">
                   <input ref={lastNameRef} value={form.lastName}
                     onChange={(e) => set("lastName", e.target.value)}
                     onBlur={suggestDefaults} placeholder="Silva" className={inputCls} />
@@ -595,9 +611,10 @@ export default function CreateUserWizard({
                 <button
                   type="button"
                   onClick={() => setLoginInfoOpen((o) => !o)}
-                  className="flex items-center gap-2 w-full group"
+                  aria-expanded={loginInfoOpen}
+                  className={cn("flex items-center gap-2 w-full group rounded-md", focusRing)}
                 >
-                  <span className="text-xs font-medium text-zinc-400 group-hover:text-zinc-500 transition-colors whitespace-nowrap">Login Info</span>
+                  <span className="text-xs font-medium text-zinc-400 group-hover:text-zinc-500 transition-colors whitespace-nowrap">Dados de acesso</span>
                   <hr className="flex-1 border-zinc-200" />
                   <svg
                     className={cn("w-3 h-3 text-zinc-400 group-hover:text-zinc-500 transition-all flex-shrink-0", loginInfoOpen ? "rotate-180" : "")}
@@ -608,7 +625,7 @@ export default function CreateUserWizard({
                 </button>
                 {loginInfoOpen && (
                   <div className="mt-4 space-y-4">
-                    <Field label="User logon name">
+                    <Field label="Nome de utilizador">
                       <div className="flex gap-2">
                         <span className={cn(inputCls, "w-auto flex-shrink-0 text-zinc-400 bg-zinc-50 cursor-default select-none")}>
                           BMAP\
@@ -633,7 +650,7 @@ export default function CreateUserWizard({
               </div>
 
               {/* Job Title */}
-              <Field label="Job title">
+              <Field label="Cargo">
                 <div className="relative">
                   <input ref={jobTitleRef} value={form.jobTitle}
                     onChange={(e) => set("jobTitle", e.target.value)}
@@ -649,9 +666,9 @@ export default function CreateUserWizard({
               </Field>
 
               {/* Department */}
-              <Field label="Department">
+              <Field label="Departamento" htmlFor="department">
                 <div className="relative">
-                  <input ref={departmentRef} value={form.department}
+                  <input id="department" ref={departmentRef} value={form.department}
                     onChange={(e) => set("department", e.target.value)}
                     onFocus={() => setDeptFocused(true)}
                     onBlur={() => setTimeout(() => setDeptFocused(false), 150)}
@@ -665,7 +682,7 @@ export default function CreateUserWizard({
               </Field>
 
               {/* Employee type — suggestions come from the OU's current members. */}
-              <Field label="Employee type">
+              <Field label="Tipo de conta">
                 <div className="relative">
                   <input ref={empTypeRef} value={form.employeeType}
                     onChange={(e) => set("employeeType", e.target.value)}
@@ -687,19 +704,19 @@ export default function CreateUserWizard({
           {step === "address" && (
             <>
               <div>
-                <h3 className="text-sm font-semibold text-zinc-900">Address</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">Office address — edit if needed.</p>
+                <h3 className="text-sm font-semibold text-zinc-900">Morada</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">Morada do escritório — edita se necessário.</p>
               </div>
-              <Field label="Street">
+              <Field label="Rua">
                 <input ref={streetRef} value={form.street}
                   onChange={(e) => set("street", e.target.value)} className={inputCls} />
               </Field>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="City">
+                <Field label="Cidade">
                   <input ref={cityRef} value={form.city}
                     onChange={(e) => set("city", e.target.value)} className={inputCls} />
                 </Field>
-                <Field label="Postal code">
+                <Field label="Código postal">
                   <input ref={postalCodeRef} value={form.postalCode}
                     onChange={(e) => set("postalCode", e.target.value)} className={inputCls} />
                 </Field>
@@ -711,37 +728,37 @@ export default function CreateUserWizard({
           {step === "password" && (
             <>
               <div>
-                <h3 className="text-sm font-semibold text-zinc-900">Temporary password</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">Set the account password and options.</p>
+                <h3 className="text-sm font-semibold text-zinc-900">Palavra-passe temporária</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">Define a palavra-passe e as opções da conta.</p>
               </div>
-              <Field label="Password">
+              <Field label="Palavra-passe">
                 <input type="password" value={form.password}
                   onChange={(e) => set("password", e.target.value)} className={inputCls} />
               </Field>
-              <Field label="Confirm password">
+              <Field label="Confirmar palavra-passe">
                 <input type="password" value={form.confirmPassword}
                   onChange={(e) => set("confirmPassword", e.target.value)} className={inputCls} />
               </Field>
               {form.password && form.confirmPassword && form.password !== form.confirmPassword && (
-                <p className="text-xs text-red-500">Passwords do not match</p>
+                <p className="text-xs text-red-500">As palavras-passe não coincidem</p>
               )}
               {form.password && form.password.length < 8 && (
-                <p className="text-xs text-amber-500">Minimum 8 characters</p>
+                <p className="text-xs text-amber-500">Mínimo de 8 caracteres</p>
               )}
               <div className="space-y-3 pt-1">
                 <CheckOption
                   checked={form.changePasswordAtLogon}
                   disabled={form.passwordNeverExpires}
                   onChange={(v) => set("changePasswordAtLogon", v)}
-                  label="User must change password at next login"
-                  hint={form.passwordNeverExpires ? "Incompatível com password que nunca expira" : undefined}
+                  label="O utilizador tem de alterar a palavra-passe no próximo início de sessão"
+                  hint={form.passwordNeverExpires ? "Incompatível com palavra-passe que nunca expira" : undefined}
                 />
                 <CheckOption
                   checked={form.passwordNeverExpires}
                   disabled={form.changePasswordAtLogon}
                   onChange={(v) => set("passwordNeverExpires", v)}
-                  label="Password never expires"
-                  hint={form.changePasswordAtLogon ? "Incompatível com alteração obrigatória no próximo login" : undefined}
+                  label="A palavra-passe nunca expira"
+                  hint={form.changePasswordAtLogon ? "Incompatível com alteração obrigatória no próximo início de sessão" : undefined}
                 />
               </div>
             </>
@@ -751,24 +768,24 @@ export default function CreateUserWizard({
           {step === "confirm" && (
             <>
               <div>
-                <h3 className="text-sm font-semibold text-zinc-900">Review & confirm</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">Please review the details before creating the user.</p>
+                <h3 className="text-sm font-semibold text-zinc-900">Rever e confirmar</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">Revê os detalhes antes de criar o utilizador.</p>
               </div>
               <div className="rounded-xl border border-zinc-200 divide-y divide-zinc-100 overflow-hidden">
                 {(
                   [
-                    ["Group",      form.groupName],
+                    ["Grupo",      form.groupName],
                     ...(form.copyFromUser
                       ? [["Grupos de", templateUsers.find((u) => u.SamAccountName === form.copyFromUser)?.DisplayName ?? form.copyFromUser]] as [string, string][]
                       : []),
-                    ["Full name",  `${form.firstName} ${form.lastName}`],
-                    ["Username",   `BMAP\\${form.username}`],
+                    ["Nome completo", `${form.firstName} ${form.lastName}`],
+                    ["Nome de utilizador", `BMAP\\${form.username}`],
                     ["Email",      form.email],
-                    ...(form.jobTitle    ? [["Job title",     form.jobTitle]]    : []),
-                    ...(form.department  ? [["Department",    form.department]]  : []),
-                    ...(form.employeeType? [["Employee type", form.employeeType]]: []),
-                    ["Address",    `${form.street}, ${form.postalCode} ${form.city}`],
-                    ["Password",   "••••••••"],
+                    ...(form.jobTitle    ? [["Cargo",         form.jobTitle]]    : []),
+                    ...(form.department  ? [["Departamento",  form.department]]  : []),
+                    ...(form.employeeType? [["Tipo de conta", form.employeeType]]: []),
+                    ["Morada",     `${form.street}, ${form.postalCode} ${form.city}`],
+                    ["Palavra-passe", "••••••••"],
                   ] as [string, string][]
                 ).map(([label, val]) => (
                   <div key={label} className="flex items-center justify-between px-4 py-3">
@@ -777,12 +794,12 @@ export default function CreateUserWizard({
                   </div>
                 ))}
                 <div className="px-4 py-3 space-y-1">
-                  <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider block">Account options</span>
+                  <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider block">Opções da conta</span>
                   <p className="text-sm text-zinc-700">
-                    {form.changePasswordAtLogon ? "✓ Must change password at next login" : "✗ No forced password change"}
+                    {form.changePasswordAtLogon ? "✓ Tem de alterar a palavra-passe no próximo início de sessão" : "✗ Sem alteração de palavra-passe obrigatória"}
                   </p>
                   <p className="text-sm text-zinc-700">
-                    {form.passwordNeverExpires ? "✓ Password never expires" : "✗ Password expires normally"}
+                    {form.passwordNeverExpires ? "✓ A palavra-passe nunca expira" : "✗ A palavra-passe expira normalmente"}
                   </p>
                 </div>
               </div>
@@ -793,31 +810,20 @@ export default function CreateUserWizard({
 
       {/* Footer */}
       <div className="px-6 py-4 border-t border-zinc-200 flex items-center justify-between">
-        <button
-          onClick={step === "group" ? onClose : prev}
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors"
-        >
+        <Button variant="ghost" onClick={step === "group" ? onClose : prev}>
           <Kbd>Esc</Kbd>
-          {step === "group" ? "Cancel" : "Back"}
-        </button>
+          {step === "group" ? "Cancelar" : "Voltar"}
+        </Button>
         {step !== "confirm" ? (
-          <button
-            onClick={next}
-            disabled={!canProceed()}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            Continue
+          <Button onClick={next} disabled={!canProceed()}>
+            Seguinte
             <Kbd tone="violet">↵</Kbd>
-          </button>
+          </Button>
         ) : (
-          <button
-            onClick={submit}
-            disabled={saving}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {saving ? "Creating…" : "Create user"}
+          <Button onClick={submit} disabled={saving}>
+            {saving ? "A criar…" : "Criar utilizador"}
             {!saving && <Kbd tone="violet">↵</Kbd>}
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -831,7 +837,8 @@ function Dropdown({ items, selected, onSelect }: { items: string[]; selected: st
         <button key={s} type="button" onMouseDown={() => onSelect(s)}
           className={cn(
             "w-full text-left px-3 py-2 text-sm transition-colors",
-            selected === s ? "bg-violet-50 text-violet-700 font-medium" : "text-zinc-700 hover:bg-zinc-50"
+            selected === s ? "bg-violet-50 text-violet-700 font-medium" : "text-zinc-700 hover:bg-zinc-50",
+            focusRing,
           )}>
           {s}
         </button>
@@ -844,7 +851,7 @@ function CheckOption({ checked, onChange, label, disabled, hint }: { checked: bo
   return (
     <label className={cn("flex items-start gap-3 select-none", disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer")}>
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 w-4 h-4 rounded border-zinc-300 text-violet-600 focus:ring-violet-500/20 disabled:cursor-not-allowed" />
+        className="mt-0.5 w-4 h-4 rounded border-zinc-300 text-brand focus:ring-brand/20 disabled:cursor-not-allowed" />
       <span className="text-sm text-zinc-700">
         {label}
         {hint && <span className="block text-xs text-amber-500 mt-0.5">{hint}</span>}
@@ -853,10 +860,10 @@ function CheckOption({ checked, onChange, label, disabled, hint }: { checked: bo
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
-      <label className="text-xs font-medium text-zinc-600">{label}</label>
+      <label htmlFor={htmlFor} className="text-xs font-medium text-zinc-600">{label}</label>
       {children}
     </div>
   );

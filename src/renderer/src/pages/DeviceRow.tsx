@@ -1,16 +1,20 @@
-import { useState, useEffect, useId, useRef, memo } from "react";
+import { useState, useEffect, useId, memo } from "react";
 import {
   Eye, X, Boxes, Copy, ExternalLink, Power, PowerOff, MonitorSmartphone,
-  Server, Layers, AlertTriangle,
+  Server, Layers, AlertTriangle, Printer,
 } from "lucide-react";
 import { adAPI } from "../adAPI";
 import { cn } from "../lib/cn";
 import { useOutsideClick } from "../hooks/useOutsideClick";
+import { useFocusTrap } from "../hooks/useFocusTrap";
+import { Button } from "../components/ui/Button";
+import { focusRing } from "../components/ui/controls";
 import {
   type ConsolidatedDevice, type DeviceSource, type Tone,
   deviceState, ezStatusLabel, categoryIcon, daysSince, stripDomain,
   applyUrlTemplate, openExternal,
 } from "../lib/devices";
+import LabelPreviewModal from "../components/LabelPreviewModal";
 
 // Admin-configured deep-link templates (from Settings → Dispositivos). Empty
 // strings mean the corresponding action is hidden.
@@ -107,10 +111,15 @@ function DeviceRow({
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Label preview + print dialog (SUPVAN E11). Pure client-side render; the print
+  // button degrades gracefully until the Bluetooth transport lands.
+  const [preview, setPreview] = useState(false);
   // Two-step confirm for the (reversible but disruptive) enable/disable write.
   const [confirmToggle, setConfirmToggle] = useState(false);
   const titleId = useId();
-  const cardRef = useRef<HTMLDivElement>(null);
+  // Trap Tab focus inside the detail dialog and restore it on close (Escape is
+  // still handled by the keyboard effect below, so no onEscape here).
+  const cardRef = useFocusTrap<HTMLDivElement>(open);
   const menuRef = useOutsideClick<HTMLDivElement>(menu, () => setMenu(false));
 
   const Icon = categoryIcon(device.category, device.name);
@@ -163,8 +172,10 @@ function DeviceRow({
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); if (confirmToggle) setConfirmToggle(false); else setOpen(false); }
-      else if (e.key === "Enter" && !confirmToggle && !busy) { e.preventDefault(); setOpen(false); }
+      if (e.key === "Escape") { e.preventDefault(); if (busy) return; if (confirmToggle) setConfirmToggle(false); else setOpen(false); }
+      // Enter closes the dialog — but not when focus is on a button (the trap or a
+      // Tab parks it there), so its own Enter→click fires instead of double-acting.
+      else if (e.key === "Enter" && !confirmToggle && !busy && !(e.target as HTMLElement).closest("button")) { e.preventDefault(); setOpen(false); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -172,14 +183,6 @@ function DeviceRow({
 
   // Reset the transient confirm whenever the modal closes.
   useEffect(() => { if (!open) setConfirmToggle(false); }, [open]);
-
-  // Move focus into the dialog on open and restore it on close.
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.activeElement as HTMLElement | null;
-    cardRef.current?.focus();
-    return () => prev?.focus?.();
-  }, [open]);
 
   // Domain-free row sub-line (req. C — never surface a raw .bmap.lis suffix in the
   // list): prefer the human holder, then a stripped hostname, then serial/category.
@@ -225,16 +228,20 @@ function DeviceRow({
             <button
               onClick={(e) => { e.stopPropagation(); setOpen(true); }}
               title="Ver detalhes"
+              aria-label="Ver detalhes"
               className={cn(
-                "p-1.5 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors",
-                menu ? "opacity-100 bg-zinc-100" : "opacity-0 group-hover:opacity-100",
+                "p-1.5 rounded-md text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors",
+                focusRing,
+                // Hidden until row hover, but revealed on keyboard focus so it's
+                // reachable without a mouse.
+                menu ? "opacity-100 bg-zinc-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100",
               )}
             >
               <Eye size={15} />
             </button>
 
             {menu && (
-              <div className="anim-popover absolute right-0 mt-1 w-56 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20 text-left">
+              <div role="menu" className="anim-popover absolute right-0 mt-1 w-56 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20 text-left">
                 <DeviceMenuItem icon={<Eye size={13} />} label="Abrir detalhes" onClick={() => { setMenu(false); setOpen(true); }} />
                 <div className="border-t border-zinc-100" />
                 <DeviceMenuItem icon={<Copy size={13} />} label="Copiar nome" onClick={() => copy(device.name, "Nome copiado")} />
@@ -251,6 +258,8 @@ function DeviceRow({
                 {screenConnectUrl && (
                   <DeviceMenuItem icon={<ExternalLink size={13} />} label="Abrir no ScreenConnect" onClick={() => { setMenu(false); openLink(screenConnectUrl); }} />
                 )}
+                <div className="border-t border-zinc-100" />
+                <DeviceMenuItem icon={<Printer size={13} />} label="Imprimir etiqueta" onClick={() => { setMenu(false); setPreview(true); }} />
               </div>
             )}
           </div>
@@ -265,7 +274,8 @@ function DeviceRow({
               aria-modal="true"
               aria-labelledby={titleId}
               className="anim-overlay fixed inset-0 z-30 bg-black/30 backdrop-blur-sm flex items-center justify-center"
-              onClick={() => setOpen(false)}
+              // Don't dismiss on a backdrop click while a toggle write is in flight.
+              onClick={() => { if (!busy) setOpen(false); }}
             >
               <div
                 ref={cardRef}
@@ -354,6 +364,7 @@ function DeviceRow({
                     {screenConnectUrl && (
                       <IconAction icon={<ExternalLink size={15} />} label="Abrir no ScreenConnect" onClick={() => openLink(screenConnectUrl)} />
                     )}
+                    <IconAction icon={<Printer size={15} />} label="Imprimir etiqueta" onClick={() => setPreview(true)} />
                   </div>
 
                   {/* Right: the state toggle (two-step) then Close. */}
@@ -363,29 +374,26 @@ function DeviceRow({
                         <span className="hidden sm:inline text-xs text-zinc-500">
                           {device.enabled ? "Desativar?" : "Ativar?"}
                         </span>
-                        <button
-                          onClick={() => setConfirmToggle(false)}
-                          disabled={busy}
-                          className="px-3 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors disabled:opacity-40"
-                        >
+                        <Button variant="ghost" size="sm" onClick={() => setConfirmToggle(false)} disabled={busy}>
                           Cancelar
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                          variant="danger"
                           onClick={doToggle}
                           disabled={busy}
-                          className={cn(
-                            "px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-40",
-                            device.enabled ? "bg-red-600 hover:bg-red-700" : "bg-emerald-600 hover:bg-emerald-700",
-                          )}
+                          // Enabling is a positive (emerald) action — override the
+                          // danger red only for that case (tailwind-merge wins).
+                          className={!device.enabled ? "bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-emerald-500/40" : undefined}
                         >
                           {busy ? "A aplicar…" : device.enabled ? "Desativar" : "Ativar"}
-                        </button>
+                        </Button>
                       </div>
                     ) : (
                       <button
                         onClick={() => setConfirmToggle(true)}
                         className={cn(
                           "inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border transition-colors",
+                          focusRing,
                           device.enabled
                             ? "border-red-200 text-red-600 hover:bg-red-50"
                             : "border-emerald-200 text-emerald-600 hover:bg-emerald-50",
@@ -396,10 +404,23 @@ function DeviceRow({
                       </button>
                     )
                   )}
-                  <button onClick={() => setOpen(false)} className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors">Fechar</button>
+                  <Button variant="ghost" onClick={() => setOpen(false)}>Fechar</Button>
                 </ModalFooter>
               </div>
             </div>
+          </td>
+        </tr>
+      )}
+
+      {preview && (
+        <tr>
+          <td colSpan={6} className="p-0 border-0">
+            <LabelPreviewModal
+              device={device}
+              qrPayload={ezofficeUrl || ""}
+              toast={toast}
+              onClose={() => setPreview(false)}
+            />
           </td>
         </tr>
       )}
@@ -418,7 +439,8 @@ function DeviceMenuItem({ icon, label, onClick }: { icon: React.ReactNode; label
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-zinc-700 hover:bg-zinc-50 transition-colors"
+      role="menuitem"
+      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-zinc-700 hover:bg-zinc-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/30"
     >
       <span className="text-zinc-400">{icon}</span>
       {label}
@@ -434,7 +456,7 @@ function IconAction({ icon, label, onClick }: { icon: React.ReactNode; label: st
       onClick={onClick}
       title={label}
       aria-label={label}
-      className="p-2 rounded-lg text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 transition-colors"
+      className={cn("p-2 rounded-lg text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 transition-colors", focusRing)}
     >
       {icon}
     </button>
@@ -451,7 +473,7 @@ function ModalHeader({ icon, title, titleId, subtitle, onClose }: { icon: React.
           <p className="text-xs text-zinc-400 truncate">{subtitle}</p>
         </div>
       </div>
-      <button onClick={onClose} className="p-1.5 rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors flex-shrink-0">
+      <button onClick={onClose} aria-label="Fechar" className={cn("p-1.5 rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors flex-shrink-0", focusRing)}>
         <X size={14} />
       </button>
     </div>

@@ -12,7 +12,9 @@ import { adAPI, type ADUser, type ADGroup, type DeviceOU } from "../adAPI";
 import { usersCache, usersInGroup } from "../lib/usersCache";
 import SearchableSelect from "../components/SearchableSelect";
 import { cn } from "../lib/cn";
-import { inputCls } from "../components/ui/controls";
+import { inputCls, focusRing } from "../components/ui/controls";
+import { Button } from "../components/ui/Button";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { FLAVOR, FLAVOR_UI, type AppFlavor } from "../lib/flavor";
 import { getBiometricInfo, biometricLabel, type BiometricInfo } from "../lib/biometric";
 import type { ExternalToast } from "sonner";
@@ -25,10 +27,10 @@ type Tab = "general" | "groups" | "devices" | "connection";
 // gated on the flavor separately.
 const TABS: { id: Tab; label: string; icon: React.ElementType; flavors?: AppFlavor[] }[] = (
   [
-    { id: "general", label: "General", icon: SlidersHorizontal },
-    { id: "groups", label: "Onboarding Groups", icon: Layers, flavors: ["manager"] },
+    { id: "general", label: "Geral", icon: SlidersHorizontal },
+    { id: "groups", label: "Grupos de onboarding", icon: Layers, flavors: ["manager"] },
     { id: "devices", label: "Dispositivos", icon: MonitorSmartphone },
-    { id: "connection", label: "Conexões", icon: Server },
+    { id: "connection", label: "Ligações", icon: Server },
   ] as { id: Tab; label: string; icon: React.ElementType; flavors?: AppFlavor[] }[]
 ).filter((t) => !t.flavors || t.flavors.includes(FLAVOR));
 
@@ -56,17 +58,19 @@ export default function SettingsPage({ toast, onSettingsChange, onUpdateModal, i
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="border-b border-zinc-200 px-6">
         <div className="flex items-center gap-6 h-12">
-          <span className="text-sm font-semibold text-zinc-900">Settings</span>
+          <span className="text-sm font-semibold text-zinc-900">Definições</span>
           <div className="flex items-center gap-1 h-full">
             {TABS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
+                type="button"
                 onClick={() => setTab(id)}
                 className={cn(
                   "flex items-center gap-1.5 px-3 h-full text-xs font-medium border-b-2 transition-colors",
                   tab === id
-                    ? "border-violet-600 text-violet-700"
-                    : "border-transparent text-zinc-500 hover:text-zinc-800"
+                    ? "border-brand text-brand"
+                    : "border-transparent text-zinc-500 hover:text-zinc-800",
+                  focusRing
                 )}
               >
                 <Icon size={13} />
@@ -143,7 +147,7 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
 
   const toggleDev = async () => {
     await persist({ devMode: !devMode });
-    toast.success(!devMode ? "Modo developer ativado" : "Modo developer desativado");
+    toast.success(!devMode ? "Modo de programador ativado" : "Modo de programador desativado");
   };
 
   const toggleBiometric = async () => {
@@ -167,16 +171,19 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Modo developer</h3>
-              <p className="text-xs text-zinc-400 mt-0.5">Mostra a Consola de atividade na barra lateral.</p>
+              <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Modo de programador</h3>
+              <p className="text-xs text-zinc-500 mt-0.5">Mostra a Consola de atividade na barra lateral.</p>
             </div>
             <button
+              type="button"
               onClick={toggleDev}
               role="switch"
               aria-checked={devMode}
+              aria-label="Modo de programador"
               className={cn(
                 "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
-                devMode ? "bg-violet-600" : "bg-zinc-200"
+                devMode ? "bg-brand" : "bg-zinc-200",
+                focusRing
               )}
             >
               <span className={cn(
@@ -191,7 +198,7 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
         <section className="space-y-3">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Tempo de inatividade</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-0.5">
               {kioskMode
                 ? "Desativado em modo quiosque — a sessão nunca bloqueia por inatividade."
                 : "Ao fim deste tempo sem atividade, o ecrã bloqueia mas a sessão continua ativa — desbloqueia com a palavra-passe ou biometria."}
@@ -208,7 +215,7 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
               onChange={(e) => setTimeoutMin(Number(e.target.value))}
               onMouseUp={() => persist({ loginTimeoutMin: timeout })}
               onKeyUp={() => persist({ loginTimeoutMin: timeout })}
-              className="flex-1 accent-violet-600"
+              className="flex-1 accent-brand"
             />
             <span className="w-16 text-right text-sm font-medium tabular-nums text-zinc-700">{timeout} min</span>
           </div>
@@ -218,7 +225,7 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
         <section className="space-y-3">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Tempo máximo de sessão</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-0.5">
               {kioskMode
                 ? "Desativado em modo quiosque — a sessão nunca termina automaticamente."
                 : "Estando bloqueada, a sessão ainda pode ser desbloqueada durante este período. Passado este tempo é terminada por completo e obriga a iniciar sessão de novo. Mínimo 48h."}
@@ -235,7 +242,7 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
               onChange={(e) => setFullTimeout(Number(e.target.value))}
               onMouseUp={() => persist({ fullTimeoutHours: fullTimeout })}
               onKeyUp={() => persist({ fullTimeoutHours: fullTimeout })}
-              className="flex-1 accent-violet-600"
+              className="flex-1 accent-brand"
             />
             <span className="w-20 text-right text-sm font-medium tabular-nums text-zinc-700">{fullTimeoutLabel(fullTimeout)}</span>
           </div>
@@ -246,20 +253,23 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
           <div className="flex items-center justify-between gap-4">
             <div>
               <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Desbloqueio biométrico</h3>
-              <p className="text-xs text-zinc-400 mt-0.5">
+              <p className="text-xs text-zinc-500 mt-0.5">
                 {bioInfo.available
                   ? `Desbloqueia o ecrã e confirma ações com ${biometricLabel(bioInfo.kind)} em vez da palavra-passe.${bioInfo.kind === "windows-hello" ? " Windows Hello é experimental — valida antes de confiar." : ""}`
                   : "Indisponível nesta máquina — Touch ID ou Windows Hello não está configurado."}
               </p>
             </div>
             <button
+              type="button"
               onClick={toggleBiometric}
               role="switch"
               aria-checked={biometricEnabled}
+              aria-label="Desbloqueio biométrico"
               disabled={!bioInfo.available}
               className={cn(
                 "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
-                biometricEnabled && bioInfo.available ? "bg-violet-600" : "bg-zinc-200"
+                biometricEnabled && bioInfo.available ? "bg-brand" : "bg-zinc-200",
+                focusRing
               )}
             >
               <span className={cn(
@@ -275,18 +285,21 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
           <div className="flex items-center justify-between gap-4">
             <div>
               <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Modo quiosque</h3>
-              <p className="text-xs text-zinc-400 mt-0.5">
+              <p className="text-xs text-zinc-500 mt-0.5">
                 Para um ecrã de parede: nunca termina a sessão, atualiza utilizadores e dispositivos
                 automaticamente de 5 em 5 min, e volta a pedir a palavra-passe a cada 10 min antes de qualquer ação.
               </p>
             </div>
             <button
+              type="button"
               onClick={toggleKiosk}
               role="switch"
               aria-checked={kioskMode}
+              aria-label="Modo quiosque"
               className={cn(
                 "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
-                kioskMode ? "bg-violet-600" : "bg-zinc-200"
+                kioskMode ? "bg-brand" : "bg-zinc-200",
+                focusRing
               )}
             >
               <span className={cn(
@@ -301,15 +314,12 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
         <section className="space-y-3">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Versão</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">{FLAVOR_UI.productName} {version || "…"}</p>
+            <p className="text-xs text-zinc-500 mt-0.5">{FLAVOR_UI.productName} {version || "…"}</p>
           </div>
-          <button
-            onClick={openUpdate}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 transition-colors"
-          >
+          <Button variant="secondary" onClick={openUpdate}>
             <RefreshCw size={14} />
             Procurar atualizações
-          </button>
+          </Button>
         </section>
       </div>
 
@@ -346,12 +356,12 @@ function ConnectionSection({ toast }: { toast: { success: ToastFn; error: ToastF
       const res = await adAPI.testConnection({ server: server.trim(), username: username.trim(), password: passwordPayload() });
       if (res.ok) {
         const d = res.data as { domain?: string; dc?: string } | undefined;
-        setResult({ ok: true, message: d?.domain ? `Connected to ${d.domain}` : "Connection successful" });
+        setResult({ ok: true, message: d?.domain ? `Ligado a ${d.domain}` : "Ligação estabelecida" });
       } else {
-        setResult({ ok: false, message: res.error ?? "Connection failed" });
+        setResult({ ok: false, message: res.error ?? "Falha na ligação" });
       }
     } catch (e) {
-      setResult({ ok: false, message: e instanceof Error ? e.message : "Connection failed" });
+      setResult({ ok: false, message: e instanceof Error ? e.message : "Falha na ligação" });
     } finally {
       setTesting(false);
     }
@@ -365,9 +375,9 @@ function ConnectionSection({ toast }: { toast: { success: ToastFn; error: ToastF
       if (passwordTouched && !password) setHasStoredPassword(false);
       setPassword("");
       setPasswordTouched(false);
-      toast.success("Connection settings saved");
+      toast.success("Definições de ligação guardadas");
     } catch {
-      toast.error("Failed to save connection settings");
+      toast.error("Não foi possível guardar as definições de ligação");
     } finally {
       setSaving(false);
     }
@@ -381,78 +391,75 @@ function ConnectionSection({ toast }: { toast: { success: ToastFn; error: ToastF
     setHasStoredPassword(false);
     setPasswordTouched(false);
     setResult(null);
-    toast.success("Connection cleared — using local domain");
+    toast.success("Ligação limpa — a usar o domínio local");
   };
 
   return (
     <div className="space-y-8">
       <div>
-        <h2 className="text-sm font-semibold text-zinc-900">Remote Active Directory</h2>
-        <p className="text-xs text-zinc-400 mt-0.5">
-          Point the app at a domain controller and authenticate with a specific account.
-          Leave the fields empty to use the local domain and the current Windows user.
+        <h2 className="text-sm font-semibold text-zinc-900">Active Directory remoto</h2>
+        <p className="text-xs text-zinc-500 mt-0.5">
+          Aponta a app a um controlador de domínio e autentica-te com uma conta específica.
+          Deixa os campos vazios para usar o domínio local e o utilizador atual do Windows.
         </p>
       </div>
 
       <section className="space-y-4">
         <div className="space-y-1.5">
-          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Domain controller (IP or host)</label>
+          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Controlador de domínio (IP ou host)</label>
           <input value={server} onChange={(e) => { setServer(e.target.value); setResult(null); }} placeholder="ex: 10.4.0.12 ou pt-srv-dc02.bmap.lis" className={inputCls} />
         </div>
 
         <div className="space-y-1.5">
-          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Username</label>
-          <input value={username} onChange={(e) => { setUsername(e.target.value); setResult(null); }} placeholder="e.g. BMAP\administrador" className={inputCls} autoComplete="off" />
+          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Utilizador</label>
+          <input value={username} onChange={(e) => { setUsername(e.target.value); setResult(null); }} placeholder="ex: BMAP\administrador" className={inputCls} autoComplete="off" />
         </div>
 
         <div className="space-y-1.5">
-          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Password</label>
+          <label className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Palavra-passe</label>
           <input
             type="password"
             value={password}
             onChange={(e) => { setPassword(e.target.value); setPasswordTouched(true); setResult(null); }}
-            placeholder={hasStoredPassword && !passwordTouched ? "•••••••• (saved)" : "Enter password"}
+            placeholder={hasStoredPassword && !passwordTouched ? "•••••••• (guardada)" : "Introduzir palavra-passe"}
             className={inputCls}
             autoComplete="new-password"
           />
-          <p className="text-[11px] text-zinc-400">
-            Stored encrypted on this machine. Leave blank to keep the saved password.
+          <p className="text-[11px] text-zinc-500">
+            Guardada encriptada nesta máquina. Deixa em branco para manter a palavra-passe guardada.
           </p>
         </div>
       </section>
 
       {result && (
-        <div className={cn(
-          "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
-          result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
-        )}>
+        <div
+          role={result.ok ? "status" : "alert"}
+          aria-live={result.ok ? "polite" : "assertive"}
+          className={cn(
+            "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
+            result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
+          )}
+        >
           {result.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
           <span className="truncate">{result.message}</span>
         </div>
       )}
 
       <div className="flex items-center gap-2 pt-1">
-        <button
-          onClick={test}
-          disabled={testing || !server.trim()}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 transition-colors"
-        >
+        <Button variant="secondary" onClick={test} disabled={testing || !server.trim()}>
           {testing ? <Loader2 size={14} className="animate-spin" /> : <Server size={14} />}
-          Test connection
-        </button>
-        <button
-          onClick={save}
-          disabled={saving}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors"
-        >
+          Testar ligação
+        </Button>
+        <Button onClick={save} disabled={saving}>
           {saving ? <Loader2 size={14} className="animate-spin" /> : null}
-          Save
-        </button>
+          Guardar
+        </Button>
         <button
+          type="button"
           onClick={clearConnection}
-          className="ml-auto text-xs text-zinc-400 hover:text-red-500 transition-colors"
+          className={cn("ml-auto rounded-md px-1.5 py-1 text-xs text-zinc-500 transition-colors hover:text-red-500", focusRing)}
         >
-          Clear
+          Limpar
         </button>
       </div>
     </div>
@@ -524,13 +531,13 @@ function InventorySection({ toast, onSaved }: {
     <div className="space-y-8">
       <div>
         <h2 className="text-sm font-semibold text-zinc-900">API de inventário</h2>
-        <p className="text-xs text-zinc-400 mt-0.5">
+        <p className="text-xs text-zinc-500 mt-0.5">
           Ligação à API interna de inventário (pyexp-inventory) que cruza o Active Directory
           com o EZOffice. Só de leitura. Deixa desativado para esconder o separador Inventário.
         </p>
-        <p className="text-xs text-zinc-400 mt-1.5">
+        <p className="text-xs text-zinc-500 mt-1.5">
           Cada pedido é assinado com as credenciais do teu início de sessão — não há token nem
-          conta de serviço. Usa um endereço <span className="font-medium text-zinc-500">https://</span> para
+          conta de serviço. Usa um endereço <span className="font-medium text-zinc-600">https://</span> para
           proteger a palavra-passe em rede.
         </p>
       </div>
@@ -540,15 +547,18 @@ function InventorySection({ toast, onSaved }: {
         <div className="flex items-center justify-between gap-4">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Ativar inventário</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">Mostra o painel de reconciliação na barra lateral.</p>
+            <p className="text-xs text-zinc-500 mt-0.5">Mostra o painel de reconciliação na barra lateral.</p>
           </div>
           <button
+            type="button"
             onClick={() => { setEnabled((v) => !v); setResult(null); }}
             role="switch"
             aria-checked={enabled}
+            aria-label="Ativar inventário"
             className={cn(
               "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors",
-              enabled ? "bg-violet-600" : "bg-zinc-200"
+              enabled ? "bg-brand" : "bg-zinc-200",
+              focusRing
             )}
           >
             <span className={cn(
@@ -569,41 +579,41 @@ function InventorySection({ toast, onSaved }: {
             className={inputCls}
             autoComplete="off"
           />
-          <p className="text-[11px] text-zinc-400">Endereço interno (http:// ou https://), sem barra final.</p>
+          <p className="text-[11px] text-zinc-500">Endereço interno (http:// ou https://), sem barra final.</p>
         </div>
       </section>
 
       {result && (
-        <div className={cn(
-          "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
-          result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
-        )}>
+        <div
+          role={result.ok ? "status" : "alert"}
+          aria-live={result.ok ? "polite" : "assertive"}
+          className={cn(
+            "flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border",
+            result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-600"
+          )}
+        >
           {result.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
           <span className="truncate">{result.message}</span>
         </div>
       )}
 
       <div className="flex items-center gap-2 pt-1">
-        <button
-          onClick={test}
-          disabled={testing || !baseUrl.trim()}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border border-zinc-200 rounded-lg text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 transition-colors"
-        >
+        <Button variant="secondary" onClick={test} disabled={testing || !baseUrl.trim()}>
           {testing ? <Loader2 size={14} className="animate-spin" /> : <Boxes size={14} />}
           Testar ligação
-        </button>
-        <button
+        </Button>
+        <Button
           onClick={save}
           disabled={saving || (enabled && !baseUrl.trim())}
           title={enabled && !baseUrl.trim() ? "Indica o endereço da API antes de ativar o inventário." : undefined}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           {saving ? <Loader2 size={14} className="animate-spin" /> : null}
           Guardar
-        </button>
+        </Button>
         <button
+          type="button"
           onClick={clearInventory}
-          className="ml-auto text-xs text-zinc-400 hover:text-red-500 transition-colors"
+          className={cn("ml-auto rounded-md px-1.5 py-1 text-xs text-zinc-500 transition-colors hover:text-red-500", focusRing)}
         >
           Limpar
         </button>
@@ -669,15 +679,15 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
       <div className="px-8 py-6 space-y-8 max-w-xl">
         <div>
           <h2 className="text-sm font-semibold text-zinc-900">Pastas de dispositivos por departamento</h2>
-          <p className="text-xs text-zinc-400 mt-0.5">
+          <p className="text-xs text-zinc-500 mt-0.5">
             Quando um PC entra no domínio fica na pasta errada. Aqui defines em que pasta
-            (uma sub-OU de <span className="font-medium text-zinc-500">BMAP Devices → O365</span>) os
+            (uma sub-OU de <span className="font-medium text-zinc-600">BMAP Devices → O365</span>) os
             computadores de cada departamento devem ficar. O onboarding move o computador para lá automaticamente.
           </p>
         </div>
 
         {ouError && (
-          <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border bg-amber-50 border-amber-200 text-amber-700">
+          <div role="alert" className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm border bg-amber-50 border-amber-200 text-amber-700">
             <XCircle size={15} className="flex-shrink-0" />
             <span>{ouError}</span>
           </div>
@@ -715,9 +725,9 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
         <section className="space-y-3">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Impressoras por departamento</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-0.5">
               Durante o onboarding, cada PC recebe as impressoras selecionadas para o seu departamento —
-              cada uma instalada pelo script <span className="font-mono text-zinc-500">add&lt;NOME&gt;.cmd</span> em RICOHPCL6.
+              cada uma instalada pelo script <span className="font-mono text-zinc-600">add&lt;NOME&gt;.cmd</span> em RICOHPCL6.
               Sem seleção, o passo das impressoras é ignorado.
             </p>
           </div>
@@ -739,8 +749,9 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
                           className={cn(
                             "px-2 py-1 text-xs font-medium rounded-md border transition-colors",
                             on
-                              ? "bg-violet-600 border-violet-600 text-white hover:bg-violet-700"
-                              : "bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300 hover:text-zinc-700"
+                              ? "bg-brand border-brand text-white hover:bg-brand-hover"
+                              : "bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300 hover:text-zinc-700",
+                            focusRing
                           )}
                         >
                           {p}
@@ -757,7 +768,7 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
         <section className="space-y-4">
           <div>
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Instaladores</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-0.5">
               Caminho de rede (NAS) ou URL para os instaladores executados durante o onboarding automático.
               Deixa em branco para usar os caminhos NAS por defeito.
             </p>
@@ -811,12 +822,12 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
               placeholder="ex: \\pt-srv-nas\IT\Software\SMLPlayer\Main.ini"
               className={inputCls}
             />
-            <p className="text-[11px] text-zinc-400">Copiado para %APPDATA%\SMLPlayer7 depois de abrir/fechar a aplicação.</p>
+            <p className="text-[11px] text-zinc-500">Copiado para %APPDATA%\SMLPlayer7 depois de abrir/fechar a aplicação.</p>
           </div>
 
           <div className="pt-4 mt-2 border-t border-zinc-100 space-y-1">
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Links externos</h3>
-            <p className="text-xs text-zinc-400">
+            <p className="text-xs text-zinc-500">
               Modelos de URL para os botões de ação no painel de detalhes de cada dispositivo. Podes usar{" "}
               <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] text-zinc-600">{"{name}"}</code>,{" "}
               <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] text-zinc-600">{"{serial}"}</code> ou{" "}
@@ -844,12 +855,9 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
               className={inputCls}
             />
           </div>
-          <button
-            onClick={async () => { await persist(config); toast.success("Definições de dispositivos guardadas"); }}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
-          >
+          <Button onClick={async () => { await persist(config); toast.success("Definições de dispositivos guardadas"); }}>
             Guardar
-          </button>
+          </Button>
         </section>
       </div>
     </div>
@@ -869,6 +877,11 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
   // The real category folders (OUs) pulled from AD — the sidebar list.
   const [categories, setCategories] = useState<ADGroup[]>(usersCache.groups);
   const [loadingCategories, setLoadingCategories] = useState(!usersCache.loaded);
+  // Destructive-action confirmations (styled replacements for window.confirm):
+  // `confirmDelete` holds the group key pending removal; `confirmReset` guards
+  // the reset-to-defaults action, which previously ran with no confirmation.
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   useEffect(() => {
     getGroupConfig().then(setConfig);
@@ -933,7 +946,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
     await persist({ ...config, [key]: { adGroups: [], jobTitles: [], department: "" } });
     setNewOnboarding("");
     setSelected(key);
-    toast.success(`Group "${key}" created`);
+    toast.success(`Grupo "${key}" criado`);
   };
 
   const removeOnboardingGroup = async (key: string) => {
@@ -942,7 +955,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
     await persist(next);
     const remaining = Object.keys(next).sort();
     setSelected(remaining[0] ?? null);
-    toast.success(`Group "${key}" removed`);
+    toast.success(`Grupo "${key}" removido`);
   };
 
   const addADGroup = async () => {
@@ -986,7 +999,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
   const resetDefaults = async () => {
     await persist(structuredClone(DEFAULT_GROUPS));
     setSelected(Object.keys(DEFAULT_GROUPS).sort()[0]);
-    toast.success("Reset to defaults");
+    toast.success("Predefinições repostas");
   };
 
   // The sidebar shows the real AD OU folders, unioned with any stored config
@@ -1008,22 +1021,24 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
       {/* Left — group list */}
       <div className="w-56 flex-shrink-0 border-r border-zinc-200 flex flex-col overflow-hidden bg-zinc-50/40">
         <div className="px-4 py-4 space-y-3">
-          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Groups</p>
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Grupos</p>
           <div className="flex gap-2">
             <input
               value={newOnboarding}
               onChange={(e) => setNewOnboarding(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addOnboardingGroup()}
-              placeholder="Add group…"
-              className="flex-1 min-w-0 px-2.5 py-1.5 text-xs bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all placeholder:text-zinc-300"
+              placeholder="Adicionar grupo…"
+              className="flex-1 min-w-0 px-2.5 py-1.5 text-xs bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand transition-all placeholder:text-zinc-400"
             />
-            <button
+            <Button
+              size="icon"
               onClick={addOnboardingGroup}
               disabled={!newOnboarding.trim()}
-              className="w-7 h-7 flex items-center justify-center rounded-md bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 transition-colors flex-shrink-0"
+              aria-label="Adicionar grupo"
+              className="h-7 w-7 flex-shrink-0"
             >
               <Plus size={13} strokeWidth={2.5} />
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -1034,12 +1049,14 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
             return (
               <button
                 key={key}
+                type="button"
                 onClick={() => setSelected(key)}
                 className={cn(
                   "w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors text-left group",
                   isActive
                     ? "bg-white border-r-2 border-violet-500 text-zinc-900 font-medium"
-                    : "text-zinc-600 hover:bg-white/60 hover:text-zinc-900"
+                    : "text-zinc-600 hover:bg-white/60 hover:text-zinc-900",
+                  focusRing
                 )}
               >
                 <span className="truncate">{key}</span>
@@ -1057,17 +1074,21 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
         </div>
 
         <div className="px-4 py-3 border-t border-zinc-200">
-          <button onClick={resetDefaults} className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors">
-            Reset to defaults
+          <button
+            type="button"
+            onClick={() => setConfirmReset(true)}
+            className={cn("rounded-md px-1.5 py-1 text-xs text-zinc-500 transition-colors hover:text-zinc-700", focusRing)}
+          >
+            Repor predefinições
           </button>
         </div>
       </div>
 
       {/* Right — detail panel */}
       {!selected || !entry ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-zinc-400">
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-zinc-500">
           <Settings2 size={24} className="text-zinc-300" />
-          <p className="text-sm">Select a group to configure</p>
+          <p className="text-sm">Seleciona um grupo para configurar</p>
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto">
@@ -1075,22 +1096,17 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
           <div className="px-8 py-5 border-b border-zinc-200 flex items-start justify-between">
             <div>
               <h2 className="text-sm font-semibold text-zinc-900">{selected}</h2>
-              <p className="text-xs text-zinc-400 mt-0.5">Configure onboarding defaults for <span className="text-zinc-600 font-medium">{selected}</span></p>
+              <p className="text-xs text-zinc-500 mt-0.5">Configura os valores de onboarding para <span className="text-zinc-700 font-medium">{selected}</span></p>
             </div>
-            <button
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `Remover a configuração de onboarding do grupo "${selected}"?\n\nIsto apaga apenas os valores por defeito guardados na app — não afeta o Active Directory.`
-                  )
-                )
-                  removeOnboardingGroup(selected);
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-colors flex-shrink-0"
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => setConfirmDelete(selected)}
+              className="flex-shrink-0"
             >
               <Trash2 size={11} />
-              Delete
-            </button>
+              Eliminar
+            </Button>
           </div>
 
           <div className="px-8 py-6 space-y-8 max-w-xl">
@@ -1099,7 +1115,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
             <section className="space-y-3">
               <div>
                 <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Utilizador-modelo</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">
+                <p className="text-xs text-zinc-500 mt-0.5">
                   Novos utilizadores deste grupo copiam os grupos deste utilizador (pré-selecionado no wizard).
                 </p>
               </div>
@@ -1141,13 +1157,13 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
             {/* Department */}
             <section className="space-y-3">
               <div>
-                <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Department</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">Pre-filled when creating a user in this group.</p>
+                <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Departamento</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">Pré-preenchido ao criar um utilizador neste grupo.</p>
               </div>
               <input
                 value={entry.department}
                 onChange={(e) => setDepartment(e.target.value)}
-                placeholder="Ex: Redação"
+                placeholder="ex: Redação"
                 className={inputCls}
               />
             </section>
@@ -1155,29 +1171,25 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
             {/* Job Titles */}
             <section className="space-y-3">
               <div>
-                <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Job title suggestions</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">Shown as autocomplete when creating a user in this group.</p>
+                <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Sugestões de cargo</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">Mostradas como sugestões ao criar um utilizador neste grupo.</p>
               </div>
               <div className="flex gap-2">
                 <input
                   value={newJobTitle}
                   onChange={(e) => setNewJobTitle(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addJobTitle()}
-                  placeholder="Ex: Jornalista"
-                  className="flex-1 px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all placeholder:text-zinc-300"
+                  placeholder="ex: Jornalista"
+                  className={cn(inputCls, "flex-1")}
                 />
-                <button
-                  onClick={addJobTitle}
-                  disabled={!newJobTitle.trim()}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors"
-                >
+                <Button onClick={addJobTitle} disabled={!newJobTitle.trim()}>
                   <Plus size={14} strokeWidth={2.5} />
-                  Add
-                </button>
+                  Adicionar
+                </Button>
               </div>
               {entry.jobTitles.length === 0 ? (
-                <div className="flex items-center justify-center h-20 rounded-xl border-2 border-dashed border-zinc-200 text-zinc-400">
-                  <p className="text-sm">No job title suggestions</p>
+                <div className="flex items-center justify-center h-20 rounded-xl border-2 border-dashed border-zinc-200 text-zinc-500">
+                  <p className="text-sm">Sem sugestões de cargo</p>
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -1185,8 +1197,10 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
                     <div key={t} className="flex items-center justify-between px-4 py-2.5 bg-white border border-zinc-200 rounded-xl group hover:border-zinc-300 transition-colors">
                       <span className="text-sm text-zinc-800">{t}</span>
                       <button
+                        type="button"
                         onClick={() => removeJobTitle(t)}
-                        className="p-1.5 rounded-md text-zinc-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
+                        aria-label={`Remover cargo "${t}"`}
+                        className={cn("p-1.5 rounded-md text-zinc-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all", focusRing)}
                       >
                         <X size={13} />
                       </button>
@@ -1199,29 +1213,25 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
             {/* AD Groups */}
             <section className="space-y-3">
               <div>
-                <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">AD Groups</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">AD groups the user is added to during onboarding.</p>
+                <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Grupos AD</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">Grupos AD a que o utilizador é adicionado durante o onboarding.</p>
               </div>
               <div className="flex gap-2">
                 <input
                   value={newADGroup}
                   onChange={(e) => setNewADGroup(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addADGroup()}
-                  placeholder="e.g. GRP_REDACAO_EDITOR"
-                  className="flex-1 px-3 py-2 text-sm bg-white border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all placeholder:text-zinc-300"
+                  placeholder="ex: GRP_REDACAO_EDITOR"
+                  className={cn(inputCls, "flex-1")}
                 />
-                <button
-                  onClick={addADGroup}
-                  disabled={!newADGroup.trim()}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors"
-                >
+                <Button onClick={addADGroup} disabled={!newADGroup.trim()}>
                   <Plus size={14} strokeWidth={2.5} />
-                  Add
-                </button>
+                  Adicionar
+                </Button>
               </div>
               {entry.adGroups.length === 0 ? (
-                <div className="flex items-center justify-center h-20 rounded-xl border-2 border-dashed border-zinc-200 text-zinc-400">
-                  <p className="text-sm">No AD groups configured</p>
+                <div className="flex items-center justify-center h-20 rounded-xl border-2 border-dashed border-zinc-200 text-zinc-500">
+                  <p className="text-sm">Nenhum grupo AD configurado</p>
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -1234,8 +1244,10 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
                         <span className="text-sm font-medium text-zinc-800 truncate">{g}</span>
                       </div>
                       <button
+                        type="button"
                         onClick={() => removeADGroup(g)}
-                        className="p-1.5 rounded-md text-zinc-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0"
+                        aria-label={`Remover grupo AD "${g}"`}
+                        className={cn("p-1.5 rounded-md text-zinc-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all flex-shrink-0", focusRing)}
                       >
                         <X size={13} />
                       </button>
@@ -1247,6 +1259,35 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
           </div>
         </div>
       )}
+
+      {/* Remove a group's stored onboarding config (app-only; never touches AD). */}
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        tone="danger"
+        title="Remover configuração"
+        message={
+          <>
+            Remover a configuração de onboarding do grupo <span className="font-medium text-zinc-900">"{confirmDelete}"</span>?
+            {" "}Isto apaga apenas os valores por defeito guardados na app — não afeta o Active Directory.
+          </>
+        }
+        confirmLabel="Eliminar"
+        cancelLabel="Cancelar"
+        onConfirm={() => { if (confirmDelete) removeOnboardingGroup(confirmDelete); setConfirmDelete(null); }}
+        onCancel={() => setConfirmDelete(null)}
+      />
+
+      {/* Reset every group's onboarding config back to the shipped defaults. */}
+      <ConfirmDialog
+        open={confirmReset}
+        tone="danger"
+        title="Repor predefinições"
+        message="Isto substitui toda a configuração de onboarding pelos valores predefinidos. As tuas alterações serão perdidas."
+        confirmLabel="Repor"
+        cancelLabel="Cancelar"
+        onConfirm={() => { resetDefaults(); setConfirmReset(false); }}
+        onCancel={() => setConfirmReset(false)}
+      />
     </div>
   );
 }

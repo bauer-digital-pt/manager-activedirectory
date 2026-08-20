@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SUPVAN label preview</title>
+    <style>
+      :root { color-scheme: light; }
+      body {
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0; padding: 24px; background: #eceae3; color: #1c1c1c;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      .sub { color: #6b6b6b; margin: 0 0 20px; }
+      .wrap { display: grid; grid-template-columns: 320px 1fr; gap: 28px; align-items: start; }
+      .panel { background: #fff; border: 1px solid #ddd9cf; border-radius: 12px; padding: 18px; }
+      label { display: block; font-weight: 600; margin: 12px 0 4px; }
+      input[type="text"], textarea, select {
+        width: 100%; box-sizing: border-box; padding: 8px 10px;
+        border: 1px solid #cfcabb; border-radius: 8px; font: inherit; background: #fbfaf6;
+      }
+      textarea { resize: vertical; min-height: 92px; font-family: ui-monospace, Menlo, monospace; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+      .field small { display: block; font-weight: 400; color: #8a8578; margin-top: 2px; }
+      canvas { image-rendering: pixelated; background: #f7f4ec; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+      .card { margin-bottom: 22px; }
+      .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #7a7566; margin: 0 0 8px; }
+      #meta { font-size: 13px; margin: 6px 0 18px; padding: 10px 12px; background: #fff; border: 1px solid #ddd9cf; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>SUPVAN E11 — label preview</h1>
+    <p class="sub">Dogfood the real <code>renderLabel</code> pipeline. Nothing here touches the app or hardware.</p>
+    <div class="wrap">
+      <div class="panel">
+        <div class="field">
+          <label for="qr">QR payload (EZOffice asset URL)</label>
+          <input id="qr" type="text" value="https://pt.ezofficeinventory.com/assets/12345" />
+        </div>
+        <div class="field">
+          <label for="lines">Text lines (one per line)</label>
+          <textarea id="lines">PT-LPT-TI-0007
+Dell Latitude 5440
+SN: 7XABCDE
+TI · a.queiroz</textarea>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="ecc">QR ECC</label>
+            <select id="ecc">
+              <option>L</option><option selected>M</option><option>Q</option><option>H</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="rotate">Rotate (¼-turns)<small>print orientation</small></label>
+            <input id="rotate" type="number" min="0" max="3" step="1" value="1" />
+          </div>
+        </div>
+        <div class="row3">
+          <div class="field"><label for="qrScale">QR scale</label><input id="qrScale" type="number" min="1" max="8" value="3" /></div>
+          <div class="field"><label for="textScale">Text scale</label><input id="textScale" type="number" min="1" max="6" value="2" /></div>
+          <div class="field"><label for="quiet">Quiet</label><input id="quiet" type="number" min="0" max="8" value="4" /></div>
+        </div>
+        <div class="row3">
+          <div class="field"><label for="gap">QR↔text gap</label><input id="gap" type="number" min="0" max="40" value="6" /></div>
+          <div class="field"><label for="lineGap">Line gap</label><input id="lineGap" type="number" min="0" max="20" value="2" /></div>
+          <div class="field"><label for="padding">Padding</label><input id="padding" type="number" min="0" max="20" value="2" /></div>
+        </div>
+        <div class="row">
+          <div class="field"><label for="printhead">Printhead dots<small>E11 likely &lt;384</small></label><input id="printhead" type="number" min="8" max="1024" value="384" /></div>
+          <div class="field"><label for="zoom">Zoom (px/dot)</label><input id="zoom" type="number" min="1" max="12" value="4" /></div>
+        </div>
+      </div>
+      <div>
+        <div id="meta"></div>
+        <div class="card">
+          <h2>Natural (reading) orientation</h2>
+          <canvas id="natural"></canvas>
+        </div>
+        <div class="card">
+          <h2>Print orientation — centered in printhead band (blank feed margins shown)</h2>
+          <canvas id="print"></canvas>
+        </div>
+      </div>
+    </div>
+    <script src="./bundle.js"></script>
+  </body>
+</html>

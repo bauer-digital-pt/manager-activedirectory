@@ -1,5 +1,20 @@
 @import "tailwindcss";
 
+/* ── Brand design tokens ─────────────────────────────────────────────────────
+   The single source of truth for brand colour. Tailwind v4 turns each
+   `--color-*` entry into utilities (bg-brand, text-brand, ring-brand, …), so
+   the deep Bauer purple is referenced by name instead of the ~9 inline
+   `#4700a3` hexes and the `violet-600` that stood in for it on buttons. Change
+   the hue here and every primary control, focus ring and brand surface follows. */
+@theme {
+  --color-brand: #4700a3;
+  --color-brand-hover: #380080;
+  --color-brand-teal: #1fd1bd;
+  --color-deep-purple: #1a0538;
+  --color-console: #0f1117;
+  --color-tape: #f7f4ec;
+}
+
 @font-face {
   font-family: "BauerMediaSans";
   src: url("./assets/fonts/BauerMediaSans-Light.otf") format("opentype");

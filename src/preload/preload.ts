@@ -132,3 +132,34 @@ contextBridge.exposeInMainWorld("updatesAPI", {
     return () => ipcRenderer.removeListener("updates:status", listener);
   },
 });
+
+// SUPVAN E11 label printing. The renderer composes the label with the shared pure
+// core (src/main/supvan) and hands the model to main, which owns the transport.
+// Both calls return the PSResult shape; the renderer wrapper (lib/printing.ts)
+// degrades gracefully when this bridge is absent (browser mock / pre-transport).
+contextBridge.exposeInMainWorld("printAPI", {
+  listDevices: () => ipcRenderer.invoke("print:list-devices"),
+  printLabel: (req: unknown) => ipcRenderer.invoke("print:label", req),
+});
+
+// Web Bluetooth device-picker + pairing bridge. `navigator.bluetooth` runs in the
+// renderer (src/renderer/src/lib/supvan-webbt.ts), but Electron has no device
+// chooser — main handles `select-bluetooth-device` (src/main/ble/picker.ts) and
+// uses these channels to forward the scan list / receive the user's pick, and to
+// relay pairing PIN prompts. This bridge shuttles messages only; it never touches
+// navigator.bluetooth. Absent in the browser mock (renderer wrapper degrades).
+contextBridge.exposeInMainWorld("bleAPI", {
+  onDevices: (cb: (list: unknown) => void) => {
+    const listener = (_e: unknown, list: unknown) => cb(list);
+    ipcRenderer.on("ble:devices", listener);
+    return () => ipcRenderer.removeListener("ble:devices", listener);
+  },
+  pick: (id: string) => ipcRenderer.send("ble:pick", id),
+  cancel: () => ipcRenderer.send("ble:cancel"),
+  onPairing: (cb: (prompt: unknown) => void) => {
+    const listener = (_e: unknown, prompt: unknown) => cb(prompt);
+    ipcRenderer.on("ble:pairing", listener);
+    return () => ipcRenderer.removeListener("ble:pairing", listener);
+  },
+  respondPairing: (resp: unknown) => ipcRenderer.send("ble:pairing-response", resp),
+});

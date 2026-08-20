@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { Minus, Square, X } from "lucide-react";
+import { cn } from "../lib/cn";
+import { focusRing } from "./ui/controls";
 
 // Custom top bar for the frameless window. It provides the draggable region the
 // OS chrome used to (via `.drag`), and on Windows/Linux the minimize / maximize
@@ -33,23 +35,38 @@ export default function TitleBar() {
       {showControls && (
         <div className="no-drag flex items-stretch h-full">
           <button
+            type="button"
             onClick={() => window.windowAPI?.minimize()}
-            className="w-11 h-full flex items-center justify-center text-zinc-500 hover:bg-zinc-100 transition-colors"
+            className={cn(
+              "w-11 h-full flex items-center justify-center text-zinc-500 hover:bg-zinc-100 transition-colors",
+              focusRing,
+            )}
             title="Minimizar"
+            aria-label="Minimizar"
           >
             <Minus size={15} />
           </button>
           <button
+            type="button"
             onClick={() => window.windowAPI?.toggleMaximize()}
-            className="w-11 h-full flex items-center justify-center text-zinc-500 hover:bg-zinc-100 transition-colors"
+            className={cn(
+              "w-11 h-full flex items-center justify-center text-zinc-500 hover:bg-zinc-100 transition-colors",
+              focusRing,
+            )}
             title={maximized ? "Restaurar" : "Maximizar"}
+            aria-label={maximized ? "Restaurar" : "Maximizar"}
           >
             <Square size={12} />
           </button>
           <button
+            type="button"
             onClick={() => window.windowAPI?.close()}
-            className="w-11 h-full flex items-center justify-center text-zinc-500 hover:bg-red-500 hover:text-white transition-colors"
+            className={cn(
+              "w-11 h-full flex items-center justify-center text-zinc-500 hover:bg-red-500 hover:text-white transition-colors",
+              focusRing,
+            )}
             title="Fechar"
+            aria-label="Fechar"
           >
             <X size={16} />
           </button>

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import AuthShell from "./AuthShell";
 import { cn } from "../lib/cn";
+import { focusRingDark } from "./ui/controls";
 
 export interface StatusAction {
   label: string;
@@ -35,7 +36,7 @@ type Tone = NonNullable<StatusScreenProps["tone"]>;
 // the badge glyph, `fill` the progress bar.
 const TONES: Record<Tone, { icon: string; fill: string }> = {
   brand: { icon: "#ffffff", fill: "#ffffff" },
-  success: { icon: "#1fd1bd", fill: "#1fd1bd" },
+  success: { icon: "var(--color-brand-teal)", fill: "var(--color-brand-teal)" },
   error: { icon: "#fbbf24", fill: "#fbbf24" },
 };
 
@@ -75,8 +76,11 @@ export default function StatusScreen({
         </div>
       )}
 
-      {/* Title */}
-      <h1 className="text-2xl font-semibold leading-tight text-white">{title}</h1>
+      {/* Title — kept as a real <h1> (heading semantics) while also being a live
+          region so setup/update state transitions (e.g. "A verificar…" →
+          "Atualização pronta") are announced. aria-live is a property and does
+          NOT strip the implicit heading role the way role="status" would. */}
+      <h1 aria-live="polite" aria-atomic="true" className="text-2xl font-semibold leading-tight text-white">{title}</h1>
 
       {/* Subtitle */}
       {subtitle && (
@@ -135,8 +139,9 @@ export default function StatusScreen({
                   "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-colors",
                   "disabled:cursor-not-allowed disabled:opacity-60",
                   variant === "primary"
-                    ? "bg-white px-5 py-2.5 text-[#4700a3] shadow-sm hover:bg-white/90"
+                    ? "bg-white px-5 py-2.5 text-brand shadow-sm hover:bg-white/90"
                     : "px-4 py-2 font-medium text-white/70 hover:bg-white/10 hover:text-white",
+                  focusRingDark,
                 )}
               >
                 {action.loading && <Loader2 size={16} className="animate-spin" />}

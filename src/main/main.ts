@@ -15,6 +15,8 @@ import {
   redactPsArgs,
   truncate,
 } from "./logbus";
+import { registerPrintIpc } from "./supvan/ipc";
+import { wireBluetooth } from "./ble/picker";
 
 const { autoUpdater } = electronUpdater;
 
@@ -197,7 +199,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   kioskMode: false,
 };
 
-const settingsStore = makeJsonStore<AppSettings>("settings.json", (raw) => {
+// Coerce an arbitrary raw object into a well-formed AppSettings, clamping the
+// timeout tiers to their allowed ranges. Extracted from the store's normalize so
+// the SAME clamping also guards values merged in from the remote (pyexp) settings
+// document — a fleet value with a bad loginTimeoutMin can never reach the app.
+function normalizeSettings(raw: unknown): AppSettings {
   const r = (raw ?? {}) as Partial<AppSettings>;
   return {
     devMode: !!r.devMode,
@@ -208,8 +214,26 @@ const settingsStore = makeJsonStore<AppSettings>("settings.json", (raw) => {
     lastUsername: typeof r.lastUsername === "string" ? r.lastUsername : DEFAULT_SETTINGS.lastUsername,
     kioskMode: !!r.kioskMode,
   };
-});
-function readSettings(): AppSettings { return settingsStore.read(); }
+}
+
+const settingsStore = makeJsonStore<AppSettings>("settings.json", normalizeSettings);
+
+// readSettings / readDeviceConfig overlay the fleet (pyexp) config on top of the
+// local file — see the "Fleet settings mirror" section below, which defines
+// remoteSettings / remoteDirty and the merge policy. lastUsername is NEVER taken
+// from the fleet: it's per-machine login convenience, never centralized.
+function readSettings(): AppSettings {
+  const local = settingsStore.read();
+  // A family with unpushed local changes must not be masked by a stale fleet copy.
+  if (remoteDirty.appSettings) return local;
+  const remote = remoteSettings.appSettings;
+  if (!remote) return local;
+  // Overlay fleet policy, but the per-machine fields always come from local (the
+  // fleet document never carries them — belt-and-braces if a stale one somehow does).
+  const merged: Record<string, unknown> = { ...local, ...remote };
+  for (const k of LOCAL_ONLY_SETTINGS) merged[k] = local[k];
+  return normalizeSettings(merged);
+}
 function writeSettings(next: AppSettings): void { settingsStore.write(next); }
 
 // --- Device onboarding config (device-config.json) ---
@@ -230,7 +254,9 @@ function normalizePrinterMap(raw: unknown): Record<string, string[]> {
   return out;
 }
 
-const deviceConfigStore = makeJsonStore<DeviceConfig>("device-config.json", (raw) => {
+// Extracted so the same coercion guards a device config merged in from the remote
+// (pyexp) settings document, not just the local file.
+function normalizeDeviceConfig(raw: unknown): DeviceConfig {
   const r = (raw ?? {}) as Partial<DeviceConfig>;
   return {
     ouMap: r.ouMap && typeof r.ouMap === "object" ? (r.ouMap as Record<string, string>) : {},
@@ -243,7 +269,9 @@ const deviceConfigStore = makeJsonStore<DeviceConfig>("device-config.json", (raw
     ezofficeUrlTemplate: typeof r.ezofficeUrlTemplate === "string" ? r.ezofficeUrlTemplate : "",
     screenConnectUrlTemplate: typeof r.screenConnectUrlTemplate === "string" ? r.screenConnectUrlTemplate : "",
   };
-});
+}
+
+const deviceConfigStore = makeJsonStore<DeviceConfig>("device-config.json", normalizeDeviceConfig);
 // Dev-only convenience: when PowerShell is mocked (MOCK_PS=1) and nothing has
 // been configured yet, hand back a demo OU/printer mapping so the onboarding
 // wizard is fully exercisable off a real domain. Without it every department
@@ -257,11 +285,123 @@ function demoDeviceConfig(): DeviceConfig {
   return { ouMap, anyConnectSource: "", screenConnectSource: "", printerMap: { ADM: ["ADM"], IT: ["PRO", "MRK"] }, printerSource: "", smlPlayerSource: "", smlPlayerIni: "", ezofficeUrlTemplate: "", screenConnectUrlTemplate: "" };
 }
 function readDeviceConfig(): DeviceConfig {
-  const cfg = deviceConfigStore.read();
+  // Fleet (pyexp) config wins when present, so every install sees the same device
+  // mapping; the local file is the offline / pre-login fallback. A family with an
+  // unpushed local change prefers local so a stale fleet copy can't mask it.
+  const local = deviceConfigStore.read();
+  const remote = remoteSettings.deviceConfig;
+  const cfg = !remoteDirty.deviceConfig && remote ? normalizeDeviceConfig(remote) : local;
   if (MOCK_PS && Object.keys(cfg.ouMap).length === 0) return demoDeviceConfig();
   return cfg;
 }
 function writeDeviceConfig(config: DeviceConfig): void { deviceConfigStore.write(config); }
+
+// --- Fleet settings mirror (pyexp) ---
+// The AD Manager centralizes its device-onboarding config + non-secret app policy
+// on pyexp (GET/PUT /api/v1/settings) so the whole fleet reads ONE source of truth.
+// This is the local mirror of that document: it's read synchronously by the readers
+// above (they can't await), hydrated from a cache file at boot so the last-known
+// fleet config is available even before the first post-login refresh, and refreshed
+// from pyexp after login + whenever Settings are read. Credentials NEVER go to pyexp
+// — only non-secret config; the login stays local + safeStorage-encrypted, and
+// lastUsername is never part of the fleet document.
+interface RemoteSettingsDoc {
+  deviceConfig?: Partial<DeviceConfig>;
+  // FLEET POLICY only — the AppSettings minus lastUsername (see policySettings).
+  appSettings?: Partial<AppSettings>;
+  updatedAt?: string;
+  updatedBy?: string;
+  // Monotonic version the server owns (bumped on every write). Drives optimistic
+  // concurrency: sent back as an If-Match precondition on the next push, and used to
+  // reject a stale read that would downgrade a newer mirror. Absent → treat as 0.
+  version?: number;
+}
+
+function normalizeRemoteDoc(raw: unknown): RemoteSettingsDoc {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const out: RemoteSettingsDoc = {};
+  if (r.deviceConfig && typeof r.deviceConfig === "object") out.deviceConfig = r.deviceConfig as Partial<DeviceConfig>;
+  if (r.appSettings && typeof r.appSettings === "object") out.appSettings = r.appSettings as Partial<AppSettings>;
+  if (typeof r.updatedAt === "string") out.updatedAt = r.updatedAt;
+  if (typeof r.updatedBy === "string") out.updatedBy = r.updatedBy;
+  if (typeof r.version === "number" && Number.isInteger(r.version)) out.version = r.version;
+  return out;
+}
+
+// AppSettings fields that stay PER-MACHINE and are never centralized:
+//  - lastUsername: this machine's last operator, a login-prefill convenience.
+//  - kioskMode: a wall-mounted-display trait of THIS install; centralizing it would
+//    let one admin's toggle flip the whole fleet into kiosk mode on the next sync.
+// Everything else (timeouts, devMode, biometricEnabled) is fleet policy.
+const LOCAL_ONLY_SETTINGS = ["lastUsername", "kioskMode"] as const;
+
+// The subset of AppSettings that is FLEET policy (shared via pyexp) — AppSettings
+// minus the per-machine fields above.
+function policySettings(s: AppSettings): Partial<AppSettings> {
+  const { lastUsername: _u, kioskMode: _k, ...policy } = s;
+  return policy;
+}
+
+const remoteSettingsStore = makeJsonStore<RemoteSettingsDoc>("remote-settings.json", normalizeRemoteDoc);
+// Last-known fleet document. Hydrated from the cache file at boot; replaced on each
+// successful refresh/push. Read synchronously by readSettings / readDeviceConfig.
+let remoteSettings: RemoteSettingsDoc = remoteSettingsStore.read();
+
+// Families whose local value hasn't been confirmed written to pyexp yet (a push
+// failed, or is in flight). While dirty, the readers prefer LOCAL for that family so
+// a stale fleet copy can never mask an admin's just-made change; a confirmed push
+// clears the flag. See pushRemoteSettings / refreshRemoteSettings.
+//
+// PERSISTED across restarts: if a push fails and the app is closed before the next
+// sync, the pending local edit would otherwise be silently masked by the (stale)
+// fleet mirror on the next launch. Persisting the flag keeps LOCAL winning for that
+// family until a push is actually confirmed, and the login-time refresh flushes it.
+interface DirtyFlags { deviceConfig: boolean; appSettings: boolean }
+const remoteDirtyStore = makeJsonStore<DirtyFlags>("remote-dirty.json", (raw) => {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  return { deviceConfig: !!r.deviceConfig, appSettings: !!r.appSettings };
+});
+const remoteDirty: DirtyFlags = remoteDirtyStore.read();
+function persistDirty(): void { remoteDirtyStore.write(remoteDirty); }
+
+// Structural equality for JSON-shaped values (objects/arrays/primitives), insensitive
+// to object key order — a server-normalized family compares equal to the local one
+// regardless of how each serialized its keys. Used on a 412 to tell an unrelated
+// family's version bump (our edit still applies cleanly → retry) from a real conflict
+// on the SAME family (another admin changed it underneath us → don't clobber).
+function deepJsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== typeof b) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => deepJsonEqual(x, b[i]));
+  }
+  if (typeof a === "object") {
+    const ao = a as Record<string, unknown>;
+    const bo = b as Record<string, unknown>;
+    const ak = Object.keys(ao);
+    if (ak.length !== Object.keys(bo).length) return false;
+    return ak.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && deepJsonEqual(ao[k], bo[k]));
+  }
+  return false;
+}
+
+// Adopt the fleet's value for a family into the LOCAL store, after a same-family
+// conflict forces us to yield to the newer fleet change. This keeps the machine's
+// offline fallback (and the reader while briefly dirty) reflecting the value we just
+// accepted — never the overwritten local edit. For appSettings only the fleet POLICY
+// is adopted; the per-machine fields (lastUsername, kioskMode) are preserved.
+function adoptFamilyLocally(family: keyof DirtyFlags, value: unknown): void {
+  if (family === "deviceConfig") {
+    writeDeviceConfig(normalizeDeviceConfig(value));
+    return;
+  }
+  const local = settingsStore.read();
+  const policy = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const merged: Record<string, unknown> = { ...local, ...policy };
+  for (const k of LOCAL_ONLY_SETTINGS) merged[k] = local[k];
+  writeSettings(normalizeSettings(merged));
+}
 
 // --- PC onboarding state (onboard-state.json) ---
 // Persists the in-progress "fully automatic" onboarding wizard across the reboot
@@ -386,10 +526,16 @@ function createWindow() {
     minWidth: isAgent ? 600 : 900,
     minHeight: isAgent ? 680 : 600,
     backgroundColor: "#ffffff",
-    // Frameless everywhere. macOS keeps the traffic lights via the hidden title
-    // bar (inset a touch so they clear our custom top bar); Windows/Linux drop
-    // the frame entirely and rely on the renderer's TitleBar for drag + controls.
-    ...(process.platform === "darwin"
+    // Window chrome:
+    //  - Agent: TOTALLY chromeless on every platform — no frame, and on macOS no
+    //    traffic lights either (frame:false drops them). It's a locked onboarding
+    //    kiosk with no in-app TitleBar (see App.tsx); closing is Alt+F4 / Cmd+Q by
+    //    design. minimizable/maximizable off to match the no-controls intent.
+    //  - Manager: frameless too, but macOS keeps the traffic lights via the hidden
+    //    title bar (inset so they clear our custom top bar) and Windows/Linux rely
+    //    on the renderer's TitleBar for drag + window controls.
+    ...(isAgent ? { minimizable: false, maximizable: false } : {}),
+    ...(process.platform === "darwin" && !isAgent
       ? { titleBarStyle: "hidden" as const, trafficLightPosition: { x: 14, y: 16 } }
       : { frame: false }),
     webPreferences: {
@@ -402,6 +548,12 @@ function createWindow() {
   mainWindow = win;
   wireWindowLogging(win);
   hardenWebContents(win.webContents);
+  // SUPVAN E11 label printing uses Web Bluetooth in the renderer; Electron has no
+  // built-in device chooser, so the picker must be handled here in main. Isolated
+  // in ./ble/picker (one import + one call). Nothing fires unless the renderer
+  // calls navigator.bluetooth.requestDevice() (Manager label-print path only), so
+  // it is inert for the Agent flavor. Main window only — see wireBluetooth docs.
+  wireBluetooth(win);
 
   // Pin the zoom to 100%. Running elevated (requireAdministrator) can drop the
   // app's per-monitor DPI awareness and render everything shrunk, and Chromium
@@ -1096,6 +1248,9 @@ handle("auth:login", async (_e, rawPayload) => {
   // A new session may see different AD state than the pre-login probe did; start
   // the PC status cache fresh so the onboarding checklist reflects this login.
   pcStatusCache = null;
+  // Warm the fleet-settings mirror now that we can sign requests (best-effort, fire
+  // and forget: never delays login, and Settings reads refresh again on demand).
+  void refreshRemoteSettings();
 
   // Remember only the username (non-secret) for pre-fill next time.
   const settings = readSettings();
@@ -1207,8 +1362,14 @@ handle("biometric:prompt", async (_e, rawPayload) => {
 });
 
 // --- Settings IPC ---
-handle("config:get-settings", () => readSettings());
-handle("config:set-settings", (_e, rawPayload) => {
+// Reads pull the fleet (pyexp) copy first so the app always reflects the shared
+// config; writes persist locally AND push the policy subset to pyexp. Both degrade
+// gracefully when pyexp is unreachable (see refresh/pushRemoteSettings).
+handle("config:get-settings", async () => {
+  await refreshWithDeadline();
+  return readSettings();
+});
+handle("config:set-settings", async (_e, rawPayload) => {
   const p = (rawPayload ?? {}) as Partial<AppSettings>;
   const current = readSettings();
   const next: AppSettings = {
@@ -1224,6 +1385,14 @@ handle("config:set-settings", (_e, rawPayload) => {
     kioskMode: p.kioskMode !== undefined ? !!p.kioskMode : current.kioskMode,
   };
   writeSettings(next);
+  // Mark dirty first (and persist it) so readers keep serving the new value even if
+  // the push fails or the app closes before the next sync; a confirmed push clears
+  // it. Only the fleet POLICY is centralized — never lastUsername / kioskMode. The
+  // push is fire-and-forget: saving settings must not block on pyexp being reachable
+  // (the dirty flag guarantees the local value wins until a push is confirmed).
+  remoteDirty.appSettings = true;
+  persistDirty();
+  void enqueuePush({ appSettings: policySettings(next) });
   return next;
 });
 
@@ -1408,6 +1577,14 @@ function warnIfInsecureInventory(baseUrl: string): void {
   });
 }
 
+// The HTTP Basic header for the current login session (username:password, UTF-8 —
+// the API decodes UTF-8 so accented passwords bind), or null when logged out. This
+// is the ONLY credential the API ever sees — no token, no service account.
+function sessionAuthHeader(): string | null {
+  if (!session) return null;
+  return "Basic " + Buffer.from(`${session.username}:${session.password}`, "utf8").toString("base64");
+}
+
 // Core GET: authenticated read against /api/v1, signed with the CURRENT LOGIN
 // credentials (no service account, no shared token — see the API's auth.py). The
 // in-memory session already holds the username + password the user typed at login.
@@ -1415,13 +1592,13 @@ async function inventoryGet<T>(path: string, timeoutMs = 20000): Promise<PSResul
   if (!readStoredInventory().enabled) {
     return { ok: false, error: "A integração de inventário está desativada (Definições → Inventário)." };
   }
-  if (!session) {
+  const auth = sessionAuthHeader();
+  if (!auth) {
     return { ok: false, error: "É necessário iniciar sessão para consultar a API de inventário." };
   }
   const resolved = resolveInventory();
   if (!resolved.ok) return resolved;
   warnIfInsecureInventory(resolved.baseUrl);
-  const auth = "Basic " + Buffer.from(`${session.username}:${session.password}`, "utf8").toString("base64");
   return inventoryFetch<T>(resolved.baseUrl, path, auth, timeoutMs);
 }
 
@@ -1481,6 +1658,262 @@ async function inventoryFetch<T>(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// A signed PUT with a JSON body — the ONLY write this API exposes (the fleet
+// settings store; everything else is a read). Same auth, timeout, and error mapping
+// as inventoryFetch. `auth` is the full Authorization header (never null: a write
+// must be attributed to a caller). `extraHeaders` carries the optimistic-concurrency
+// If-Match precondition.
+//
+// Unlike inventoryFetch this reports the HTTP `status` and parses a JSON body even on
+// a non-2xx: a 412 (precondition failed) carries the CURRENT server document, which
+// the caller needs to reconcile the conflict rather than blindly clobber. `status`
+// is 0 for a network/timeout failure (no HTTP response at all).
+interface InventoryPutResult<T> {
+  ok: boolean;
+  status: number;
+  data?: T;
+  error?: string;
+}
+async function inventoryPut<T>(
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  auth: string,
+  timeoutMs: number,
+  extraHeaders?: Record<string, string>,
+): Promise<InventoryPutResult<T>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(`${baseUrl}${path}`, {
+      method: "PUT",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: auth,
+        ...(extraHeaders ?? {}),
+      },
+      body: JSON.stringify(body ?? {}),
+      signal: controller.signal,
+    });
+    const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
+    const isJson = contentType.includes("application/json");
+    if (!resp.ok) {
+      // Hand back the parsed body when the server sent JSON (the 412 conflict doc);
+      // otherwise fall back to the response text for the friendly error message.
+      let data: T | undefined;
+      let text = "";
+      if (isJson) {
+        try { data = (await resp.json()) as T; } catch { /* leave undefined */ }
+      } else {
+        text = await resp.text().catch(() => "");
+      }
+      return { ok: false, status: resp.status, data, error: friendlyInventoryError(resp.status, text) };
+    }
+    if (!isJson) {
+      return { ok: false, status: resp.status, error: "A API de inventário devolveu uma resposta inesperada (não-JSON)." };
+    }
+    try {
+      return { ok: true, status: resp.status, data: (await resp.json()) as T };
+    } catch {
+      return { ok: false, status: resp.status, error: "A API de inventário devolveu uma resposta ilegível (JSON inválido)." };
+    }
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      return { ok: false, status: 0, error: `A API de inventário não respondeu em ${Math.round(timeoutMs / 1000)}s.` };
+    }
+    return { ok: false, status: 0, error: describeFetchError(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// --- Fleet settings sync (pyexp GET/PUT /api/v1/settings) ---
+// Keeps the local mirror (remoteSettings) in step with pyexp so every install reads
+// one source of truth. Deliberately INDEPENDENT of the inventory `enabled` master
+// switch: centralized settings must work on the Windows fleet too (where the
+// inventory feature defaults off), so these use inventoryFetch/inventoryPut directly
+// against the resolved base URL rather than going through inventoryGet's gate. Both
+// are best-effort: a pyexp outage never blocks a login or a local settings write —
+// it just leaves the last-known mirror in place and (for writes) keeps the family
+// dirty so the local value keeps winning until a push succeeds.
+
+// A Settings-page read waits on a fresh pull, but pyexp being slow or unreachable
+// must never hang the page: bound the wait and, if it's exceeded, serve the current
+// mirror while the pull finishes in the background. refreshRemoteSettings never
+// throws, but guard anyway so the race is purely a timeout.
+const REFRESH_READ_DEADLINE_MS = 4000;
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function refreshWithDeadline(): Promise<void> {
+  await Promise.race([refreshRemoteSettings().catch(() => {}), delay(REFRESH_READ_DEADLINE_MS)]);
+}
+
+// Serialize every fleet-settings PUT: only ONE push may be in flight at a time.
+// The fire-and-forget set-* handlers and the awaited refresh flush all funnel
+// through here, so each push computes its concurrency base + conflict-ancestor
+// against the freshly-synced mirror — never a value a concurrent push mutated
+// mid-flight. Without this, two quick same-family saves (or a refresh flush
+// overlapping a save) both captured the same If-Match base; whichever the server
+// committed first advanced the mirror, which then made the other push's 412 look
+// like an unrelated-family bump and silently re-pushed the STALE value over the
+// newer edit. The recursive retry inside resolveSettingsConflict deliberately calls
+// pushRemoteSettings DIRECTLY (it's a continuation of an already-chained push —
+// routing it back through here would deadlock waiting on itself).
+let pushChain: Promise<boolean> = Promise.resolve(false);
+function enqueuePush(patch: Partial<RemoteSettingsDoc>): Promise<boolean> {
+  const run = pushChain
+    .catch(() => false) // isolate from a prior push's rejection
+    .then(() => pushRemoteSettings(patch))
+    .catch(() => false); // never reject: callers use `void` or bare `await`
+  pushChain = run;
+  return run;
+}
+
+// Pull the fleet document and replace the mirror. Flushes any unpushed local change
+// FIRST, so a pull can't clobber a family the admin just edited offline. No-op with
+// no session (nothing to sign with) or an unresolvable base URL.
+async function refreshRemoteSettings(timeoutMs = 12000): Promise<void> {
+  const auth = sessionAuthHeader();
+  if (!auth) return;
+  const resolved = resolveInventory();
+  if (!resolved.ok) return;
+  warnIfInsecureInventory(resolved.baseUrl);
+  // Flush pending local edits before pulling (best-effort; clears the dirty flag on
+  // success). Sequential so the pull below sees the just-pushed values.
+  if (remoteDirty.deviceConfig) await enqueuePush({ deviceConfig: deviceConfigStore.read() });
+  if (remoteDirty.appSettings) await enqueuePush({ appSettings: policySettings(settingsStore.read()) });
+  const r = await inventoryFetch<RemoteSettingsDoc>(resolved.baseUrl, "/api/v1/settings", auth, timeoutMs);
+  if (!r.ok || !r.data) return; // keep the last-known mirror on any failure
+  const incoming = normalizeRemoteDoc(r.data);
+  // Never let a stale read downgrade a newer mirror: a push (this refresh's flush, or
+  // a concurrent fire-and-forget one) may have advanced the mirror past what this
+  // in-flight GET observed. The version is monotonic, so only adopt a read at least as
+  // new as what we already hold.
+  if ((incoming.version ?? 0) < (remoteSettings.version ?? 0)) return;
+  remoteSettings = incoming;
+  remoteSettingsStore.write(remoteSettings);
+}
+
+// Push a partial fleet document (exactly one family per call — see the set-* handlers
+// and the refresh flush) to pyexp under an optimistic-concurrency precondition. On
+// success updates the mirror from the server's merged reply and clears that family's
+// dirty flag. On a 412 (someone advanced the fleet doc since our last sync) reconciles
+// via resolveSettingsConflict instead of clobbering. On any other failure logs a
+// warning and leaves the family dirty (local keeps winning). Returns whether the push
+// was confirmed. `allowRetry` gates the single re-push after an unrelated-family bump.
+async function pushRemoteSettings(patch: Partial<RemoteSettingsDoc>, allowRetry = true): Promise<boolean> {
+  const auth = sessionAuthHeader();
+  if (!auth) return false;
+  const resolved = resolveInventory();
+  if (!resolved.ok) return false;
+  warnIfInsecureInventory(resolved.baseUrl);
+  // Each call carries exactly one family; identify it for dirty-flag + conflict logic.
+  const family: keyof DirtyFlags | null =
+    patch.deviceConfig !== undefined ? "deviceConfig"
+      : patch.appSettings !== undefined ? "appSettings"
+        : null;
+  // The version the mirror was last synced to — our concurrency base for If-Match.
+  const base = remoteSettings.version ?? 0;
+  const r = await inventoryPut<RemoteSettingsDoc>(
+    resolved.baseUrl,
+    "/api/v1/settings",
+    patch,
+    auth,
+    12000,
+    { "If-Match": String(base) },
+  );
+  if (r.status === 412 && r.data) {
+    return resolveSettingsConflict(patch, family, normalizeRemoteDoc(r.data), allowRetry);
+  }
+  if (!r.ok || !r.data) {
+    // The push didn't confirm — keep the family DIRTY so local keeps winning and the
+    // next refresh re-flushes it. Re-arm explicitly rather than trusting the caller's
+    // earlier set: a serialized same-family push that already cleared the flag on
+    // success must not leave this unconfirmed value looking clean, or the next GET
+    // would silently mask it.
+    if (family) {
+      remoteDirty[family] = true;
+      persistDirty();
+    }
+    pushLog({
+      level: "warn",
+      source: "inventory",
+      label: "settings",
+      detail: `Não foi possível guardar as definições no servidor (ficam locais até à próxima sincronização): ${r.ok ? "resposta inválida" : r.error}`,
+    });
+    return false;
+  }
+  // Confirmed: our value is now on the server, so this family is clean. Adopt the
+  // server's merged reply — but never let an out-of-order/older reply DOWNGRADE the
+  // mirror (the same monotonic guard refreshRemoteSettings applies to a GET). Pushes
+  // are serialized via enqueuePush, so this is belt-and-suspenders.
+  const confirmed = normalizeRemoteDoc(r.data);
+  if ((confirmed.version ?? 0) >= (remoteSettings.version ?? 0)) {
+    remoteSettings = confirmed;
+    remoteSettingsStore.write(remoteSettings);
+  }
+  if (family) {
+    remoteDirty[family] = false;
+    persistDirty();
+  }
+  return true;
+}
+
+// Reconcile a 412 from pushRemoteSettings. `serverDoc` is the fleet's CURRENT document
+// (its version advanced past our base). Two cases, decided per-family so nothing is
+// ever SILENTLY lost:
+//  - A DIFFERENT family moved the version: our edit still applies cleanly on top of the
+//    fresh doc, so adopt the new version into the mirror and re-push our patch ONCE
+//    with the up-to-date If-Match.
+//  - The SAME family we're pushing changed underneath us (another admin edited it):
+//    we can't auto-merge two wholesale families, so the fleet wins — adopt its value
+//    locally (this machine converges on the one source of truth), clear the dirty flag,
+//    and warn LOUDLY so the operator can review and re-apply. The loss is surfaced,
+//    not silent.
+async function resolveSettingsConflict(
+  patch: Partial<RemoteSettingsDoc>,
+  family: keyof DirtyFlags | null,
+  serverDoc: RemoteSettingsDoc,
+  allowRetry: boolean,
+): Promise<boolean> {
+  // Capture what the mirror held for our family BEFORE we overwrite it — that is the
+  // common ancestor (the server's value at our base version).
+  const ancestor = family ? remoteSettings[family] : undefined;
+  // Adopt the fresh fleet doc into the mirror so untouched families reflect the latest
+  // and any retry carries the current If-Match.
+  remoteSettings = serverDoc;
+  remoteSettingsStore.write(remoteSettings);
+  if (family === null) return false; // nothing identifiable to reconcile
+
+  const sameFamilyChanged = !deepJsonEqual(ancestor, serverDoc[family]);
+  if (!sameFamilyChanged) {
+    // Our family is UNCHANGED on the server — only another family bumped the version,
+    // so our edit still applies cleanly on top of the fresh doc. Retry ONCE with the
+    // up-to-date If-Match. If we've already retried (another different-family bump
+    // raced us again), do NOT discard a non-conflicting edit: leave the family dirty
+    // so the next refresh flushes it (local keeps winning until a push confirms).
+    if (allowRetry) return pushRemoteSettings(patch, false);
+    remoteDirty[family] = true;
+    persistDirty();
+    return false;
+  }
+  // True same-family conflict: another admin changed THIS family underneath us. We
+  // can't auto-merge two wholesale families, so the fleet wins — adopt its value
+  // locally, clear the dirty flag, and warn LOUDLY. The loss is surfaced, not silent.
+  adoptFamilyLocally(family, serverDoc[family]);
+  remoteDirty[family] = false;
+  persistDirty();
+  pushLog({
+    level: "warn",
+    source: "inventory",
+    label: "settings",
+    detail: `As definições (${family}) foram alteradas por outro administrador entretanto. A tua alteração foi substituída pela versão do servidor (v${serverDoc.version ?? "?"}) — revê e reaplica se necessário.`,
+  });
+  return false;
 }
 
 // --- AD reads via the inventory API (macOS/Linux path) ---
@@ -1559,6 +1992,8 @@ async function apiLogin(
   }
   session = { server: rawBase, username, password };
   pcStatusCache = null;
+  // Warm the fleet-settings mirror (best-effort; see the Windows login path).
+  void refreshRemoteSettings();
   const settings = readSettings();
   if (settings.lastUsername !== username) writeSettings({ ...settings, lastUsername: username });
   pushLog({ level: "success", source: "app", label: "auth", detail: `Login ${username} via API de inventário (${rawBase})` });
@@ -1707,8 +2142,14 @@ handle("config:set-inventory", (_e, rawPayload) => {
 });
 
 // --- Device onboarding config IPC ---
-handle("config:get-device-config", () => readDeviceConfig());
-handle("config:set-device-config", (_e, rawPayload) => {
+// Same fleet-first model as the settings handlers: reads pull pyexp, writes persist
+// locally and push the whole deviceConfig family (the client always sends a complete
+// object, so a shallow top-level replace on the server is correct).
+handle("config:get-device-config", async () => {
+  await refreshWithDeadline();
+  return readDeviceConfig();
+});
+handle("config:set-device-config", async (_e, rawPayload) => {
   const p = (rawPayload ?? {}) as Partial<DeviceConfig>;
   const current = readDeviceConfig();
   const next: DeviceConfig = {
@@ -1723,6 +2164,11 @@ handle("config:set-device-config", (_e, rawPayload) => {
     screenConnectUrlTemplate: p.screenConnectUrlTemplate !== undefined ? String(p.screenConnectUrlTemplate) : current.screenConnectUrlTemplate,
   };
   writeDeviceConfig(next);
+  // Persist the dirty flag and push fire-and-forget — same rationale as set-settings:
+  // local wins until a push is confirmed, and saving never blocks on pyexp.
+  remoteDirty.deviceConfig = true;
+  persistDirty();
+  void enqueuePush({ deviceConfig: next });
   return next;
 });
 
@@ -1770,6 +2216,12 @@ handle("onboard:reboot", () => {
   setTimeout(() => rebootMachine(), 500);
   return { ok: true };
 });
+
+// --- SUPVAN E11 label printing IPC ---
+// Isolated in src/main/supvan/ipc.ts so this file needs only the import above and
+// this one call. Phase 4: composes/validates the label in main; the BLE transport
+// lands in Phase 3/5 with the hardware.
+registerPrintIpc(handle);
 
 // --- Console / activity log IPC ---
 // Registered on raw ipcMain (not the logging `handle` wrapper) so reading or

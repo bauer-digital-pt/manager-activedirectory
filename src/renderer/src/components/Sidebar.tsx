@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Users, Laptop, Settings, Terminal, User, LogOut, Lock } from "lucide-react";
 import { cn } from "../lib/cn";
+import { focusRing } from "./ui/controls";
 import type { Page } from "../App";
 import { initials } from "../lib/initials";
 import { useOutsideClick } from "../hooks/useOutsideClick";
@@ -13,10 +14,10 @@ import brandFull from "../assets/logo_1.png";
 // single consolidated fleet list ("Dispositivos") — the union of every AD computer
 // object and every EZOffice asset, enriched and joined by name.
 const NAV: { id: Page; label: string; icon: React.ElementType; bind: string; dev?: boolean; flavors?: AppFlavor[]; needsInventory?: boolean }[] = [
-  { id: "users",     label: "Users",                                     icon: Users,    bind: "1", flavors: ["manager"] },
+  { id: "users",     label: "Utilizadores",                              icon: Users,    bind: "1", flavors: ["manager"] },
   { id: "devices",   label: IS_AGENT ? "Onboarding PC" : "Dispositivos", icon: Laptop,   bind: "2" },
-  { id: "settings",  label: "Settings",                                  icon: Settings, bind: "4" },
-  { id: "console",   label: "Console",                                   icon: Terminal, bind: "5", dev: true },
+  { id: "settings",  label: "Definições",                                icon: Settings, bind: "4" },
+  { id: "console",   label: "Consola",                                   icon: Terminal, bind: "5", dev: true },
 ];
 
 interface SidebarProps {
@@ -45,7 +46,11 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk,
   // Close the account menu on an outside click or Escape.
   const menuRef = useOutsideClick<HTMLDivElement>(menuOpen, () => setMenuOpen(false), { escape: true });
 
-  const dotColor = connOk === false ? "#ef4444" : connOk === true ? "#1fd1bd" : "#f59e0b";
+  // The dot conveys state by colour, so it's always paired with a text/aria label
+  // (menu row + the avatar dot's aria-label). The "ok" hue is a darker emerald
+  // (#059669) rather than the brand teal so the dot itself clears WCAG 3:1 and the
+  // three states aren't distinguished by hue alone.
+  const dotColor = connOk === false ? "#ef4444" : connOk === true ? "#059669" : "#f59e0b";
   const dotTitle = connOk === false ? "Sem ligação ao AD" : connOk === true ? "Ligado ao AD" : "A verificar ligação…";
 
   return (
@@ -66,13 +71,16 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk,
           return (
             <button
               key={id}
+              type="button"
               onClick={() => onNavigate(id)}
               title={`${label}  [${bind}]`}
+              aria-label={label}
+              aria-current={isActive ? "page" : undefined}
               className={cn(
                 "w-10 h-10 flex items-center justify-center rounded-lg transition-colors",
-                isActive ? "text-white" : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+                isActive ? "bg-brand text-white" : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700",
+                focusRing,
               )}
-              style={isActive ? { backgroundColor: "#4700a3" } : undefined}
             >
               <Icon size={20} strokeWidth={isActive ? 2.2 : 1.8} />
             </button>
@@ -87,12 +95,17 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk,
           onClick={() => setMenuOpen((o) => !o)}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          className="relative w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-semibold transition-shadow hover:ring-2 hover:ring-violet-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
-          style={{ backgroundColor: "#4700a3" }}
+          className={cn(
+            "relative w-9 h-9 rounded-full flex items-center justify-center bg-brand text-white text-xs font-semibold transition-shadow hover:ring-2 hover:ring-brand/30",
+            focusRing,
+          )}
           title={`${userName || "Utilizador"} — ${dotTitle}`}
         >
           {inits || <User size={16} />}
           <span
+            role="img"
+            aria-label={dotTitle}
+            title={dotTitle}
             className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white"
             style={{ backgroundColor: dotColor }}
           />
@@ -115,7 +128,10 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk,
               type="button"
               role="menuitem"
               onClick={() => { setMenuOpen(false); onLock(); }}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100",
+                focusRing,
+              )}
             >
               <Lock size={16} />
               Bloquear
@@ -124,7 +140,10 @@ export default function Sidebar({ active, onNavigate, devMode, userName, connOk,
               type="button"
               role="menuitem"
               onClick={() => { setMenuOpen(false); onLogout(); }}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-red-50 hover:text-red-600"
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-red-50 hover:text-red-600",
+                focusRing,
+              )}
             >
               <LogOut size={16} />
               Terminar sessão

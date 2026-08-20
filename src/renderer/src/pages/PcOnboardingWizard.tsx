@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Laptop, RefreshCw, Check, AlertTriangle, ServerCrash, Loader2, Play,
   RotateCcw, Languages, ShieldCheck, Monitor, Network,
-  Power, X, Printer, AppWindow, ArrowRight, ChevronLeft,
+  Power, X, Pause, Printer, AppWindow, ArrowRight, ChevronLeft,
 } from "lucide-react";
 import type { ExternalToast } from "sonner";
 import { adAPI, isBrowserMock, type PCStatus, type OnboardStep, type OnboardState, type ADUserLite } from "../adAPI";
@@ -10,6 +10,8 @@ import { getDeviceConfig, EMPTY_DEVICE_CONFIG, type DeviceConfig } from "../lib/
 import { setNavGuard } from "../lib/navGuard";
 import SearchableSelect from "../components/SearchableSelect";
 import { StepIcon, AuraBadge } from "../components/onboarding/StepIcon";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
+import { focusRingDark } from "../components/ui/controls";
 import { cn } from "../lib/cn";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -122,6 +124,10 @@ export default function PcOnboardingWizard({
   const [currentStep, setCurrentStep] = useState<OnboardStep | null>(null);
   const [starting, setStarting] = useState(false);
   const [rebootCountdown, setRebootCountdown] = useState<number | null>(null);
+  // Destructive-teardown confirmation ("Cancelar onboarding"). `cancelBusy` locks
+  // the dialog while the persisted run is cleared and the PC re-probed.
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   // Set to abort the auto-run between steps (Cancelar). A ref so the running
   // loop sees the latest value without being restarted.
@@ -362,10 +368,15 @@ export default function PcOnboardingWizard({
 
   useEffect(() => {
     if (phase !== "reboot" || rebootCountdown === null) return;
+    // Freeze the auto-reboot while the "Cancelar onboarding" dialog is open, so
+    // the operator can decide without the countdown firing underneath them. (The
+    // old native window.confirm blocked the event loop and paused it implicitly;
+    // the styled ConfirmDialog doesn't, so pause it explicitly.)
+    if (confirmCancel) return;
     if (rebootCountdown <= 0) { void doReboot(); return; }
     const t = window.setTimeout(() => setRebootCountdown((c) => (c === null ? null : c - 1)), 1000);
     return () => window.clearTimeout(t);
-  }, [phase, rebootCountdown, doReboot]);
+  }, [phase, rebootCountdown, doReboot, confirmCancel]);
 
   const departments = status?.departments ?? [];
 
@@ -445,10 +456,16 @@ export default function PcOnboardingWizard({
     await runSteps(activeState, remaining);
   };
 
+  // Pauses a resumable run — stops the loop after its current (un-abortable)
+  // step; the operator can pick it back up with "Tentar novamente".
   const cancelRun = () => { cancelRef.current = true; };
 
-  const cancelOnboarding = async () => {
-    if (!window.confirm("Cancelar o onboarding automático deste PC? O progresso já aplicado mantém-se, mas a app deixa de retomar sozinha.")) return;
+  // Opens the destructive teardown confirmation; the actual clear runs in
+  // performCancelOnboarding once the operator confirms.
+  const cancelOnboarding = () => setConfirmCancel(true);
+
+  const performCancelOnboarding = async () => {
+    setCancelBusy(true);
     cancelRef.current = true;
     await adAPI.clearOnboardState();
     setActiveState(null);
@@ -460,6 +477,8 @@ export default function PcOnboardingWizard({
     const r = await adAPI.getPCStatus(true);
     if (r.ok && r.data) { setStatus(r.data); setPhase(r.data.onboarded ? "done" : "idle"); }
     else setPhase("idle");
+    setCancelBusy(false);
+    setConfirmCancel(false);
     toastRef.current.success("Onboarding automático cancelado.");
   };
 
@@ -515,10 +534,15 @@ export default function PcOnboardingWizard({
           </div>
         </div>
         <button
+          type="button"
           onClick={() => load(true)}
           disabled={loading || busy}
           title="Reavaliar este PC"
-          className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/[0.06] p-2 text-white/70 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Reavaliar este PC"
+          className={cn(
+            "inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/[0.06] p-2 text-white/70 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40",
+            focusRingDark,
+          )}
         >
           <RefreshCw size={15} className={cn((loading || busy) && "animate-spin")} />
         </button>
@@ -556,8 +580,12 @@ export default function PcOnboardingWizard({
                     ))}
                   </div>
                   <button
+                    type="button"
                     onClick={() => setWizardStep("config")}
-                    className="group mt-9 inline-flex items-center justify-center gap-2 rounded-xl bg-white px-7 py-3 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]"
+                    className={cn(
+                      "group mt-9 inline-flex items-center justify-center gap-2 rounded-xl bg-white px-7 py-3 text-sm font-semibold text-brand shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]",
+                      focusRingDark,
+                    )}
                   >
                     Começar <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" />
                   </button>
@@ -635,16 +663,24 @@ export default function PcOnboardingWizard({
 
                   <div className="mt-6 flex items-center gap-3">
                     <button
+                      type="button"
                       onClick={() => setWizardStep("intro")}
                       disabled={busy}
-                      className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-50"
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-50",
+                        focusRingDark,
+                      )}
                     >
                       <ChevronLeft size={15} /> Voltar
                     </button>
                     <button
+                      type="button"
                       onClick={startOnboarding}
                       disabled={!dept || busy}
-                      className="ml-auto inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
+                      className={cn(
+                        "ml-auto inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-brand shadow-lg shadow-black/20 transition-transform hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100",
+                        focusRingDark,
+                      )}
                     >
                       {starting ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
                       {starting ? "A iniciar…" : "Iniciar onboarding"}
@@ -688,7 +724,10 @@ export default function PcOnboardingWizard({
                       <Power size={52} strokeWidth={1.5} />
                     </AuraBadge>
                   )}
-                  <h1 className="mt-7 text-2xl font-semibold leading-tight text-white">
+                  {/* Live region so the reboot state is announced ONCE on entering
+                      this phase; the per-second countdown below is left visual-only
+                      (no aria-live) so it isn't re-announced every tick. */}
+                  <h1 role="status" aria-live="polite" className="mt-7 text-2xl font-semibold leading-tight text-white">
                     {rebootCountdown === null ? "Reinício pendente" : "Tudo pronto"}
                   </h1>
                   <p className="mt-3 max-w-md text-sm leading-relaxed text-white/60">
@@ -700,23 +739,35 @@ export default function PcOnboardingWizard({
                   )}
                   <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
                     <button
+                      type="button"
                       onClick={doReboot}
-                      className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]"
+                      className={cn(
+                        "inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-brand shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]",
+                        focusRingDark,
+                      )}
                     >
                       <Power size={16} /> Reiniciar agora
                     </button>
                     {rebootCountdown !== null && (
                       <button
+                        type="button"
                         onClick={() => setRebootCountdown(null)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 px-5 py-3 text-sm font-medium text-white/80 transition-colors hover:bg-white/10"
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-xl border border-white/15 px-5 py-3 text-sm font-medium text-white/80 transition-colors hover:bg-white/10",
+                          focusRingDark,
+                        )}
                       >
                         Adiar reinício
                       </button>
                     )}
                   </div>
                   <button
+                    type="button"
                     onClick={cancelOnboarding}
-                    className="mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white/40 transition-colors hover:text-white/80"
+                    className={cn(
+                      "mt-4 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white/40 transition-colors hover:text-white/80",
+                      focusRingDark,
+                    )}
                   >
                     <X size={13} /> Cancelar onboarding
                   </button>
@@ -763,6 +814,20 @@ export default function PcOnboardingWizard({
           ) : null}
         </div>
       </div>
+
+      {/* Destructive teardown confirmation (replaces the old window.confirm):
+          clears the persisted run so the app stops resuming on its own. */}
+      <ConfirmDialog
+        open={confirmCancel}
+        title="Cancelar onboarding"
+        message="Cancelar o onboarding automático deste PC? O progresso já aplicado mantém-se, mas a app deixa de retomar sozinha."
+        confirmLabel="Cancelar onboarding"
+        cancelLabel="Voltar"
+        tone="danger"
+        busy={cancelBusy}
+        onConfirm={performCancelOnboarding}
+        onCancel={() => setConfirmCancel(false)}
+      />
     </div>
   );
 }
@@ -815,17 +880,24 @@ function RunningCard({
       <div className="mb-8 w-full space-y-2.5">
         <div className="flex items-center justify-between text-xs">
           <span className="font-semibold uppercase tracking-[0.14em] text-white/45">Passo {index + 1} de {total}</span>
+          {/* Pauses (not tears down) a resumable run — the destructive teardown is
+              the separate "Cancelar onboarding" on the paused/reboot pages. */}
           <button
+            type="button"
             onClick={onCancel}
-            className="inline-flex items-center gap-1.5 rounded-md border border-white/15 px-2.5 py-1 font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md border border-white/15 px-2.5 py-1 font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white",
+              focusRingDark,
+            )}
           >
-            <X size={12} /> Cancelar
+            <Pause size={12} /> Pausar
           </button>
         </div>
         <RunProgressBar views={views} />
       </div>
       <StepIcon step={active.key} state="running" size={132} />
-      <h1 className="mt-7 text-2xl font-semibold leading-tight text-white">{active.label}</h1>
+      {/* Live region so the currently-executing step is announced as the run advances. */}
+      <h1 role="status" aria-live="polite" className="mt-7 text-2xl font-semibold leading-tight text-white">{active.label}</h1>
       <p className="mt-3 max-w-md text-sm leading-relaxed text-white/60">{actionLine}</p>
       <p className="mt-6 inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.06] px-3.5 py-1.5 text-xs font-medium text-white/70">
         A executar agora
@@ -866,15 +938,23 @@ function PausedCard({
       <p className="mt-2 text-xs text-white/40">Os passos já concluídos não voltam a correr.</p>
       <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
         <button
+          type="button"
           onClick={onContinue}
           disabled={busy}
-          className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02] disabled:opacity-50 disabled:hover:scale-100"
+          className={cn(
+            "inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-brand shadow-lg shadow-black/20 transition-transform hover:scale-[1.02] disabled:opacity-50 disabled:hover:scale-100",
+            focusRingDark,
+          )}
         >
           <Play size={16} /> Tentar novamente
         </button>
         <button
+          type="button"
           onClick={onCancel}
-          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-white/40 transition-colors hover:text-white/80"
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-white/40 transition-colors hover:text-white/80",
+            focusRingDark,
+          )}
         >
           <X size={13} /> Cancelar onboarding
         </button>
@@ -957,8 +1037,12 @@ function StatusError({ message, onRetry }: { message: string; onRetry: () => voi
       <h3 className="mt-6 text-lg font-semibold text-white">Não foi possível avaliar este PC</h3>
       <p className="mt-2 max-w-[46ch] text-sm leading-relaxed text-white/55">{message}</p>
       <button
+        type="button"
         onClick={onRetry}
-        className="mt-6 inline-flex items-center gap-1.5 rounded-xl bg-white px-5 py-2.5 text-sm font-semibold text-[#4700a3] shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]"
+        className={cn(
+          "mt-6 inline-flex items-center gap-1.5 rounded-xl bg-white px-5 py-2.5 text-sm font-semibold text-brand shadow-lg shadow-black/20 transition-transform hover:scale-[1.02]",
+          focusRingDark,
+        )}
       >
         <RotateCcw size={15} /> Tentar novamente
       </button>

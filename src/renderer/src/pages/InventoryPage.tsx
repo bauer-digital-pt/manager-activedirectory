@@ -6,6 +6,8 @@ import {
 import { inventoryAPI, type Reconciliation } from "../inventoryAPI";
 import { getInventoryConfig } from "../lib/inventoryConfig";
 import { cn } from "../lib/cn";
+import { Button } from "../components/ui/Button";
+import { focusRing } from "../components/ui/controls";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -118,12 +120,12 @@ export default function InventoryPage({
         <div className="flex items-center justify-between gap-4">
           <div>
             <h2 className="text-base font-semibold text-zinc-900">Inventário</h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-0.5">
               Reconciliação entre o Active Directory e o EZOffice.
               {data && (
                 <>
                   {" "}Última análise: <span className="text-zinc-500">{fmtDateTime(data.ran_at)}</span>
-                  {data.dry_run && <span className="ml-1.5 text-zinc-400">(simulação)</span>}
+                  {data.dry_run && <span className="ml-1.5 text-zinc-500">(simulação)</span>}
                 </>
               )}
             </p>
@@ -132,7 +134,11 @@ export default function InventoryPage({
             onClick={load}
             disabled={loading}
             title="Recarregar a reconciliação"
-            className="inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="Recarregar a reconciliação"
+            className={cn(
+              "inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+              focusRing,
+            )}
           >
             <RefreshCw size={14} className={cn(loading && "animate-spin")} />
           </button>
@@ -155,7 +161,7 @@ export default function InventoryPage({
         ) : error ? (
           <InventoryError message={error} onRetry={load} onOpenSettings={onOpenSettings} />
         ) : !data || !counts ? (
-          <div className="flex items-center justify-center h-40 text-sm text-zinc-400">
+          <div className="flex items-center justify-center h-40 text-sm text-zinc-500">
             Sem dados de reconciliação.
           </div>
         ) : (
@@ -281,7 +287,7 @@ function Kpi({ label, value, sub, tone = "neutral" }: {
     <div className={cn("rounded-xl border px-4 py-3", toneCls)}>
       <div className="flex items-baseline gap-1.5">
         <span className={cn("text-2xl font-semibold tabular-nums", valueCls)}>{value}</span>
-        {sub && <span className="text-xs text-zinc-400">{sub}</span>}
+        {sub && <span className="text-xs text-zinc-500">{sub}</span>}
       </div>
       <p className="mt-0.5 text-xs font-medium text-zinc-500">{label}</p>
     </div>
@@ -378,26 +384,20 @@ function InventoryError({
         Não foi possível carregar o inventário
       </h3>
       <p className="mt-2 max-w-[46ch] text-sm leading-relaxed text-zinc-500">{message}</p>
-      <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-zinc-400">
+      <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-zinc-500">
         Verifica o endereço em{" "}
-        <span className="font-medium text-zinc-500">Definições → Conexões</span>.
+        <span className="font-medium text-zinc-600">Definições → Conexões</span>.
       </p>
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
-        <button
-          onClick={onRetry}
-          className="inline-flex items-center gap-1.5 rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700"
-        >
+        <Button onClick={onRetry}>
           <RotateCcw size={15} />
           Tentar novamente
-        </button>
+        </Button>
         {onOpenSettings && (
-          <button
-            onClick={onOpenSettings}
-            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
-          >
+          <Button variant="secondary" onClick={onOpenSettings}>
             <Settings size={15} />
             Abrir definições
-          </button>
+          </Button>
         )}
       </div>
     </div>

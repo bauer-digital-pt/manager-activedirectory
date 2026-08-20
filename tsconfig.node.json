@@ -9,6 +9,12 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
+    // The SUPVAN label-printing core (src/main/supvan) imports its sibling
+    // modules with explicit ".ts" extensions so the same source runs unchanged
+    // under `node --test` (Node type-strips and needs the real path) while Vite
+    // (esbuild) bundles it into dist-electron. Permitted here because we only
+    // ever type-check (--noEmit); Vite does the emit.
+    "allowImportingTsExtensions": true,
     "strict": true
   },
   "include": ["vite.config.mts", "src/main", "src/preload", "src/shared"]

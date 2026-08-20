@@ -603,7 +603,12 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen">
-      <TitleBar />
+      {/* The Agent is a chromeless, edge-to-edge onboarding kiosk: no title bar at
+          all (no drag strip, no minimize/maximize/close). The OS window is already
+          frameless (main.ts), so there is nothing to reserve space for — the card
+          fills the whole window. Closing is Alt+F4 only, by design. The Manager
+          keeps its TitleBar for the drag region + window controls the frame drops. */}
+      {!IS_AGENT && <TitleBar />}
       {content}
       {reauth && (
         <ReAuthModal

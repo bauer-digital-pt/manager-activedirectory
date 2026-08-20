@@ -35,7 +35,9 @@ export default function UpdateAvailable({
           subtitle={
             status.version ? "Versão " + status.version : "A obter a atualização…"
           }
-          progress={{ percent: 0, label: "A iniciar transferência…" }}
+          // No real progress yet — an indeterminate sweep reads as "starting"
+          // rather than a bar frozen at 0%.
+          progress={{ percent: 0, label: "A iniciar transferência…", indeterminate: true }}
           actions={[laterAction]}
         />
       );

@@ -11,6 +11,8 @@ import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
 import DeviceRow, { type UrlTemplates } from "./DeviceRow";
 import FilterDropdown, { type FilterOption } from "../components/ui/FilterDropdown";
+import { Button } from "../components/ui/Button";
+import { focusRing } from "../components/ui/controls";
 import {
   type ConsolidatedDevice, type DeviceSource, type StateId,
   fromAD, fromSource, consolidate, deviceState, STATE_RANK,
@@ -353,16 +355,17 @@ export default function DeviceListPage({
               <input
                 ref={searchRef}
                 placeholder="Procurar dispositivos…"
+                aria-label="Procurar dispositivos"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-56 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
+                className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-56 focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand transition-all"
               />
             </div>
             {onOpenReconciliation && (
               <button
                 onClick={onOpenReconciliation}
                 title="Abrir a reconciliação AD ↔ EZOffice"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-800 transition-colors"
+                className={cn("inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-800 transition-colors", focusRing)}
               >
                 <PackageSearch size={14} />
                 Reconciliação
@@ -371,8 +374,9 @@ export default function DeviceListPage({
             <button
               onClick={() => load()}
               disabled={loading}
+              aria-label={useInventorySource ? "Recarregar da API de inventário" : "Recarregar do Active Directory"}
               title={useInventorySource ? "Recarregar da API de inventário" : "Recarregar do Active Directory"}
-              className="inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              className={cn("inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50", focusRing)}
             >
               <RefreshCw size={14} className={cn(loading && "animate-spin")} />
             </button>
@@ -433,8 +437,9 @@ export default function DeviceListPage({
               <button
                 type="button"
                 onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                aria-label={sortDir === "asc" ? "Ordenação ascendente — inverter" : "Ordenação descendente — inverter"}
                 title={sortDir === "asc" ? "Ascendente" : "Descendente"}
-                className="inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white p-1.5 text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700"
+                className={cn("inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white p-1.5 text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700", focusRing)}
               >
                 {sortDir === "asc" ? <ArrowUpNarrowWide size={15} /> : <ArrowDownWideNarrow size={15} />}
               </button>
@@ -444,7 +449,7 @@ export default function DeviceListPage({
               <button
                 type="button"
                 onClick={clearFilters}
-                className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600"
+                className={cn("inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700", focusRing)}
               >
                 <X size={13} />
                 Limpar
@@ -477,8 +482,14 @@ export default function DeviceListPage({
             onOpenSettings={sourced ? onOpenInventorySettings : onOpenConnectionSettings}
           />
         ) : filtered.length === 0 ? (
-          <div className="flex items-center justify-center h-40 text-sm text-zinc-400">
+          <div className="flex flex-col items-center justify-center h-40 gap-3 text-sm text-zinc-500">
             {anyFilterActive ? "Nenhum dispositivo corresponde aos filtros" : "Nenhum dispositivo encontrado"}
+            {anyFilterActive && (
+              <Button variant="secondary" size="sm" onClick={clearFilters}>
+                <X size={14} />
+                Limpar filtros
+              </Button>
+            )}
           </div>
         ) : (
           <table className="anim-fade-in w-full">
@@ -507,7 +518,7 @@ export default function DeviceListPage({
           </table>
         )}
         {hasMore && (
-          <div className="px-6 py-3 text-center text-xs text-zinc-400">
+          <div className="px-6 py-3 text-center text-xs text-zinc-500">
             A mostrar {visible.length} de {filtered.length} — continua a fazer scroll para ver mais
           </div>
         )}
@@ -516,7 +527,7 @@ export default function DeviceListPage({
       {/* Footer */}
       {!loading && !error && filtered.length > 0 && (
         <div className="px-6 py-3 border-t border-zinc-100">
-          <span className="text-xs text-zinc-400">
+          <span className="text-xs text-zinc-500">
             {filtered.length} {filtered.length === 1 ? "dispositivo" : "dispositivos"}
             {anyFilterActive && " — filtrado"}
           </span>
@@ -566,21 +577,15 @@ function DevicesError({
         )}
       </p>
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
-        <button
-          onClick={onRetry}
-          className="inline-flex items-center gap-1.5 rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700"
-        >
+        <Button onClick={onRetry}>
           <RotateCcw size={15} />
           Tentar novamente
-        </button>
+        </Button>
         {onOpenSettings && (
-          <button
-            onClick={onOpenSettings}
-            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
-          >
+          <Button variant="secondary" onClick={onOpenSettings}>
             <Settings size={15} />
             Abrir definições
-          </button>
+          </Button>
         )}
       </div>
     </div>

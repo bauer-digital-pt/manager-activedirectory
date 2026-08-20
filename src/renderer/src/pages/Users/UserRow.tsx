@@ -1,11 +1,14 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useRef, useId, memo } from "react";
 import { Lock, Unlock, KeyRound, MoreHorizontal, X, User, UserMinus, AlertTriangle, Clock } from "lucide-react";
 import { adAPI, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
 import { initials as computeInitials } from "../../lib/initials";
 import { useOutsideClick } from "../../hooks/useOutsideClick";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { userStatusKind } from "../../lib/userStatus";
 import { Kbd } from "../../components/ui/Kbd";
+import { Button } from "../../components/ui/Button";
+import { inputCls, focusRing } from "../../components/ui/controls";
 import type { ExternalToast } from "sonner";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -37,6 +40,12 @@ function UserRow({
   const [adminPw, setAdminPw]         = useState("");
   // Close the dropdown menu on an outside click.
   const menuRef = useOutsideClick<HTMLDivElement>(menu, () => setMenu(false));
+  // Trap Tab focus inside the open modal and restore it on close. The primary
+  // action (Reset / Unlock) takes initial focus so Enter confirms it directly;
+  // Escape is still owned by the keyboard effect below.
+  const primaryActionRef = useRef<HTMLButtonElement>(null);
+  const modalRef = useFocusTrap<HTMLDivElement>(!!modal, { initialFocus: primaryActionRef });
+  const titleId = useId();
 
   const canOffboard = confirmName.trim() === user.SamAccountName && adminPw.length > 0 && !busy;
 
@@ -44,6 +53,15 @@ function UserRow({
   // password around).
   useEffect(() => {
     if (modal !== "offboard") { setConfirmName(""); setAdminPw(""); }
+  }, [modal]);
+
+  // Move focus to the primary action when the overlay switches to a variant that
+  // has one (e.g. details → reset/unblock via a footer icon-action). The focus
+  // trap's focus-in only fires when it activates, so a variant swap while it's
+  // already open wouldn't otherwise land focus on the button — leaving it on the
+  // now-unmounted trigger (i.e. on <body>).
+  useEffect(() => {
+    if (modal === "reset" || modal === "unblock") primaryActionRef.current?.focus();
   }, [modal]);
 
   // Keyboard binds while dropdown menu is open
@@ -65,8 +83,11 @@ function UserRow({
   useEffect(() => {
     if (!modal) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); setModal(null); }
-      if (e.key === "Enter" && !busy) {
+      if (e.key === "Escape") { e.preventDefault(); if (!busy) setModal(null); return; }
+      // When focus is on a button (the trap parks it on the primary action), let
+      // that button's own Enter→click fire instead of also submitting here — else
+      // Enter double-runs the action.
+      if (e.key === "Enter" && !busy && !(e.target as HTMLElement).closest("button")) {
         e.preventDefault();
         if (modal === "reset") doReset();
         if (modal === "unblock") doUnlock();
@@ -95,10 +116,10 @@ function UserRow({
       // is skipped — e.g. on a PasswordNeverExpires account. The script reports
       // that via `warning`; surface it so the operator isn't told it fully worked.
       const warning = (r.data as { warning?: string } | undefined)?.warning;
-      if (warning) toast.success(`Password reset for ${user.SamAccountName} — ${warning}`);
-      else toast.success(`Password reset for ${user.SamAccountName}`);
+      if (warning) toast.success(`Palavra-passe reposta para ${user.SamAccountName} — ${warning}`);
+      else toast.success(`Palavra-passe reposta para ${user.SamAccountName}`);
       setModal(null);
-    } else toast.error(r.error ?? "Failed to reset password");
+    } else toast.error(r.error ?? "Não foi possível repor a palavra-passe");
   };
 
   const doUnlock = async () => {
@@ -106,8 +127,8 @@ function UserRow({
     setBusy(true);
     const r = await adAPI.unlockUser(user.SamAccountName);
     setBusy(false);
-    if (r.ok) { toast.success(`${user.SamAccountName} unlocked`); setModal(null); onRefresh(); }
-    else toast.error(r.error ?? "Failed to unlock account");
+    if (r.ok) { toast.success(`${user.SamAccountName} desbloqueado`); setModal(null); onRefresh(); }
+    else toast.error(r.error ?? "Não foi possível desbloquear a conta");
   };
 
   const doOffboard = async () => {
@@ -137,13 +158,13 @@ function UserRow({
   const statusBadge = () => {
     switch (userStatusKind(user)) {
       case "disabled":
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-600 border border-amber-200">Disabled</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-600 border border-amber-200">Desativado</span>;
       case "locked":
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600 border border-red-200"><Lock size={10} />Locked</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600 border border-red-200"><Lock size={10} />Bloqueado</span>;
       case "expired":
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-600 border border-orange-200"><Clock size={10} />Password expired</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-600 border border-orange-200"><Clock size={10} />Palavra-passe expirada</span>;
       default:
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 border border-emerald-200"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Active</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 border border-emerald-200"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Ativo</span>;
     }
   };
 
@@ -180,34 +201,40 @@ function UserRow({
           <div className="relative inline-block" ref={menuRef}>
             <button
               onClick={(e) => { e.stopPropagation(); setMenu((v) => !v); }}
+              aria-label="Ações do utilizador"
+              aria-haspopup="menu"
+              aria-expanded={menu}
               className={cn(
                 "p-1.5 rounded-md transition-colors",
+                focusRing,
                 menu
                   ? "bg-zinc-200 text-zinc-700"
-                  : "text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 opacity-0 group-hover:opacity-100"
+                  // Hidden until row hover, but revealed on keyboard focus so it's
+                  // reachable without a mouse.
+                  : "text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100"
               )}
             >
               <MoreHorizontal size={15} />
             </button>
 
             {menu && (
-              <div className="anim-popover absolute right-0 mt-1 w-52 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20">
+              <div role="menu" className="anim-popover absolute right-0 mt-1 w-52 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20">
                 <MenuItem
                   icon={<User size={13} />}
-                  label="Open"
+                  label="Abrir"
                   bind="O"
                   onClick={() => { setMenu(false); setModal("details"); }}
                 />
                 <div className="border-t border-zinc-100" />
                 <MenuItem
                   icon={<KeyRound size={13} />}
-                  label="Reset password"
+                  label="Repor palavra-passe"
                   bind="R"
                   onClick={() => { setMenu(false); setModal("reset"); }}
                 />
                 <MenuItem
                   icon={<Unlock size={13} />}
-                  label="Unblock"
+                  label="Desbloquear"
                   bind="U"
                   disabled={!user.LockedOut}
                   onClick={() => { setMenu(false); setModal("unblock"); }}
@@ -233,31 +260,35 @@ function UserRow({
             <div
               role="dialog"
               aria-modal="true"
+              aria-labelledby={titleId}
               className="anim-overlay fixed inset-0 z-30 bg-black/30 backdrop-blur-sm flex items-center justify-center"
-              onClick={() => setModal(null)}
+              // Don't dismiss on a backdrop click while an action is in flight.
+              onClick={() => { if (!busy) setModal(null); }}
             >
               <div
-                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+                ref={modalRef}
+                tabIndex={-1}
+                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden focus:outline-none"
                 onClick={(e) => e.stopPropagation()}
               >
 
                 {/* Reset password */}
                 {modal === "reset" && (
                   <>
-                    <ModalHeader icon={<KeyRound size={15} />} title="Reset password" subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
+                    <ModalHeader icon={<KeyRound size={15} />} title="Repor palavra-passe" titleId={titleId} subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
                     <div className="px-6 py-5">
                       <p className="text-sm text-zinc-600">
-                        The password for <span className="font-medium text-zinc-900">{user.SamAccountName}</span> will be reset to the default temporary password.
+                        A palavra-passe de <span className="font-medium text-zinc-900">{user.SamAccountName}</span> será reposta para a palavra-passe temporária predefinida.
                       </p>
                       <p className="mt-2 font-mono text-sm text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 select-all">{DEFAULT_PASSWORD}</p>
                     </div>
                     <ModalFooter>
                       <Bind label="Esc" />
-                      <button onClick={() => setModal(null)} className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors">Cancel</button>
+                      <Button variant="ghost" onClick={() => setModal(null)} disabled={busy}>Cancelar</Button>
                       <Bind label="↵" />
-                      <button onClick={doReset} disabled={busy} className="px-4 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors">
-                        {busy ? "Resetting…" : "Reset"}
-                      </button>
+                      <Button ref={primaryActionRef} onClick={doReset} disabled={busy}>
+                        {busy ? "A repor…" : "Repor"}
+                      </Button>
                     </ModalFooter>
                   </>
                 )}
@@ -265,19 +296,19 @@ function UserRow({
                 {/* Unblock */}
                 {modal === "unblock" && (
                   <>
-                    <ModalHeader icon={<Unlock size={15} />} title="Unblock account" subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
+                    <ModalHeader icon={<Unlock size={15} />} title="Desbloquear conta" titleId={titleId} subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
                     <div className="px-6 py-5">
                       <p className="text-sm text-zinc-600">
-                        The account <span className="font-medium text-zinc-900">{user.SamAccountName}</span> is currently locked. Unlock it?
+                        A conta <span className="font-medium text-zinc-900">{user.SamAccountName}</span> está bloqueada. Desbloquear?
                       </p>
                     </div>
                     <ModalFooter>
                       <Bind label="Esc" />
-                      <button onClick={() => setModal(null)} className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors">Cancel</button>
+                      <Button variant="ghost" onClick={() => setModal(null)} disabled={busy}>Cancelar</Button>
                       <Bind label="↵" />
-                      <button onClick={doUnlock} disabled={busy} className="px-4 py-2 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 transition-colors">
-                        {busy ? "Unlocking…" : "Unlock"}
-                      </button>
+                      <Button ref={primaryActionRef} onClick={doUnlock} disabled={busy}>
+                        {busy ? "A desbloquear…" : "Desbloquear"}
+                      </Button>
                     </ModalFooter>
                   </>
                 )}
@@ -285,7 +316,7 @@ function UserRow({
                 {/* Offboard */}
                 {modal === "offboard" && (
                   <>
-                    <ModalHeader icon={<UserMinus size={15} />} title="Offboard user" subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
+                    <ModalHeader icon={<UserMinus size={15} />} title="Offboard do utilizador" titleId={titleId} subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
                     <div className="px-6 py-5 space-y-4">
                       <div className="flex items-start gap-2.5 rounded-lg bg-red-50 border border-red-200 px-3 py-2.5 text-sm text-red-700">
                         <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
@@ -304,7 +335,7 @@ function UserRow({
                           autoComplete="off"
                           spellCheck={false}
                           placeholder={user.SamAccountName}
-                          className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                          className={inputCls}
                         />
                         {confirmName.length > 0 && confirmName.trim() !== user.SamAccountName && (
                           <p className="mt-1 text-xs text-red-500">Não corresponde a <span className="font-medium">{user.SamAccountName}</span>.</p>
@@ -320,16 +351,16 @@ function UserRow({
                           onChange={(e) => setAdminPw(e.target.value)}
                           autoComplete="off"
                           placeholder="Palavra-passe"
-                          className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                          className={inputCls}
                         />
                       </div>
                     </div>
                     <ModalFooter>
                       <Bind label="Esc" />
-                      <button onClick={() => setModal(null)} className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors">Cancelar</button>
-                      <button onClick={doOffboard} disabled={!canOffboard} className="px-4 py-2 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                      <Button variant="ghost" onClick={() => setModal(null)} disabled={busy}>Cancelar</Button>
+                      <Button variant="danger" onClick={doOffboard} disabled={!canOffboard}>
                         {busy ? "A dar offboard…" : "Offboard"}
-                      </button>
+                      </Button>
                     </ModalFooter>
                   </>
                 )}
@@ -337,7 +368,7 @@ function UserRow({
                 {/* Details */}
                 {modal === "details" && (
                   <>
-                    <ModalHeader icon={<User size={15} />} title="User details" subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
+                    <ModalHeader icon={<User size={15} />} title="Detalhes do utilizador" titleId={titleId} subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
                     <div className="px-6 py-5 space-y-4 max-h-[60vh] overflow-y-auto">
                       <div className="flex items-center gap-4 pb-4 border-b border-zinc-100">
                         <div className="w-14 h-14 rounded-full bg-violet-100 flex items-center justify-center flex-shrink-0">
@@ -350,31 +381,31 @@ function UserRow({
                         </div>
                       </div>
 
-                      <DetailSection title="Account">
-                        <DetailRow label="Username" value={user.SamAccountName} />
+                      <DetailSection title="Conta">
+                        <DetailRow label="Nome de utilizador" value={user.SamAccountName} />
                         {user.UserPrincipalName && <DetailRow label="UPN" value={user.UserPrincipalName} />}
                         {user.EmailAddress      && <DetailRow label="Email" value={user.EmailAddress} />}
                       </DetailSection>
 
                       {(user.Department || user.Company || user.Description) && (
-                        <DetailSection title="Organisation">
-                          {user.Department  && <DetailRow label="Department"  value={user.Department} />}
-                          {user.Company     && <DetailRow label="Company"     value={user.Company} />}
-                          {user.Description && <DetailRow label="Description" value={user.Description} />}
+                        <DetailSection title="Organização">
+                          {user.Department  && <DetailRow label="Departamento" value={user.Department} />}
+                          {user.Company     && <DetailRow label="Empresa"      value={user.Company} />}
+                          {user.Description && <DetailRow label="Descrição"    value={user.Description} />}
                         </DetailSection>
                       )}
 
                       {(user.StreetAddress || user.City || user.PostalCode || user.Office) && (
-                        <DetailSection title="Address">
-                          {user.Office        && <DetailRow label="Office"      value={user.Office} />}
-                          {user.StreetAddress && <DetailRow label="Street"      value={user.StreetAddress} />}
-                          {user.City          && <DetailRow label="City"        value={user.City} />}
-                          {user.PostalCode    && <DetailRow label="Postal code" value={user.PostalCode} />}
+                        <DetailSection title="Morada">
+                          {user.Office        && <DetailRow label="Escritório"    value={user.Office} />}
+                          {user.StreetAddress && <DetailRow label="Rua"           value={user.StreetAddress} />}
+                          {user.City          && <DetailRow label="Cidade"        value={user.City} />}
+                          {user.PostalCode    && <DetailRow label="Código postal" value={user.PostalCode} />}
                         </DetailSection>
                       )}
 
                       {user.DistinguishedName && (
-                        <DetailSection title="Directory">
+                        <DetailSection title="Diretório">
                           <DetailRow label="DN" value={user.DistinguishedName} mono />
                         </DetailSection>
                       )}
@@ -403,7 +434,7 @@ function UserRow({
                         />
                       </div>
                       <Bind label="Esc / ↵" />
-                      <button onClick={() => setModal(null)} className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors">Close</button>
+                      <Button variant="ghost" onClick={() => setModal(null)}>Fechar</Button>
                     </ModalFooter>
                   </>
                 )}
@@ -427,8 +458,10 @@ function MenuItem({ icon, label, bind, disabled, danger, onClick }: { icon: Reac
     <button
       onClick={onClick}
       disabled={disabled}
+      role="menuitem"
       className={cn(
         "w-full flex items-center justify-between px-3.5 py-2.5 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-colors",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/30",
         danger ? "text-red-600 hover:bg-red-50" : "text-zinc-700 hover:bg-zinc-50",
       )}
     >
@@ -458,6 +491,7 @@ function IconAction({ icon, label, onClick, disabled, danger }: { icon: React.Re
       aria-label={label}
       className={cn(
         "p-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+        focusRing,
         danger ? "text-red-500 hover:bg-red-50 hover:text-red-600" : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800",
       )}
     >
@@ -466,17 +500,17 @@ function IconAction({ icon, label, onClick, disabled, danger }: { icon: React.Re
   );
 }
 
-function ModalHeader({ icon, title, subtitle, onClose }: { icon: React.ReactNode; title: string; subtitle: string; onClose: () => void }) {
+function ModalHeader({ icon, title, titleId, subtitle, onClose }: { icon: React.ReactNode; title: string; titleId?: string; subtitle: string; onClose: () => void }) {
   return (
     <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between">
       <div className="flex items-center gap-2.5">
         <span className="text-zinc-400">{icon}</span>
         <div>
-          <p className="text-sm font-semibold text-zinc-900">{title}</p>
-          <p className="text-xs text-zinc-400">{subtitle}</p>
+          <p id={titleId} className="text-sm font-semibold text-zinc-900">{title}</p>
+          <p className="text-xs text-zinc-500">{subtitle}</p>
         </div>
       </div>
-      <button onClick={onClose} className="p-1.5 rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors">
+      <button onClick={onClose} aria-label="Fechar" className={cn("p-1.5 rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors", focusRing)}>
         <X size={14} />
       </button>
     </div>

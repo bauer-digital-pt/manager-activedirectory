@@ -9,6 +9,8 @@ import type { ExternalToast } from "sonner";
 import CreateUserWizard from "./CreateUserWizard";
 import UserRow from "./UserRow";
 import FilterDropdown, { type FilterOption } from "../../components/ui/FilterDropdown";
+import { Button } from "../../components/ui/Button";
+import { focusRing } from "../../components/ui/controls";
 import { Kbd } from "../../components/ui/Kbd";
 import { userStatusRank } from "../../lib/userStatus";
 import { usersCache, setUsersCache, type UserWithGroup } from "../../lib/usersCache";
@@ -20,10 +22,10 @@ type ToastFn = (msg: string, opts?: ExternalToast) => void;
 // even if it's also disabled, whereas "Active" means a clean, healthy account.
 type Estado = "active" | "disabled" | "locked" | "expired";
 const ESTADO_OPTIONS: FilterOption[] = [
-  { value: "active", label: "Active" },
-  { value: "disabled", label: "Disabled" },
-  { value: "locked", label: "Locked out" },
-  { value: "expired", label: "Password expired" },
+  { value: "active", label: "Ativo" },
+  { value: "disabled", label: "Desativado" },
+  { value: "locked", label: "Bloqueado" },
+  { value: "expired", label: "Palavra-passe expirada" },
 ];
 function matchesEstado(u: ADUser, estado: Estado): boolean {
   switch (estado) {
@@ -350,36 +352,41 @@ export default function UsersPage({
       {/* Toolbar */}
       <div className="px-6 pt-5 pb-4 border-b border-zinc-200 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-zinc-900">Users</h2>
+          <h2 className="text-base font-semibold text-zinc-900">Utilizadores</h2>
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
               <input
                 ref={searchRef}
-                placeholder="Search users..."
+                placeholder="Procurar utilizadores…"
+                aria-label="Procurar utilizadores"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-52 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
+                className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-52 focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand transition-all"
               />
             </div>
             <button
               onClick={refresh}
               disabled={isLoading}
               title="Recarregar do Active Directory"
-              className="inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label="Recarregar do Active Directory"
+              className={cn(
+                "inline-flex items-center justify-center p-1.5 text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-md hover:bg-zinc-100 hover:text-zinc-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                focusRing,
+              )}
             >
               <RefreshCw size={14} className={cn(isLoading && "animate-spin")} />
             </button>
-            <button
+            <Button
+              size="sm"
               onClick={goCreate}
               disabled={!canCreate}
               title={canCreate ? undefined : "Sem grupos disponíveis para criar utilizadores"}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-violet-600 text-white rounded-md hover:bg-violet-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-violet-600"
             >
               <Plus size={14} strokeWidth={2.5} />
-              New user
+              Novo utilizador
               <Kbd tone="violet" className="ml-1">N</Kbd>
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -438,7 +445,12 @@ export default function UsersPage({
                 type="button"
                 onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
                 title={sortDir === "asc" ? "Ascendente" : "Descendente"}
-                className="inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white p-1.5 text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700"
+                aria-label={`Ordenação ${sortDir === "asc" ? "ascendente" : "descendente"}`}
+                aria-pressed={sortDir === "desc"}
+                className={cn(
+                  "inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white p-1.5 text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700",
+                  focusRing,
+                )}
               >
                 {sortDir === "asc" ? <ArrowUpNarrowWide size={15} /> : <ArrowDownWideNarrow size={15} />}
               </button>
@@ -448,7 +460,10 @@ export default function UsersPage({
               <button
                 type="button"
                 onClick={clearFilters}
-                className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600"
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700",
+                  focusRing,
+                )}
               >
                 <X size={13} />
                 Limpar
@@ -473,18 +488,18 @@ export default function UsersPage({
             onOpenSettings={onOpenSettings}
           />
         ) : filtered.length === 0 ? (
-          <div className="flex items-center justify-center h-40 text-sm text-zinc-400">
-            {anyFilterActive ? "No users match the current filters" : "No users found"}
+          <div className="flex items-center justify-center h-40 text-sm text-zinc-500">
+            {anyFilterActive ? "Nenhum utilizador corresponde aos filtros atuais" : "Nenhum utilizador encontrado"}
           </div>
         ) : (
           <table className="anim-fade-in w-full">
             <thead>
               <tr className="border-b border-zinc-100">
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">User</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Utilizador</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider hidden sm:table-cell">Email</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Group</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Status</th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">Actions</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Grupo</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Estado</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-50">
@@ -495,7 +510,7 @@ export default function UsersPage({
           </table>
         )}
         {hasMore && (
-          <div className="px-6 py-3 text-center text-xs text-zinc-400">
+          <div className="px-6 py-3 text-center text-xs text-zinc-500">
             A mostrar {visible.length} de {filtered.length} — continua a fazer scroll para ver mais
           </div>
         )}
@@ -504,9 +519,9 @@ export default function UsersPage({
       {/* Footer */}
       {!isLoading && !groupsError && filtered.length > 0 && (
         <div className="px-6 py-3 border-t border-zinc-100">
-          <span className="text-xs text-zinc-400">
-            {filtered.length} {filtered.length === 1 ? "user" : "users"}
-            {anyFilterActive && " — filtered"}
+          <span className="text-xs text-zinc-500">
+            {filtered.length} {filtered.length === 1 ? "utilizador" : "utilizadores"}
+            {anyFilterActive && " — filtrados"}
           </span>
         </div>
       )}
@@ -538,26 +553,20 @@ function GroupsError({
       <p className="mt-2 max-w-[46ch] text-sm leading-relaxed text-zinc-500">
         {message}
       </p>
-      <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-zinc-400">
+      <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-zinc-500">
         Verifica a ligação ao Active Directory em{" "}
-        <span className="font-medium text-zinc-500">Definições → Ligação AD</span>.
+        <span className="font-medium text-zinc-600">Definições → Ligação AD</span>.
       </p>
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
-        <button
-          onClick={onRetry}
-          className="inline-flex items-center gap-1.5 rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700"
-        >
+        <Button onClick={onRetry}>
           <RotateCcw size={15} />
           Tentar novamente
-        </button>
+        </Button>
         {onOpenSettings && (
-          <button
-            onClick={onOpenSettings}
-            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
-          >
+          <Button variant="secondary" onClick={onOpenSettings}>
             <Settings size={15} />
             Abrir definições
-          </button>
+          </Button>
         )}
       </div>
     </div>

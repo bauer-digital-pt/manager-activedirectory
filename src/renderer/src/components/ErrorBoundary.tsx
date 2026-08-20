@@ -2,6 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import logo from "../assets/bauer-media-logo.svg";
 import { FLAVOR_UI } from "../lib/flavor";
+import { Button } from "./ui/Button";
 
 interface Props {
   children: ReactNode;
@@ -27,9 +28,9 @@ interface State {
  * window never goes blank), and once per page (compact) so a page crash keeps
  * the sidebar — and Settings — reachable, and navigating away remounts fresh.
  *
- * The fallback is intentionally dependency-light (only the logo asset + lucide
- * icons): it must never itself throw, or React would fall through to a blank
- * screen again.
+ * The fallback is intentionally dependency-light (only the logo asset, lucide
+ * icons + the leaf-level Button primitive): it must never itself throw, or React
+ * would fall through to a blank screen again.
  */
 export default class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null };
@@ -82,14 +83,10 @@ export default class ErrorBoundary extends Component<Props, State> {
               {error.message}
             </pre>
           )}
-          <button
-            type="button"
-            onClick={this.handleReload}
-            className="mt-6 inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
-          >
+          <Button variant="secondary" onClick={this.handleReload} className="mt-6">
             <RotateCcw size={15} />
             Recarregar aplicação
-          </button>
+          </Button>
         </div>
       );
     }
@@ -130,14 +127,10 @@ export default class ErrorBoundary extends Component<Props, State> {
           )}
 
           <div className="mt-7 flex items-center justify-center">
-            <button
-              type="button"
-              onClick={this.handleReload}
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-violet-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-violet-700"
-            >
+            <Button size="lg" onClick={this.handleReload}>
               <RotateCcw size={16} />
               Recarregar aplicação
-            </button>
+            </Button>
           </div>
         </div>
       </div>

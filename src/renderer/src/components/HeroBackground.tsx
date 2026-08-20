@@ -31,6 +31,9 @@ export default function HeroBackground({ className }: { className?: string }) {
 
   useEffect(() => {
     if (IMAGES.length <= 1) return;
+    // Respect the OS "reduce motion" setting: skip the 10s cross-fade rotation
+    // entirely and leave a single static hero image in place.
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
     const id = window.setInterval(
       () => setIdx((cur) => pickNext(cur, IMAGES.length)),
       ROTATE_MS,
@@ -39,7 +42,7 @@ export default function HeroBackground({ className }: { className?: string }) {
   }, []);
 
   return (
-    <div className={cn("overflow-hidden bg-[#1a0538]", className)} aria-hidden>
+    <div className={cn("overflow-hidden bg-deep-purple", className)} aria-hidden>
       {IMAGES.map((src, i) => (
         <img
           key={src}

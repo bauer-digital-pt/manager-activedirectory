@@ -4,6 +4,8 @@ import AuthShell from "./AuthShell";
 import { login, type LoginResult } from "../lib/auth";
 import { getInventoryConfig } from "../lib/inventoryConfig";
 import { initials } from "../lib/initials";
+import { cn } from "../lib/cn";
+import { focusRingDark } from "./ui/controls";
 
 // Off Windows the Manager has no local PowerShell/RSAT: it authenticates and reads
 // through the inventory API (bind-as-user). Login normally uses the default/saved
@@ -136,10 +138,11 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
         <div className="mt-8 space-y-4">
           {!showIdentity && (
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-white/70">Utilizador</label>
+              <label htmlFor="login-username" className="text-xs font-semibold uppercase tracking-wider text-white/70">Utilizador</label>
               <div className="relative">
                 <User size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
                 <input
+                  id="login-username"
                   ref={usernameRef}
                   value={username}
                   onChange={(e) => { setUsername(e.target.value); setError(null); }}
@@ -153,13 +156,15 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
           )}
 
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold uppercase tracking-wider text-white/70">Palavra-passe</label>
+            <label htmlFor="login-password" className="text-xs font-semibold uppercase tracking-wider text-white/70">Palavra-passe</label>
             <div className="relative">
               <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
               <input
+                id="login-password"
                 ref={passwordRef}
                 type="password"
                 name="password"
+                aria-label="Palavra-passe"
                 value={password}
                 onChange={(e) => { setPassword(e.target.value); setError(null); }}
                 placeholder="Introduz a palavra-passe"
@@ -176,12 +181,13 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
               the only pre-login way to point the app at the right API. */}
           {NON_WINDOWS && showConn && (
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-white/70">
+              <label htmlFor="login-baseurl" className="text-xs font-semibold uppercase tracking-wider text-white/70">
                 Ligação à API de inventário
               </label>
               <div className="relative">
                 <Server size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
                 <input
+                  id="login-baseurl"
                   value={baseUrl}
                   onChange={(e) => { setBaseUrl(e.target.value); setError(null); }}
                   placeholder="http://10.4.4.69:8000"
@@ -195,7 +201,7 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
           )}
 
           {error && (
-            <div className="flex items-center gap-2 rounded-lg border border-red-300/25 bg-red-500/10 px-3 py-2.5 text-sm text-red-100">
+            <div role="alert" className="flex items-center gap-2 rounded-lg border border-red-300/25 bg-red-500/10 px-3 py-2.5 text-sm text-red-100">
               <AlertCircle size={15} className="flex-shrink-0" />
               <span className="min-w-0">{error}</span>
             </div>
@@ -204,7 +210,10 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
           <button
             type="submit"
             disabled={busy}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-[#4700a3] shadow-sm transition-colors hover:bg-white/90 disabled:opacity-60"
+            className={cn(
+              "inline-flex w-full items-center justify-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-brand shadow-sm transition-colors hover:bg-white/90 disabled:opacity-60",
+              focusRingDark,
+            )}
           >
             {busy ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
             {busy ? "A autenticar…" : locked && showIdentity ? "Desbloquear" : "Entrar"}
@@ -215,7 +224,10 @@ export default function LoginGate({ lastUsername = "", locked = false, onSuccess
               type="button"
               onClick={useAnotherAccount}
               disabled={busy}
-              className="w-full text-center text-xs text-white/50 transition-colors hover:text-white/80 disabled:opacity-60"
+              className={cn(
+                "w-full rounded-lg py-1 text-center text-xs text-white/50 transition-colors hover:text-white/80 disabled:opacity-60",
+                focusRingDark,
+              )}
             >
               Não és tu? <span className="underline underline-offset-2">Iniciar sessão com outra conta</span>
             </button>

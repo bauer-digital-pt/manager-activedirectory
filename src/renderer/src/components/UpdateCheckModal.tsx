@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useId } from "react";
 import { Loader2, Sparkles, CheckCircle2, Download, AlertTriangle, X } from "lucide-react";
 import { updatesAPI, type UpdateStatus } from "../lib/updates";
+import { Button } from "./ui/Button";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 // Small modal that owns the MANUAL "check for updates" flow from General
 // settings. While it's open the parent suppresses the full-screen update
@@ -17,6 +19,10 @@ type Phase =
 
 export default function UpdateCheckModal({ onClose }: { onClose: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "checking" });
+  const titleId = useId();
+  // The modal is always live while mounted (the parent conditionally renders it),
+  // so trap focus + wire Escape → close on the panel below.
+  const trapRef = useFocusTrap<HTMLDivElement>(true, { onEscape: onClose });
 
   useEffect(() => {
     let done = false;
@@ -51,14 +57,25 @@ export default function UpdateCheckModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="anim-overlay fixed inset-0 z-30 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="anim-modal w-full max-w-md rounded-2xl bg-white shadow-xl"
+        ref={trapRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="anim-modal w-full max-w-md rounded-2xl bg-white shadow-xl outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-zinc-100 px-5 py-3.5">
-          <h3 className="text-sm font-semibold text-zinc-900">Atualizações</h3>
-          <button onClick={onClose} className="rounded-md p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 transition-colors">
+          <h3 id={titleId} className="text-sm font-semibold text-zinc-900">Atualizações</h3>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="Fechar"
+            className="p-1 text-zinc-400 hover:text-zinc-700"
+          >
             <X size={16} />
-          </button>
+          </Button>
         </div>
 
         <div className="px-5 py-6">
@@ -73,7 +90,7 @@ function Body({ phase, onDownload, onInstall }: { phase: Phase; onDownload: () =
   switch (phase.kind) {
     case "checking":
       return (
-        <Row icon={<Loader2 size={22} className="animate-spin text-violet-600" />} title="A procurar atualizações…" />
+        <Row icon={<Loader2 size={22} className="animate-spin text-brand" />} title="A procurar atualizações…" />
       );
     case "none":
       return (
@@ -86,18 +103,18 @@ function Body({ phase, onDownload, onInstall }: { phase: Phase; onDownload: () =
     case "available":
       return (
         <div className="space-y-4">
-          <Row icon={<Sparkles size={22} className="text-violet-600" />} title="Nova versão disponível" subtitle={phase.version ? `Versão ${phase.version}` : undefined} />
-          <button onClick={onDownload} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-violet-700">
+          <Row icon={<Sparkles size={22} className="text-brand" />} title="Nova versão disponível" subtitle={phase.version ? `Versão ${phase.version}` : undefined} />
+          <Button size="lg" onClick={onDownload} className="w-full">
             <Download size={15} /> Transferir atualização
-          </button>
+          </Button>
         </div>
       );
     case "downloading":
       return (
         <div className="space-y-4">
-          <Row icon={<Download size={22} className="text-violet-600" />} title="A transferir…" />
+          <Row icon={<Download size={22} className="text-brand" />} title="A transferir…" />
           <div className="h-2.5 w-full overflow-hidden rounded-full bg-zinc-100">
-            <div className="h-full rounded-full bg-violet-600 transition-all duration-300" style={{ width: `${phase.percent}%` }} />
+            <div className="h-full rounded-full bg-brand transition-all duration-300" style={{ width: `${phase.percent}%` }} />
           </div>
           <p className="text-right font-mono text-xs tabular-nums text-zinc-500">{phase.percent}%</p>
         </div>
@@ -106,9 +123,9 @@ function Body({ phase, onDownload, onInstall }: { phase: Phase; onDownload: () =
       return (
         <div className="space-y-4">
           <Row icon={<CheckCircle2 size={22} className="text-emerald-500" />} title="Atualização pronta" subtitle={phase.version ? `Versão ${phase.version} — reinicia para aplicar.` : "Reinicia para aplicar."} />
-          <button onClick={onInstall} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-violet-700">
+          <Button size="lg" onClick={onInstall} className="w-full">
             Reiniciar e instalar
-          </button>
+          </Button>
         </div>
       );
     case "error":
