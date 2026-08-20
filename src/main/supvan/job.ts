@@ -43,29 +43,54 @@ export const DEFAULT_GEOMETRY: Geometry = {
 export const E11_DOTS_PER_MM = 8;
 
 /**
+ * Media loaded in this fleet's E11: 12 mm × 22 mm die-cut labels with a 3 mm gap
+ * between consecutive labels. The 12 mm is ACROSS the printhead (the fixed tape
+ * width); the 22 mm runs ALONG the feed (label length); the 3 mm is the blank feed
+ * between labels. Confirmed from the physical media; the dots/mm conversion still
+ * rides on the E11_DOTS_PER_MM assumption below (verify at bring-up).
+ */
+export const E11_TAPE_WIDTH_MM = 12;
+export const E11_LABEL_LENGTH_MM = 22;
+export const E11_LABEL_GAP_MM = 3;
+
+/**
  * Derive an E11 geometry for a given tape width. The printhead width is rounded to
  * a whole number of bytes because the raster packs 8 dots/byte and
  * `centerInPrinthead` can only place byte-aligned widths.
+ *
+ * `gapMm` is the inter-label gap; half of it becomes each feed margin, so the blank
+ * feed between two labels' content (marginBottom of N + marginTop of N+1) equals the
+ * full gap. Omit it to keep the generic 8-dot feed padding.
  */
-export function e11GeometryForTapeMm(tapeWidthMm: number): Geometry {
+export function e11GeometryForTapeMm(
+  tapeWidthMm: number,
+  opts: { gapMm?: number } = {},
+): Geometry {
   const raw = Math.round(tapeWidthMm * E11_DOTS_PER_MM);
   const canvasWidthDots = Math.max(8, Math.round(raw / 8) * 8);
-  return { canvasWidthDots, marginTop: 8, marginBottom: 8, density: 4 };
+  const margin =
+    opts.gapMm != null ? Math.max(1, Math.round((opts.gapMm / 2) * E11_DOTS_PER_MM)) : 8;
+  return { canvasWidthDots, marginTop: margin, marginBottom: margin, density: 4 };
 }
 
 /**
- * SUPVAN E11 printhead geometry — BEST GUESS, pending hardware bring-up.
+ * SUPVAN E11 printhead geometry for the fleet's 12 mm × 22 mm / 3 mm-gap media.
  *
- * ⚠ UNVERIFIED (plan §7, the second-biggest unknown). The reference registry maps
- * e11 → T50 = 384 dots / 48 mm, which is almost certainly WRONG: the E11 takes
- * 12 mm and 15 mm tape, so at 8 dots/mm its printhead is ~96 dots (12 mm) or
- * ~120 dots (15 mm) — a quarter of 384, and centering a 96–120-dot image inside a
- * 384-dot canvas mis-positions/clips every label. We default to the 15 mm
- * continuous roll (120 dots), the least-constrained media. Confirm the real width
- * via a RETURN_MAT (0x30) query before trusting this, and use
- * `e11GeometryForTapeMm()` (or a future config field) to switch to the 12 mm roll.
+ * Across-head width = 12 mm ⇒ round(12 × 8 / 8) × 8 = 96 dots. Feed margins encode
+ * the 3 mm inter-label gap (1.5 mm ⇒ 12 dots each). The 22 mm label LENGTH is not a
+ * hard printhead constraint (the feed axis is content-driven + the die-cut gap
+ * sensor advances it), so it is documented (E11_LABEL_LENGTH_MM) rather than baked
+ * into canvasWidthDots.
+ *
+ * ⚠ Still assumes E11_DOTS_PER_MM = 8 (203 dpi). If the E11 is a DPI-query variant
+ * (~11.6 dots/mm) the dot counts are off — confirm with a RETURN_MAT (0x30) width
+ * query + a known-width test print at bring-up. If the E11 auto-advances the
+ * die-cut gap itself, the 3 mm feed margins here would double the spacing and
+ * should drop toward 0 — verify against a real print.
  */
-export const E11_GEOMETRY: Geometry = e11GeometryForTapeMm(15);
+export const E11_GEOMETRY: Geometry = e11GeometryForTapeMm(E11_TAPE_WIDTH_MM, {
+  gapMm: E11_LABEL_GAP_MM,
+});
 
 /** A raster job: column-major LSB-first canvas image + its dimensions. */
 export interface ColumnMajorImage {

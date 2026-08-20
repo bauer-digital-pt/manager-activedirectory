@@ -18,9 +18,11 @@
  * Harmless for the Agent flavor: nothing fires unless the renderer actually calls
  * navigator.bluetooth.requestDevice(), which only the Manager's label-print path does.
  *
- * TODO(bring-up, 13:00 hardware): once the real E11 advertised name is known,
- * DEVICE_NAME_RE (transport/config.ts) may need widening/narrowing; if the E11
- * advertises nothing matchable, the manual chooser path already covers it.
+ * The renderer requests devices with acceptAllDevices (supvan-webbt.ts), so this
+ * deviceList carries EVERY nearby BLE device, not a name-prefiltered subset — the
+ * printer is always present here even before its name resolves. Our unit advertises
+ * "T0183C260511K112", which matches DEVICE_NAME_RE, so auto-pick selects it once the
+ * name is populated; anything unmatched still falls to the manual chooser.
  */
 import { ipcMain, type BrowserWindow, type WebContents } from "electron";
 import { DEVICE_NAME_RE } from "../supvan/transport/config.ts";

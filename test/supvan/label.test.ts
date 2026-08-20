@@ -218,6 +218,16 @@ test("labelToColumnMajor rejects a label wider than the printhead", () => {
   assert.throws(() => labelToColumnMajor(r, geom, { quarterTurns: 1 }), /across but the printhead/);
 });
 
+test("E11_GEOMETRY reflects the fleet's 12 mm × 22 mm / 3 mm-gap media", () => {
+  // Across-head = 12 mm at 8 dots/mm ⇒ 96 dots (byte-aligned). Feed margins encode
+  // the 3 mm inter-label gap: 1.5 mm each ⇒ 12 dots. Pin it so a stray edit to the
+  // tape width or gap can't silently mis-size every label.
+  assert.equal(E11_GEOMETRY.canvasWidthDots, 96);
+  assert.equal(E11_GEOMETRY.marginTop, 12);
+  assert.equal(E11_GEOMETRY.marginBottom, 12);
+  assert.equal(E11_GEOMETRY.canvasWidthDots % 8, 0, "printhead width must be byte-aligned");
+});
+
 test("fitLabelStyle shrinks a URL QR to fit the narrow E11 head", () => {
   // The intended use: the QR encodes the full asset URL (scanning opens the asset).
   const model = { qr: "https://bauermedia.ezofficeinventory.com/assets/123456", lines: ["PT-LPT-TI-0007"] };

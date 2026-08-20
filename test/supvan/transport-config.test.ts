@@ -91,3 +91,12 @@ test("DEVICE_NAME_RE / looksLikeSupvan match the expected name shapes", () => {
   assert.ok(!looksLikeSupvan(null));
   assert.ok(!looksLikeSupvan(undefined));
 });
+
+test("the real E11 advertised name is recognised (regression: keep auto-pick working)", () => {
+  // Captured from our physical E11 — a serial-derived name, not "E11". It begins
+  // `T` + two digits, so both the auto-pick regex and the "T" namePrefix filter
+  // hit it. Pin it so a future tightening of DEVICE_NAME_RE can't silently drop it.
+  const REAL_E11_NAME = "T0183C260511K112";
+  assert.ok(looksLikeSupvan(REAL_E11_NAME), "real E11 name must match auto-pick");
+  assert.ok(REAL_E11_NAME.startsWith("T"), "must be surfaced by the 'T' namePrefix filter");
+});

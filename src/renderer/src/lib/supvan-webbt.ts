@@ -32,7 +32,6 @@
 import type { SppPipe } from "../../../main/supvan/transport/pipe.ts";
 import {
   CANDIDATE_TRANSPORT_CONFIGS,
-  DEVICE_NAME_PREFIXES,
   candidateServiceUuids,
   type TransportConfig,
   type WriteMode,
@@ -119,9 +118,17 @@ export async function connectWebBtPrinter(
 ): Promise<WebBtConnection> {
   const bt = getBluetooth();
   // No await before this line — keep it inside the user gesture.
+  //
+  // acceptAllDevices, NOT namePrefix filters: a BLE name often resolves LATE (after
+  // the first scan emissions), and a namePrefix filter would EXCLUDE the printer
+  // from the scan while its name is still blank — it then never reaches main's
+  // auto-pick (picker.ts) nor the manual chooser, and requestDevice() rejects with
+  // NotFoundError ("User cancelled the requestDevice() chooser."). Accepting all
+  // devices guarantees the E11 is offered; main still auto-picks it BY NAME once
+  // resolved, and the chooser sorts SUPVAN-likely devices first. optionalServices is
+  // REQUIRED to later getPrimaryService() these UUIDs (acceptAllDevices forbids none).
   const device = await bt.requestDevice({
-    filters: DEVICE_NAME_PREFIXES.map((p) => ({ namePrefix: p })),
-    // optionalServices is REQUIRED to later getPrimaryService() these UUIDs.
+    acceptAllDevices: true,
     optionalServices: candidateServiceUuids(candidates),
   });
 

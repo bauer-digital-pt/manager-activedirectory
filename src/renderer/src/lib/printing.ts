@@ -123,6 +123,24 @@ export const LABEL_TOO_WIDE =
   "A etiqueta é demasiado larga para a fita, mesmo com o QR no tamanho mínimo. Use uma fita mais larga ou reduza o conteúdo.";
 
 /**
+ * Shown when requestDevice() ends without a device. Chromium raises the same
+ * NotFoundError whether the operator cancelled the chooser OR no printer was
+ * offered, so this covers both with an actionable PT message instead of the raw
+ * English "User cancelled the requestDevice() chooser." the operator was seeing.
+ */
+export const PRINTER_SELECTION_CANCELLED =
+  "Nenhuma impressora Bluetooth foi selecionada. Certifique-se de que a impressora SUPVAN está ligada e por perto, e tente imprimir novamente.";
+
+/** True when a requestDevice() rejection means "no device chosen" (user cancel or
+ * nothing offered) rather than a real transport error — Chromium uses NotFoundError
+ * for both; some builds only carry the cancellation text. */
+function isDeviceSelectionCancelled(e: unknown): boolean {
+  const name = (e as { name?: string })?.name;
+  const message = (e as Error)?.message ?? "";
+  return name === "NotFoundError" || /cancel/i.test(message);
+}
+
+/**
  * The injected LZMA-alone encoder backend. The SUPVAN core keeps compression
  * pluggable and bundles NO backend (Phase 2 = pick the backend once the transport
  * is settled). The app now picks the pure-TS backend and registers it at startup
@@ -142,7 +160,7 @@ export function getLabelEncoder(): LzmaAloneEncoder | null {
 
 /** Options for a direct Web Bluetooth print. */
 export interface BlePrintOptions {
-  /** Printhead geometry (defaults to E11_GEOMETRY — the 15 mm best-guess; ⚠ verify at bring-up). */
+  /** Printhead geometry (defaults to E11_GEOMETRY — 12 mm × 22 mm / 3 mm-gap media; ⚠ verify dpi at bring-up). */
   geometry?: Geometry;
   /** Physical-orientation knob passed to labelToJob (default 1 quarter-turn). */
   quarterTurns?: number;
@@ -201,6 +219,7 @@ export async function printLabelViaBle(
   try {
     conn = await connectWebBtPrinter(bleCandidates(opts));
   } catch (e) {
+    if (isDeviceSelectionCancelled(e)) return { ok: false, error: PRINTER_SELECTION_CANCELLED };
     return { ok: false, error: (e as Error).message };
   }
 

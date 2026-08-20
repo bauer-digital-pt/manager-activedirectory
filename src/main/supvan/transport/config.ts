@@ -51,9 +51,14 @@ export const DEFAULT_SETTLE_MS = 20;
 
 /**
  * Advertised-name shape used for discovery. The reference filters on `^[TGD]\d{2}`;
- * we add the E class for the E11. UNVERIFIED — the E11 may advertise "E11" (matches),
- * a MAC-derived name, or nothing useful, in which case the user picks it manually
- * from the chooser. Confirm the real advertised name at bring-up.
+ * we add the E class for the E11.
+ *
+ * CONFIRMED against a real unit: our E11 advertises "T0183C260511K112" — a
+ * serial-derived name starting `T` + digits, so it matches this regex (auto-pick
+ * hits it) and the "T" namePrefix filter below (it shows in the scan). The leading
+ * token looks per-unit, not a shared "T0183" model prefix, so the regex stays broad
+ * rather than pinned to one serial; anything unexpected still falls to the manual
+ * chooser. See test/supvan/transport-config.test.ts for the pinned sample.
  */
 export const DEVICE_NAME_RE = /^[TGDE]\d{2}/i;
 /** namePrefix filters for requestDevice() — broad on purpose (see DEVICE_NAME_RE). */
