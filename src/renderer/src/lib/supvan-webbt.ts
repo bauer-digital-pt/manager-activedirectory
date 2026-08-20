@@ -71,8 +71,20 @@ interface BluetoothRemoteGATTServiceLike {
   getCharacteristic(uuid: BtUuid): Promise<BluetoothRemoteGATTCharacteristicLike>;
 }
 
+/** The subset of GATT characteristic properties we key transport decisions off. */
+export interface GattCharProperties {
+  write?: boolean;
+  writeWithoutResponse?: boolean;
+  notify?: boolean;
+  indicate?: boolean;
+  read?: boolean;
+}
+
 interface BluetoothRemoteGATTCharacteristicLike {
   readonly value?: DataView;
+  /** Present on real Chromium characteristics; some mocks/stacks omit it. */
+  readonly properties?: GattCharProperties;
+  readonly uuid?: string;
   writeValueWithResponse(value: BufferSource): Promise<void>;
   writeValueWithoutResponse(value: BufferSource): Promise<void>;
   startNotifications(): Promise<BluetoothRemoteGATTCharacteristicLike>;
@@ -93,6 +105,36 @@ function getBluetooth(): BluetoothLE {
 // keeps the pipe transport-agnostic: it inspects only the frame length the core
 // already produces, never the opcode.
 const COMMAND_FRAME_LEN = 16;
+
+/**
+ * Choose the write method that the characteristic actually supports, honoring the
+ * configured preference when the char supports both.
+ *
+ * WHY: the candidate configs hard-code a write mode (a bring-up guess). If the real
+ * E11 write characteristic supports only ONE mode, issuing the other throws
+ * "GATT operation not permitted" mid-print. Reading `characteristic.properties` and
+ * picking a supported mode removes that whole class of failure. Falls back to the
+ * requested mode when properties are absent (some stacks omit them) or when the char
+ * advertises neither write flag (best-effort — let the platform decide/throw).
+ */
+export function resolveWriteMethod(
+  requested: WriteMode,
+  props: GattCharProperties | undefined,
+): WriteMode {
+  if (!props) return requested;
+  const canResp = !!props.write;
+  const canNoResp = !!props.writeWithoutResponse;
+  if (!canResp && !canNoResp) return requested;
+  if (requested === "with-response") return canResp ? "with-response" : "without-response";
+  return canNoResp ? "without-response" : "with-response";
+}
+
+/** Compact, log-friendly rendering of a characteristic's capabilities. */
+function describeProps(props: GattCharProperties | undefined): string {
+  if (!props) return "unknown";
+  const flags = (["read", "write", "writeWithoutResponse", "notify", "indicate"] as const).filter((k) => props[k]);
+  return flags.length ? flags.join(",") : "none";
+}
 
 // ---------------------------------------------------------------------------
 
@@ -226,6 +268,29 @@ async function bindPipe(
       const notifyChar = await service.getCharacteristic(cfg.notifyCharUuid);
       const writeChar =
         cfg.writeCharUuid === cfg.notifyCharUuid ? notifyChar : await service.getCharacteristic(cfg.writeCharUuid);
+
+      // Diagnostic: log the REAL capabilities of the resolved characteristics so a
+      // bring-up failure ("GATT operation not permitted") is traceable to the exact
+      // service/char/property set — this is the data we need to pin the one true
+      // config in transport/config.ts.
+      const wprops = writeChar.properties;
+      const nprops = notifyChar.properties;
+      console.info(
+        `[supvan] candidate "${cfg.label}" resolved — ` +
+          `write(${writeChar.uuid ?? cfg.writeCharUuid})=[${describeProps(wprops)}] ` +
+          `notify(${notifyChar.uuid ?? cfg.notifyCharUuid})=[${describeProps(nprops)}]; ` +
+          `will use cmd=${resolveWriteMethod(cfg.commandWrite, wprops)} data=${resolveWriteMethod(cfg.dataWrite, wprops)}`,
+      );
+      // Fail fast to the next candidate when a resolved characteristic can't do its
+      // job — a write char with no write flag, or a notify char with no notify/
+      // indicate flag — instead of binding it and throwing raw mid-print.
+      if (wprops && !wprops.write && !wprops.writeWithoutResponse) {
+        throw new Error(`write characteristic has no write capability [${describeProps(wprops)}]`);
+      }
+      if (nprops && !nprops.notify && !nprops.indicate) {
+        throw new Error(`notify characteristic has no notify/indicate capability [${describeProps(nprops)}]`);
+      }
+
       const { pipe, teardown } = createWebBtPipe(writeChar, notifyChar, cfg);
       // createWebBtPipe has already attached the notification listener. If enabling
       // notifications fails (e.g. a resolved-but-non-notify characteristic while
@@ -314,13 +379,26 @@ export function createWebBtPipe(
   };
 
   const writeChunked = async (data: Uint8Array, mode: WriteMode): Promise<void> => {
+    // Use the mode the characteristic actually supports (see resolveWriteMethod):
+    // issuing an unsupported write mode is what throws "GATT operation not permitted".
+    const eff = resolveWriteMethod(mode, writeChar.properties);
     for (let off = 0; off < data.length; off += cfg.chunkBytes) {
       const end = Math.min(off + cfg.chunkBytes, data.length);
       // .slice() detaches a standalone ArrayBuffer — some stacks reject a view
       // that shares a larger buffer.
       const buf = data.slice(off, end);
-      if (mode === "with-response") await writeChar.writeValueWithResponse(buf);
-      else await writeChar.writeValueWithoutResponse(buf);
+      try {
+        if (eff === "with-response") await writeChar.writeValueWithResponse(buf);
+        else await writeChar.writeValueWithoutResponse(buf);
+      } catch (e) {
+        // Annotate a transport-layer write failure with the exact mode +
+        // characteristic + chunk size, so a bring-up error ("GATT operation not
+        // permitted") is self-diagnosing from the surfaced message alone — no
+        // DevTools, no need to cross-reference the candidate log line. Preserves the
+        // original (English) DOMException text for pattern-matching upstream.
+        const msg = (e as Error)?.message ?? String(e);
+        throw new Error(`Escrita GATT falhou (${eff}, char=${writeChar.uuid ?? cfg.writeCharUuid}, ${buf.length}B): ${msg}`);
+      }
     }
   };
 
