@@ -53,6 +53,12 @@ export function wireBluetooth(win: BrowserWindow): void {
     if (hit) {
       selectCallback = null;
       callback(hit.deviceId);
+      // The printer may only appear in a LATER scan emission, after an earlier
+      // no-match emission already opened the renderer chooser (below). This branch
+      // resolves requestDevice() with no user pick, so tell the renderer to drop
+      // that now-stale chooser — nothing else would dismiss it. Harmless (no-op) if
+      // the chooser never opened.
+      if (!wc.isDestroyed()) wc.send("ble:close");
       return;
     }
 

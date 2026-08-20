@@ -9,6 +9,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import SetupRequired from "./components/SetupRequired";
 import WifiGate from "./components/WifiGate";
 import UpdateAvailable from "./components/UpdateAvailable";
+import BleDeviceChooser from "./components/BleDeviceChooser";
 import UsersPage from "./pages/Users/UsersPage";
 // Secondary pages are code-split so the initial bundle carries only the login
 // shell + the default Users page. Each chunk loads on first navigation to it.
@@ -625,6 +626,9 @@ export default function App() {
           onLogout={onLogout}
         />
       )}
+      {/* Bluetooth device-chooser fallback for label printing (Manager only). Inert
+          until a print's requestDevice() forwards a scan list / pairing prompt. */}
+      {!IS_AGENT && <BleDeviceChooser />}
       <Toaster position="bottom-right" richColors closeButton />
     </div>
   );

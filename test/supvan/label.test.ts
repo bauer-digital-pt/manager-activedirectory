@@ -15,12 +15,13 @@ import {
   rotateBitmap90,
   labelToColumnMajor,
   labelToJob,
+  fitLabelStyle,
   type LabelRender,
 } from "../../src/main/supvan/label.ts";
 import { encodeQr } from "../../src/main/supvan/qr.ts";
 import { measureText, drawText, GLYPH_H } from "../../src/main/supvan/font.ts";
 import { MonoCanvas } from "../../src/main/supvan/mono.ts";
-import { DEFAULT_GEOMETRY, type Geometry } from "../../src/main/supvan/job.ts";
+import { DEFAULT_GEOMETRY, E11_GEOMETRY, type Geometry } from "../../src/main/supvan/job.ts";
 import { expectedAloneHeaderPrefix, LZMA_ALONE_HEADER_LEN } from "../../src/main/supvan/compress.ts";
 
 /** Read a pixel from a row-major MSB-first bitmap (dark = 1). */
@@ -215,6 +216,43 @@ test("labelToColumnMajor rejects a label wider than the printhead", () => {
   const r = renderLabel({ qr: "EZ/1", lines: ["X"] }, { qrScale: 3 });
   const geom: Geometry = { ...DEFAULT_GEOMETRY, canvasWidthDots: 8 };
   assert.throws(() => labelToColumnMajor(r, geom, { quarterTurns: 1 }), /across but the printhead/);
+});
+
+test("fitLabelStyle shrinks a URL QR to fit the narrow E11 head", () => {
+  // The intended use: the QR encodes the full asset URL (scanning opens the asset).
+  const model = { qr: "https://bauermedia.ezofficeinventory.com/assets/123456", lines: ["PT-LPT-TI-0007"] };
+
+  // At the default scale the rotated label overflows the 120-dot E11 head, so
+  // printing would throw the raw core guard — the exact bug fitLabelStyle prevents.
+  const big = renderLabel(model, { qrScale: 3 });
+  assert.throws(() => labelToColumnMajor(big, E11_GEOMETRY, { quarterTurns: 1 }), /across but the printhead/);
+
+  const fit = fitLabelStyle(model, E11_GEOMETRY, {}, { quarterTurns: 1 });
+  assert.ok(fit, "expected a fitting scale");
+  assert.ok(fit!.style.qrScale! < 3, "should shrink below the default scale");
+  // The chosen render actually fits: mapping it no longer throws.
+  assert.doesNotThrow(() => labelToColumnMajor(fit!.render, E11_GEOMETRY, { quarterTurns: 1 }));
+  // And it is the LARGEST fitting scale: one step up overflows the head (across =
+  // height for the default single quarter-turn).
+  const placeable = Math.floor(E11_GEOMETRY.canvasWidthDots / 8) * 8;
+  const bigger = renderLabel(model, { qrScale: fit!.style.qrScale! + 1 });
+  assert.ok(bigger.height > placeable, "a larger scale should overflow the head");
+});
+
+test("fitLabelStyle returns null when the label cannot fit at any scale", () => {
+  // An 8-dot head can't hold even a QR v1 (21 modules + quiet) at scale 1.
+  const geom: Geometry = { ...DEFAULT_GEOMETRY, canvasWidthDots: 8 };
+  const fit = fitLabelStyle({ qr: "https://ez/42", lines: ["X"] }, geom, {}, { quarterTurns: 1 });
+  assert.equal(fit, null);
+});
+
+test("fitLabelStyle checks the correct axis for the quarter-turn", () => {
+  const model = { qr: "https://bauermedia.ezofficeinventory.com/assets/123456", lines: ["PT-LPT-TI-0007", "DELL 5440"] };
+  // Unrotated, the WIDE natural label (QR + text side by side) is across the head,
+  // so even the minimum-scale QR label is far wider than 120 dots → no fit.
+  assert.equal(fitLabelStyle(model, E11_GEOMETRY, {}, { quarterTurns: 0 }), null);
+  // The print default (1 quarter-turn) puts the short axis across the head → fits.
+  assert.ok(fitLabelStyle(model, E11_GEOMETRY, {}, { quarterTurns: 1 }));
 });
 
 test("labelToJob produces a well-formed PrintJob", () => {

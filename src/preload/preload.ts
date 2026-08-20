@@ -154,6 +154,13 @@ contextBridge.exposeInMainWorld("bleAPI", {
     ipcRenderer.on("ble:devices", listener);
     return () => ipcRenderer.removeListener("ble:devices", listener);
   },
+  // Main resolved requestDevice() itself (auto-picked a printer): close any open
+  // chooser. Fires only on the auto-pick-after-a-no-match-emission path.
+  onClose: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("ble:close", listener);
+    return () => ipcRenderer.removeListener("ble:close", listener);
+  },
   pick: (id: string) => ipcRenderer.send("ble:pick", id),
   cancel: () => ipcRenderer.send("ble:cancel"),
   onPairing: (cb: (prompt: unknown) => void) => {

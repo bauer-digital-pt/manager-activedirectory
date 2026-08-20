@@ -31,6 +31,8 @@ declare global {
     bleAPI?: {
       /** Subscribe to forwarded scan results; returns an unsubscribe fn. */
       onDevices(cb: (list: BlePickDevice[]) => void): () => void;
+      /** Subscribe to a "request resolved by main (auto-pick)" signal; returns unsubscribe. */
+      onClose(cb: () => void): () => void;
       /** Resolve the pending requestDevice() with this device id. */
       pick(id: string): void;
       /** Cancel the pending requestDevice() (resolves it with no device). */
@@ -52,6 +54,7 @@ export const isBlePickerAvailable = (): boolean =>
 /** Safe wrapper over window.bleAPI — every method degrades to a no-op when absent. */
 export const bleAPI = {
   onDevices: (cb: (list: BlePickDevice[]) => void): (() => void) => window.bleAPI?.onDevices(cb) ?? noop,
+  onClose: (cb: () => void): (() => void) => window.bleAPI?.onClose?.(cb) ?? noop,
   pick: (id: string): void => window.bleAPI?.pick(id),
   cancel: (): void => window.bleAPI?.cancel(),
   onPairing: (cb: (prompt: BlePairingPrompt) => void): (() => void) => window.bleAPI?.onPairing(cb) ?? noop,

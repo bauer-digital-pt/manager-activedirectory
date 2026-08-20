@@ -250,6 +250,45 @@ export function labelToColumnMajor(
 }
 
 /**
+ * Choose the largest QR scale (from the requested/default down to 1) at which the
+ * composed label still fits ACROSS the printhead after `quarterTurns`, and return
+ * that fitting render together with the style that produced it.
+ *
+ * WHY: the E11 heads are narrow (≈120 dots for 15 mm tape, 96 for 12 mm), while a
+ * scannable asset URL needs QR v4+ (33+ modules). At the default qrScale=3 the QR
+ * block alone is (33+8)·3 = 123 dots, so the rotated label is wider than the head
+ * and `labelToColumnMajor` throws at PRINT time — while the preview still shows a
+ * label that "looks fine". Shrinking the QR to fit keeps the primary use (scan the
+ * URL to open the asset) working on the real hardware. Preview and print both call
+ * this, so the on-screen bytes equal the printed bytes.
+ *
+ * Returns null when the label overflows even at qrScale=1 (e.g. a very long URL on
+ * the 12 mm head): the caller then shows a clear message instead of the raw guard
+ * error. NOTE: a QR at qrScale=1 is 1 dot/module (~0.125 mm at 203 dpi) and may be
+ * marginal to scan — the acceptable minimum is a bring-up item (plan §7).
+ */
+export function fitLabelStyle(
+  model: LabelModel,
+  geom: Geometry,
+  style: LabelStyle = {},
+  opts: LabelMapOptions = {},
+): { style: LabelStyle; render: LabelRender } | null {
+  const placeableDots = Math.floor(geom.canvasWidthDots / 8) * 8;
+  // Odd quarter-turns put the label's HEIGHT across the head; even turns its width
+  // — matching labelToColumnMajor's guard on the rotated width.
+  const k = (((Math.trunc(opts.quarterTurns ?? 1) % 4) + 4) % 4);
+  const acrossIsHeight = (k & 1) === 1;
+  const requested = style.qrScale ?? DEF.qrScale;
+  for (let qrScale = requested; qrScale >= 1; qrScale--) {
+    const s: LabelStyle = { ...style, qrScale };
+    const render = renderLabel(model, s);
+    const across = acrossIsHeight ? render.height : render.width;
+    if (across <= placeableDots) return { style: s, render };
+  }
+  return null;
+}
+
+/**
  * Full bridge: rendered label → `PrintJob` (buffers → LZMA → data frames + speed).
  * `encode` is the injected LZMA-alone encoder (same as `buildJobFromColumnMajor`).
  */

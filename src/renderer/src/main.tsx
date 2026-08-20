@@ -4,6 +4,8 @@ import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { installRendererLogging, installConsoleBrowserMock } from "./lib/appLog";
 import { FLAVOR_UI } from "./lib/flavor";
+import { setLabelEncoder } from "./lib/printing";
+import { lzmaAloneEncode } from "../../main/supvan/lzma-encode.ts";
 import "./index.css";
 
 // The detached Console window (Ctrl+Shift+C) loads this same bundle with a
@@ -24,6 +26,10 @@ document.title = isConsoleView ? "Console" : FLAVOR_UI.productName;
 installConsoleBrowserMock();
 // Forward uncaught renderer errors/rejections into the activity log.
 installRendererLogging();
+// Register the SUPVAN label-compression backend. The core leaves the LZMA-alone
+// encoder injected; the app picks the pure-TS backend (no native deps → ships in
+// the unsigned two-flavor build). Validated by round-trip in test/supvan.
+setLabelEncoder(lzmaAloneEncode);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

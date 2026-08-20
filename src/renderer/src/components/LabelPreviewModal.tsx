@@ -7,12 +7,14 @@
 // gracefully (a clear toast) until the Bluetooth transport is wired.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Printer, X } from "lucide-react";
-import { renderLabel } from "../../../main/supvan/label.ts";
+import { fitLabelStyle } from "../../../main/supvan/label.ts";
 import type { MonoBitmap } from "../../../main/supvan/mono.ts";
 import type { ConsolidatedDevice } from "../lib/devices";
 import {
+  activePrintGeometry,
   buildLabelModel,
   getLabelEncoder,
+  LABEL_TOO_WIDE,
   printAPI,
   printLabelViaBle,
   transportMode,
@@ -68,11 +70,16 @@ export default function LabelPreviewModal({
 
   const model = useMemo(() => buildLabelModel(device, qrPayload), [device, qrPayload]);
 
-  // Compose once per model; a render error (e.g. payload too long for a QR) is
-  // surfaced inline rather than crashing the dialog.
+  // Compose once per model, fitting the QR to the printhead the print will actually
+  // use (E11 heads are narrow; a URL QR overflows the default scale). This is the
+  // SAME deterministic fit printLabelViaBle applies, so the preview shows the exact
+  // bytes that will print. A render error (payload too long for any QR) or an
+  // impossible fit is surfaced inline rather than crashing the dialog.
   const render = useMemo(() => {
     try {
-      return { ok: true as const, value: renderLabel(model) };
+      const fit = fitLabelStyle(model, activePrintGeometry());
+      if (!fit) return { ok: false as const, error: LABEL_TOO_WIDE };
+      return { ok: true as const, value: fit.render };
     } catch (e) {
       return { ok: false as const, error: (e as Error).message };
     }
@@ -97,10 +104,12 @@ export default function LabelPreviewModal({
         // do NOT await anything before printLabelViaBle (its prelude is synchronous).
         const encode = getLabelEncoder();
         if (!encode) {
-          // Keep the bring-up detail in the console; the operator gets a plain note.
+          // Defensive only: main.tsx registers the pure-TS LZMA-alone encoder at
+          // startup, so this should never fire. If it does, the backend failed to
+          // register — log it for diagnosis and give the operator a plain note.
           console.warn(
-            "[label] Web Bluetooth transport ready but no LZMA-alone encoder registered (Fase 2/5). " +
-              "Register a backend via setLabelEncoder() before printing.",
+            "[label] Web Bluetooth transport ready but no LZMA-alone encoder registered — " +
+              "setLabelEncoder() did not run at startup (see main.tsx).",
           );
           res = {
             ok: false,

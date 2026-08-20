@@ -11,8 +11,8 @@
 // transport lands), mirroring lib/updates.ts. Nothing here needs the hardware.
 import type { PSResult } from "../../../shared/types";
 import type { LabelModel, LabelStyle } from "../../../main/supvan/label.ts";
-import { renderLabel, labelToJob } from "../../../main/supvan/label.ts";
-import { DEFAULT_GEOMETRY, type Geometry } from "../../../main/supvan/job.ts";
+import { labelToJob, fitLabelStyle } from "../../../main/supvan/label.ts";
+import { E11_GEOMETRY, DEFAULT_GEOMETRY, type Geometry } from "../../../main/supvan/job.ts";
 import { SupvanClient, type PrintEvent, type PrintJob } from "../../../main/supvan/pipeline.ts";
 import type { LzmaAloneEncoder } from "../../../main/supvan/compress.ts";
 import {
@@ -103,13 +103,34 @@ export function transportMode(): TransportMode {
 }
 
 /**
+ * The printhead geometry a print would ACTUALLY use right now — so the preview can
+ * fit the label to it and show the exact bytes that will print (no divergence).
+ *  - "rfcomm": the legacy main-process bridge re-renders on the wide DEFAULT_GEOMETRY.
+ *  - "webbt"/"none": the narrow E11 head (the real target) — preview it there even
+ *    when no transport is wired, since that is the hardware the label is made for.
+ */
+export function activePrintGeometry(): Geometry {
+  return transportMode() === "rfcomm" ? DEFAULT_GEOMETRY : E11_GEOMETRY;
+}
+
+/**
+ * Shown (preview + print) when a label cannot fit across the tape even with the QR
+ * shrunk to its minimum scale — e.g. a very long asset URL on the 12 mm head.
+ * Portuguese, actionable: the print path would otherwise surface the core's raw
+ * English "reduce the scale or change quarterTurns" guard error to the operator.
+ */
+export const LABEL_TOO_WIDE =
+  "A etiqueta é demasiado larga para a fita, mesmo com o QR no tamanho mínimo. Use uma fita mais larga ou reduza o conteúdo.";
+
+/**
  * The injected LZMA-alone encoder backend. The SUPVAN core keeps compression
- * pluggable and bundles NO backend (that choice — pure-JS vs WASM for the renderer
- * — is deliberately deferred to Phase 2/5). Until a backend is registered here,
- * the Web Bluetooth path declines with an honest message instead of printing.
- *
- * TODO(bring-up, 13:00 hardware): register a verified LZMA-alone encoder via
- * setLabelEncoder() (props byte 0x5d, 8 KiB dict — see compress.ts).
+ * pluggable and bundles NO backend (Phase 2 = pick the backend once the transport
+ * is settled). The app now picks the pure-TS backend and registers it at startup
+ * (src/renderer/src/main.tsx → setLabelEncoder(lzmaAloneEncode)): no native deps,
+ * so it ships in the unsigned two-flavor build unchanged. It is round-trip
+ * validated against Python's canonical FORMAT_ALONE decoder in
+ * test/supvan/lzma-encode.test.ts. If a backend is somehow NOT registered, the Web
+ * Bluetooth path declines with an honest message instead of printing.
  */
 let labelEncoder: LzmaAloneEncoder | null = null;
 export function setLabelEncoder(encode: LzmaAloneEncoder | null): void {
@@ -121,7 +142,7 @@ export function getLabelEncoder(): LzmaAloneEncoder | null {
 
 /** Options for a direct Web Bluetooth print. */
 export interface BlePrintOptions {
-  /** Printhead geometry (defaults to the T50 reference; E11 override at bring-up). */
+  /** Printhead geometry (defaults to E11_GEOMETRY — the 15 mm best-guess; ⚠ verify at bring-up). */
   geometry?: Geometry;
   /** Physical-orientation knob passed to labelToJob (default 1 quarter-turn). */
   quarterTurns?: number;
@@ -163,9 +184,14 @@ export async function printLabelViaBle(
   // --- synchronous prelude (keeps requestDevice inside the gesture) ---
   let job: PrintJob;
   try {
-    const render = renderLabel(req.model, req.style ?? {});
-    const geom = opts.geometry ?? DEFAULT_GEOMETRY;
-    job = labelToJob(render, geom, encode, { quarterTurns: opts.quarterTurns });
+    const geom = opts.geometry ?? E11_GEOMETRY;
+    // Fit the QR to the (narrow) E11 head before packing: a scannable asset URL is
+    // QR v4+ and overflows the head at the default scale, so shrink it to fit
+    // rather than throwing the core's raw English guard error at print time. Same
+    // deterministic fit the preview used, so the printed bytes match the preview.
+    const fit = fitLabelStyle(req.model, geom, req.style ?? {}, { quarterTurns: opts.quarterTurns });
+    if (!fit) return { ok: false, error: LABEL_TOO_WIDE };
+    job = labelToJob(fit.render, geom, encode, { quarterTurns: opts.quarterTurns });
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

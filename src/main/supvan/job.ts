@@ -34,6 +34,39 @@ export const DEFAULT_GEOMETRY: Geometry = {
   density: 4,
 };
 
+/**
+ * Dots-per-mm assumed for the E11 printhead (8 dots/mm ⇒ 203 dpi, the T50 family).
+ * ⚠ UNVERIFIED (plan §7): some SUPVAN heads (SP/TP/G) query DPI live and land at
+ * ~11.6–11.8 dots/mm. If the E11 is a DPI-query variant this is wrong — confirm
+ * with a RETURN_MAT (0x30) width + a known-width test print at bring-up.
+ */
+export const E11_DOTS_PER_MM = 8;
+
+/**
+ * Derive an E11 geometry for a given tape width. The printhead width is rounded to
+ * a whole number of bytes because the raster packs 8 dots/byte and
+ * `centerInPrinthead` can only place byte-aligned widths.
+ */
+export function e11GeometryForTapeMm(tapeWidthMm: number): Geometry {
+  const raw = Math.round(tapeWidthMm * E11_DOTS_PER_MM);
+  const canvasWidthDots = Math.max(8, Math.round(raw / 8) * 8);
+  return { canvasWidthDots, marginTop: 8, marginBottom: 8, density: 4 };
+}
+
+/**
+ * SUPVAN E11 printhead geometry — BEST GUESS, pending hardware bring-up.
+ *
+ * ⚠ UNVERIFIED (plan §7, the second-biggest unknown). The reference registry maps
+ * e11 → T50 = 384 dots / 48 mm, which is almost certainly WRONG: the E11 takes
+ * 12 mm and 15 mm tape, so at 8 dots/mm its printhead is ~96 dots (12 mm) or
+ * ~120 dots (15 mm) — a quarter of 384, and centering a 96–120-dot image inside a
+ * 384-dot canvas mis-positions/clips every label. We default to the 15 mm
+ * continuous roll (120 dots), the least-constrained media. Confirm the real width
+ * via a RETURN_MAT (0x30) query before trusting this, and use
+ * `e11GeometryForTapeMm()` (or a future config field) to switch to the 12 mm roll.
+ */
+export const E11_GEOMETRY: Geometry = e11GeometryForTapeMm(15);
+
 /** A raster job: column-major LSB-first canvas image + its dimensions. */
 export interface ColumnMajorImage {
   data: Uint8Array;
