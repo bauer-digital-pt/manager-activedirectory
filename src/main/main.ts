@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, safeStorage, Menu, systemPreferences, shel
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { spawn, execFile } from "child_process";
+import os from "node:os";
 import electronUpdater from "electron-updater";
 import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
 import { DEFAULT_DC } from "../shared/constants";
@@ -1425,6 +1426,40 @@ handle("app:open-external", async (_e, rawUrl): Promise<{ ok: boolean; error?: s
 // allowed — we only ever BLOCK on a positively-identified wrong SSID, never on
 // uncertainty. Uses `netsh wlan show interfaces`: the SSID line is present only
 // while associated (wired / no adapter ⇒ no SSID ⇒ connected:false ⇒ allow).
+// Adapter-name fragments that mark an active VPN tunnel. Matched case-insensitively
+// against OS interface names (os.networkInterfaces() keys on Windows are the
+// adapter/connection friendly names). Broad BY DESIGN — a VPN reaching the domain
+// is a legitimate way to run the app remotely, so we err toward recognising one.
+// Extend this list when a new client shows up; the net-adapters Console line prints
+// every non-internal adapter name so a missed VPN is a one-string fix here.
+const VPN_ADAPTER_HINTS = [
+  "vpn", "anyconnect", "cisco secure", "globalprotect", "pangp", "forti", "fortissl",
+  "openvpn", "tap-windows", "tap-win", "wintun", "wireguard", "zscaler", "netextender",
+  "sonicwall", "checkpoint", "check point", "pulse", "ivanti", "tunnel", "wan miniport",
+  "ppp adapter", "tailscale", "zerotier", "meraki", "nordlynx", "expressvpn", "mullvad",
+];
+
+// Detect an active VPN tunnel: a non-internal interface with a bound address whose
+// name matches a known VPN adapter. Returns the matched + all non-internal adapter
+// names so the caller can log both (the full list lets us pin a missed VPN later).
+function detectVpnActive(): { active: boolean; matched: string[]; all: string[] } {
+  try {
+    const ifaces = os.networkInterfaces();
+    const matched: string[] = [];
+    const all: string[] = [];
+    for (const [name, addrs] of Object.entries(ifaces)) {
+      // Require a real bound address so an installed-but-down tunnel doesn't count.
+      if (!addrs?.some((a) => !a.internal && a.address)) continue;
+      all.push(name);
+      const hay = name.toLowerCase();
+      if (VPN_ADAPTER_HINTS.some((h) => hay.includes(h))) matched.push(name);
+    }
+    return { active: matched.length > 0, matched, all };
+  } catch {
+    return { active: false, matched: [], all: [] };
+  }
+}
+
 handle("app:get-ssid", async (): Promise<PSResult<WifiStatus>> => {
   if (process.platform !== "win32") {
     return { ok: true, data: { connected: false, ssid: null } };
@@ -1451,9 +1486,20 @@ handle("app:get-ssid", async (): Promise<PSResult<WifiStatus>> => {
     const ssids = [...stdout.matchAll(/^\s*SSID\s*:\s*(.+?)\s*$/gm)]
       .map((m) => (m[1] ? m[1].trim() : ""))
       .filter((s) => s.length > 0);
+    // A VPN tunnel reaches the domain regardless of the Wi-Fi SSID, so surface it —
+    // the renderer's wrong-Wi-Fi gate uses it to let remote/VPN users straight
+    // through. Log every non-internal adapter so a missed VPN can be pinned to a
+    // single hint string without another round of hardware guessing.
+    const vpn = detectVpnActive();
+    pushLog({
+      level: vpn.active ? "info" : "debug",
+      source: "window",
+      label: "net-adapters",
+      detail: `vpn=${vpn.active}${vpn.matched.length ? ` (${vpn.matched.join(", ")})` : ""} · all=[${vpn.all.join(", ")}]`,
+    });
     return {
       ok: true,
-      data: { connected: ssids.length > 0, ssid: ssids[0] ?? null, ssids },
+      data: { connected: ssids.length > 0, ssid: ssids[0] ?? null, ssids, vpnActive: vpn.active },
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

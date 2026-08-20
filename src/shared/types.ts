@@ -30,6 +30,10 @@ export interface WifiStatus {
   connected: boolean;
   ssid: string | null;
   ssids?: string[];
+  // True when an active VPN tunnel is detected (a corporate VPN adapter is up with
+  // a bound address). A tunnel reaches the domain regardless of the Wi-Fi SSID, so
+  // the renderer's wrong-Wi-Fi gate lets VPN/remote users through (lib/wifi.ts).
+  vpnActive?: boolean;
 }
 
 // --- Remote AD connection (plaintext, in-flight) ---

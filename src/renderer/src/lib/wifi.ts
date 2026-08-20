@@ -23,6 +23,11 @@ export const EXPECTED_SSID = "WiFiBMAP";
 // wireless NIC on a guest network can't lock out a user who IS on WiFiBMAP.
 export function isWrongWifi(status: WifiStatus | null): boolean {
   if (!status || !status.connected) return false;
+  // An active VPN tunnel reaches the domain regardless of the local Wi-Fi SSID, so
+  // remote/VPN users are never wrong-network — the gate exists to stop off-network
+  // AD failures, and the tunnel IS the network. (Login still validates AD, so this
+  // is a UX pre-check, not a security boundary.)
+  if (status.vpnActive) return false;
   const names = (status.ssids && status.ssids.length ? status.ssids : status.ssid ? [status.ssid] : [])
     .map((n) => n.trim())
     .filter(Boolean);
@@ -37,6 +42,8 @@ function simulated(): WifiStatus | null {
   if (typeof location === "undefined") return null;
   const params = new URLSearchParams(location.search);
   if (params.has("wrongwifi")) return { connected: true, ssid: "Starbucks_Guest" };
+  // `?vpn` simulates a wrong SSID but an active tunnel → gate must let it through.
+  if (params.has("vpn")) return { connected: true, ssid: "Starbucks_Guest", vpnActive: true };
   const forced = params.get("wifi");
   if (forced) return { connected: true, ssid: forced };
   return null;

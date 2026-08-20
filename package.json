@@ -1,13 +1,14 @@
 {
   "name": "admanager",
-  "version": "1.0.47",
+  "version": "1.0.48",
   "description": "Active Directory Onboarding Manager — Bauer Media Audio Portugal",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "dev:browser": "vite --config vite.browser.config.mts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
-    "test": "npm run test:supvan",
+    "test": "npm run test:unit && npm run test:supvan",
+    "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"test/*.test.ts\"",
     "test:supvan": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"test/supvan/*.test.ts\"",
     "build:renderer": "tsc && vite build",
     "build:manager": "cross-env APP_FLAVOR=manager npm run build:renderer && cross-env APP_FLAVOR=manager electron-builder --config electron-builder.config.cjs --publish never",
