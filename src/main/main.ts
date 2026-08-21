@@ -2164,7 +2164,13 @@ handle("inventory:test", async (_e, rawOverride) => {
   return inventoryFetch<InventoryHealth>(resolved.baseUrl, "/healthz", null, 10000);
 });
 
-handle("inventory:assets", async () => inventoryGet("/api/v1/assets"));
+// The API serves /assets stale-while-revalidate and warms it at startup, so this is
+// normally an instant cache hit. Only a truly cold cache (first read in the ~30s
+// after an API restart, before the warm finishes) blocks on a full tenant scan —
+// EZOffice pages ~25 rows/req under a 60 req/min cap, ~27s observed. Give that
+// window headroom (45s) so a cold read returns real data instead of timing out and
+// silently degrading the device list to AD-only. Fast AD reads keep the 20s default.
+handle("inventory:assets", async () => inventoryGet("/api/v1/assets", 45000));
 // The public label URL (…/a/<seq>?c=<code>) for ONE asset, fetched on demand when a
 // SUPVAN label is printed. It's a single (rate-limited) EZOffice call, so it stays
 // off the /assets list read — that N+1 fan-out is what timed out the cold list.
