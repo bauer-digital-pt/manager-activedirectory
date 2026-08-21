@@ -96,6 +96,19 @@ function keyOf(name?: string | null): string {
   return stripDomain(name).toLowerCase();
 }
 
+// Rank an EZOffice asset for "which duplicate is authoritative for a hostname".
+// EZOffice sometimes holds two records for one machine (a live one + a retired/
+// broken/lost leftover); the join must not let array order decide which serial/
+// status/QR the merged row shows. A live record (in use / available) outranks any
+// dead one, then the newer (higher) asset_id wins. Purely for ordering same-named
+// assets — the winner enriches the AD row, the losers still get their own rows.
+function assetAuthority(status?: string | null, assetId?: string | null): number {
+  const s = (status || "").toLowerCase();
+  const live = s === "in use" || s === "available" ? 1 : 0;
+  const id = Number(assetId);
+  return live * 1e15 + (Number.isFinite(id) ? id : 0);
+}
+
 // An AD computer object → a base consolidated row.
 export function fromAD(d: ADComputer): ConsolidatedDevice {
   const name = d.Name || "";
@@ -145,37 +158,56 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
   for (const d of base) if (d.key) map.set(d.key, d);
 
   if (assets) {
-    for (const a of assets) {
-      const k = keyOf(a.name) || (a.asset_id ? `asset:${a.asset_id}` : "");
-      if (!k) continue;
-      const prev = map.get(k);
-      if (prev) {
-        map.set(k, {
-          ...prev,
-          source: prev.source === "ad" ? "both" : prev.source,
-          assetId: a.asset_id || prev.assetId,
-          serialNumber: a.serial_number || prev.serialNumber,
-          category: a.category || prev.category,
-          ezStatus: a.status || prev.ezStatus,
-          assignedUserEmail: a.assigned_user_email || prev.assignedUserEmail,
-          qrUrl: a.qr_url || prev.qrUrl,
+    // Process assets most-authoritative-first so that, among EZOffice records
+    // sharing one AD hostname, the live/newest one is the one that enriches the AD
+    // row — the join is then deterministic, not dependent on the API's array order
+    // (which could otherwise surface a retired duplicate's serial/status/QR). Copy
+    // first: never mutate the caller's (possibly memoised) array.
+    const ordered = [...assets].sort(
+      (x, y) => assetAuthority(y.status, y.asset_id) - assetAuthority(x.status, x.asset_id),
+    );
+    ordered.forEach((a, i) => {
+      const nameKey = keyOf(a.name);
+      // An asset enriches an AD computer ONLY on the first match of that host name
+      // (the row is still a bare "ad" base row). Once matched it becomes "both", so
+      // a SECOND asset sharing the hostname won't overwrite it — it falls through to
+      // its own row below (surfacing an EZOffice duplicate rather than hiding it).
+      const adRow = nameKey ? map.get(nameKey) : undefined;
+      if (adRow && adRow.source === "ad") {
+        map.set(nameKey, {
+          ...adRow,
+          source: "both",
+          assetId: a.asset_id || adRow.assetId,
+          serialNumber: a.serial_number || adRow.serialNumber,
+          category: a.category || adRow.category,
+          ezStatus: a.status || adRow.ezStatus,
+          assignedUserEmail: a.assigned_user_email || adRow.assignedUserEmail,
+          qrUrl: a.qr_url || adRow.qrUrl,
         });
-      } else {
-        const name = a.name || a.asset_id || "";
-        map.set(k, {
-          key: k,
-          name,
-          displayName: stripDomain(name) || name,
-          source: "ezoffice",
-          assetId: a.asset_id || undefined,
-          serialNumber: a.serial_number || undefined,
-          category: a.category || undefined,
-          ezStatus: a.status || undefined,
-          assignedUserEmail: a.assigned_user_email || undefined,
-          qrUrl: a.qr_url || undefined,
-        });
+        return;
       }
-    }
+      // No AD match: this asset is its OWN row, keyed by its UNIQUE asset_id — never
+      // by name. Assets routinely share a generic model name (3× "Macbook Air M5",
+      // N× "Apple Magic Mouse", power adapters …); name-keying collapsed them all
+      // into a single last-writer-wins row. asset_id keeps each physical unit
+      // distinct. An id-less asset (unexpected) gets a synthetic per-index key so it
+      // still surfaces as its own row and can never clobber a hostname/"both" row.
+      const k = a.asset_id ? `asset:${a.asset_id}` : nameKey ? `asset:noid:${i}` : "";
+      if (!k) return;
+      const name = a.name || a.asset_id || "";
+      map.set(k, {
+        key: k,
+        name,
+        displayName: stripDomain(name) || name,
+        source: "ezoffice",
+        assetId: a.asset_id || undefined,
+        serialNumber: a.serial_number || undefined,
+        category: a.category || undefined,
+        ezStatus: a.status || undefined,
+        assignedUserEmail: a.assigned_user_email || undefined,
+        qrUrl: a.qr_url || undefined,
+      });
+    });
   }
   return Array.from(map.values());
 }

@@ -56,6 +56,70 @@ test("non-domain asset (Mac) stays its own ezoffice-only row — no false merge"
   assert.equal(mac!.source, "ezoffice");
 });
 
+test("same-named asset-only rows each survive (3x Macbook Air M5, no collapse)", () => {
+  const rows = consolidate([], [
+    asset("Macbook Air M5", { asset_id: "607" }),
+    asset("Macbook Air M5", { asset_id: "608" }),
+    asset("Macbook Air M5", { asset_id: "609" }),
+  ]);
+  assert.equal(rows.length, 3, "all three physical Macs must show, not just one");
+  assert.deepEqual(rows.map((r) => r.assetId).sort(), ["607", "608", "609"]);
+  for (const r of rows) assert.equal(r.source, "ezoffice");
+});
+
+test("N x Apple Magic Mouse do not collapse", () => {
+  const rows = consolidate([], [
+    asset("Apple Magic Mouse - White", { asset_id: "604", category: "Mouses" }),
+    asset("Apple Magic Mouse - White", { asset_id: "605", category: "Mouses" }),
+  ]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((r) => r.assetId).sort(), ["604", "605"]);
+});
+
+test("duplicate hostname: the LIVE asset enriches the AD row, the dead one surfaces separately", () => {
+  const base = [fromAD(ad("PT-LPT-ADM-02"))];
+  // EZOffice holds two records for one machine: a retired leftover + the live one.
+  const dead = asset("PT-LPT-ADM-02.bmap.lis", { asset_id: "588", status: "Retired", qr_url: "q-588" });
+  const live = asset("PT-LPT-ADM-02.bmap.lis", { asset_id: "595", status: "In Use", qr_url: "q-595" });
+
+  for (const order of [[dead, live], [live, dead]]) {
+    const rows = consolidate(base, order);
+    assert.equal(rows.length, 2, "both EZOffice records must show, not just one");
+    const both = rows.find((r) => r.source === "both");
+    const extra = rows.find((r) => r.source === "ezoffice");
+    assert.ok(both && extra, "one merged AD row + one standalone EZOffice row");
+    // Deterministic regardless of input order: the live record wins the merged row.
+    assert.equal(both!.assetId, "595", "the live (In Use) asset enriches the AD computer");
+    assert.equal(both!.qrUrl, "q-595", "the merged row's QR points at the live asset");
+    assert.equal(extra!.assetId, "588", "the retired duplicate is surfaced as its own row");
+    assert.equal(extra!.displayName, "PT-LPT-ADM-02", "domain still stripped for display");
+  }
+});
+
+test("duplicate hostname, same status: the newest (highest id) asset wins deterministically", () => {
+  const base = [fromAD(ad("PT-LPT-ADM-02"))];
+  const older = asset("PT-LPT-ADM-02.bmap.lis", { asset_id: "588", status: "In Use" });
+  const newer = asset("PT-LPT-ADM-02.bmap.lis", { asset_id: "595", status: "In Use" });
+  for (const order of [[older, newer], [newer, older]]) {
+    const both = consolidate(base, order).find((r) => r.source === "both");
+    assert.equal(both!.assetId, "595", "newest id wins the tie irrespective of array order");
+  }
+});
+
+test("an id-less asset never clobbers the AD row it shares a hostname with", () => {
+  const base = [fromAD(ad("PT-LPT-ADM-08"))];
+  const rows = consolidate(base, [
+    asset("PT-LPT-ADM-08.bmap.lis", { asset_id: "999", qr_url: "q-999" }),
+    asset("PT-LPT-ADM-08.bmap.lis", { asset_id: "" }), // unexpected: no id
+  ]);
+  const both = rows.find((r) => r.source === "both");
+  assert.ok(both, "the AD computer must remain, enriched");
+  assert.equal(both!.assetId, "999", "the real asset's id survives — not wiped by the id-less one");
+  assert.equal(both!.qrUrl, "q-999", "the merged row keeps the real asset's QR");
+  // AD row (both) + the id-less asset's own surfaced row.
+  assert.equal(rows.length, 2);
+});
+
 test("distinct FQDNs do not collide", () => {
   const base = [fromAD(ad("PT-LPT-ADM-08")), fromAD(ad("PT-LPT-ADM-09"))];
   const rows = consolidate(base, [
