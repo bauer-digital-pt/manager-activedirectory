@@ -417,7 +417,14 @@ function DeviceRow({
           <td colSpan={6} className="p-0 border-0">
             <LabelPreviewModal
               device={device}
-              qrPayload={ezofficeUrl || ""}
+              // The coded EZOffice QR URL (…/a/<seq>?c=<code>) — what a scan needs to
+              // open the public asset view. It's no longer on the list read, so the
+              // modal resolves it on demand from device.assetId; device.qrUrl is only
+              // set on the rare path where the API already provided it. The Settings
+              // URL template is passed separately as a code-less fallback — the modal
+              // must prefer the coded URL, never let the template shadow it.
+              codedUrl={device.qrUrl || ""}
+              templateUrl={ezofficeUrl || ""}
               toast={toast}
               onClose={() => setPreview(false)}
             />

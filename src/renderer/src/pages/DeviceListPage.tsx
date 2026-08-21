@@ -15,7 +15,7 @@ import { Button } from "../components/ui/Button";
 import { focusRing } from "../components/ui/controls";
 import {
   type ConsolidatedDevice, type DeviceSource, type StateId,
-  fromAD, fromSource, consolidate, deviceState, STATE_RANK,
+  fromAD, fromSource, consolidate, deviceState, ezStatusLabel, STATE_RANK,
 } from "../lib/devices";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -74,9 +74,13 @@ type DevicesCache = {
   sourced: boolean;
   loaded: boolean;
   error: string | null;
+  // Non-null when the base list loaded but the EZOffice enrichment fetch failed —
+  // the list still shows (AD-only rows), and this drives a visible banner instead
+  // of the old silent degradation.
+  enrichError: string | null;
   key: string;
 };
-let devicesCache: DevicesCache = { base: [], assets: null, sourced: false, loaded: false, error: null, key: "" };
+let devicesCache: DevicesCache = { base: [], assets: null, sourced: false, loaded: false, error: null, enrichError: null, key: "" };
 
 export default function DeviceListPage({
   toast,
@@ -103,6 +107,7 @@ export default function DeviceListPage({
   const [sourced, setSourced] = useState(devicesCache.sourced);
   const [loading, setLoading] = useState(!devicesCache.loaded);
   const [error, setError] = useState<string | null>(devicesCache.error);
+  const [enrichError, setEnrichError] = useState<string | null>(devicesCache.enrichError);
 
   // Four filter TYPES (null = "all") + the sort control — same UX as the Users page.
   const [categoria, setCategoria] = useState<string | null>(null);
@@ -170,9 +175,21 @@ export default function DeviceListPage({
     const key = cacheKey;
 
     // Enrichment must never block the list: a failed assets fetch just means no
-    // EZOffice detail, not a broken page.
+    // EZOffice detail, not a broken page. But capture WHY it failed so the UI can
+    // surface it (a visible banner) instead of silently degrading to AD-only.
+    let enrichErr: string | null = null;
     const assetsP: Promise<InventoryAsset[] | null> = enrich
-      ? inventoryAPI.getAssets().then((r) => (r.ok && r.data ? r.data : null)).catch(() => null)
+      ? inventoryAPI
+          .getAssets()
+          .then((r) => {
+            if (r.ok && r.data) return r.data;
+            enrichErr = r.error ?? "Não foi possível obter os dados de inventário (EZOffice).";
+            return null;
+          })
+          .catch((e) => {
+            enrichErr = (e as Error)?.message || "Não foi possível obter os dados de inventário (EZOffice).";
+            return null;
+          })
       : Promise.resolve(null);
 
     const run = async (): Promise<{ base: ConsolidatedDevice[]; assets: InventoryAsset[] | null }> => {
@@ -190,19 +207,20 @@ export default function DeviceListPage({
       .then(({ base: b, assets: a }) => {
         setLoading(false);
         setBase(b); setAssets(a); setSourced(useInventorySource); setError(null);
-        devicesCache = { base: b, assets: a, sourced: useInventorySource, loaded: true, error: null, key };
+        setEnrichError(enrichErr);
+        devicesCache = { base: b, assets: a, sourced: useInventorySource, loaded: true, error: null, enrichError: enrichErr, key };
       })
       .catch((e) => {
         // Background hiccup: keep the last-good fleet untouched (no blank, no error).
         if (background) return;
         setLoading(false);
-        setBase([]); setAssets(null); setSourced(useInventorySource);
+        setBase([]); setAssets(null); setSourced(useInventorySource); setEnrichError(null);
         const fallback = useInventorySource
           ? "Não foi possível contactar a API de inventário."
           : "Não foi possível comunicar com o Active Directory.";
         const err = typeof e?.message === "string" && e.message ? e.message : fallback;
         setError(err);
-        devicesCache = { base: [], assets: null, sourced: useInventorySource, loaded: true, error: err, key };
+        devicesCache = { base: [], assets: null, sourced: useInventorySource, loaded: true, error: err, enrichError: null, key };
       });
   }, [useInventorySource, enrich, cacheKey]);
 
@@ -224,6 +242,29 @@ export default function DeviceListPage({
   // their matching EZOffice asset, plus asset-only rows for peripherals AD never
   // sees. A pure, memoised derivation of the raw base + assets.
   const devices = useMemo(() => consolidate(base, assets), [base, assets]);
+
+  // Precompute each row's state bucket + lowercased search text ONCE per fleet
+  // change (keyed by object reference — consolidate() returns stable objects), so
+  // typing in the search box or re-sorting doesn't re-run deviceState()/daysSince()
+  // (Date.parse) and ezStatusLabel() for every row on every keystroke/comparison.
+  const derived = useMemo(() => {
+    const m = new Map<ConsolidatedDevice, { stateId: StateId; search: string }>();
+    for (const d of devices) {
+      const stateId = deviceState(d).id;
+      // Everything the row carries — every AD and EZOffice field, incl. serial and
+      // asset number — plus the human-readable state/status/source labels, so
+      // typing "avariado", an EZ number or a serial all match ("pesquisar por tudo").
+      const search = [
+        d.name, d.displayName, d.dnsHostName, d.serialNumber, d.assetId,
+        d.category, d.department, d.operatingSystem, d.operatingSystemVersion,
+        d.assignedUserEmail, d.description, d.distinguishedName, d.managedBy,
+        d.ezStatus, ezStatusLabel(d.ezStatus), STATE_LABEL[stateId],
+        SOURCE_LABEL[d.source],
+      ].filter(Boolean).join("\n").toLowerCase();
+      m.set(d, { stateId, search });
+    }
+    return m;
+  }, [devices]);
 
   // Patch a single row's enabled flag in place after a successful toggle, so the
   // state badge updates without a full refetch. Keyed by the consolidated key
@@ -250,11 +291,11 @@ export default function DeviceListPage({
   }, [devices]);
   const estadoOptions = useMemo<FilterOption[]>(() => {
     const set = new Set<StateId>();
-    for (const d of devices) set.add(deviceState(d).id);
+    for (const dv of derived.values()) set.add(dv.stateId);
     return [...set]
       .sort((a, b) => STATE_RANK[a] - STATE_RANK[b])
       .map((id) => ({ value: id, label: STATE_LABEL[id] }));
-  }, [devices]);
+  }, [derived]);
   const fonteOptions = useMemo<FilterOption[]>(() => {
     const set = new Set<DeviceSource>();
     for (const d of devices) set.add(d.source);
@@ -290,17 +331,13 @@ export default function DeviceListPage({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const list = devices.filter((d) => {
+      const dv = derived.get(d)!; // built from this same `devices` above → always present
       if (categoria && (d.category ?? "") !== categoria) return false;
       if (departamento && (d.department ?? "") !== departamento) return false;
       if (fonte && d.source !== fonte) return false;
-      if (estado && deviceState(d).id !== estado) return false;
-      if (q) {
-        const hay = [
-          d.name, d.displayName, d.dnsHostName, d.serialNumber, d.category,
-          d.department, d.operatingSystem, d.assignedUserEmail, d.description,
-        ];
-        if (!hay.some((v) => v?.toLowerCase().includes(q))) return false;
-      }
+      if (estado && dv.stateId !== estado) return false;
+      // Free text matches the precomputed haystack (all fields + PT labels).
+      if (q && !dv.search.includes(q)) return false;
       return true;
     });
 
@@ -320,10 +357,10 @@ export default function DeviceListPage({
         }
         case "estado":
         default:
-          return dir * (STATE_RANK[deviceState(a).id] - STATE_RANK[deviceState(b).id]) || nameCmp(a, b);
+          return dir * (STATE_RANK[derived.get(a)!.stateId] - STATE_RANK[derived.get(b)!.stateId]) || nameCmp(a, b);
       }
     });
-  }, [devices, categoria, departamento, fonte, estado, search, sortBy, sortDir]);
+  }, [devices, derived, categoria, departamento, fonte, estado, search, sortBy, sortDir]);
 
   // Reset the render window whenever the filter/sort inputs change. Deliberately
   // NOT keyed on `devices`, so a kiosk background refresh swaps data in place
@@ -466,6 +503,26 @@ export default function DeviceListPage({
           <div className="mx-6 mt-4 flex items-center gap-2 rounded-lg border border-violet-100 bg-violet-50/60 px-3 py-2 text-xs text-violet-700">
             <Boxes size={14} className="flex-shrink-0" />
             Lista obtida através da API de inventário — este dispositivo não tem acesso direto ao Active Directory.
+          </div>
+        )}
+        {/* Enrichment failed but the list still loaded: say so instead of silently
+            showing an un-enriched list (this is what made the Mac look "AD-only"). */}
+        {!loading && !error && enrichError && (
+          <div className="mx-6 mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-700">
+            <ServerCrash size={14} className="mt-0.5 flex-shrink-0" />
+            <span className="flex-1">
+              Dados de inventário (EZOffice) indisponíveis — a lista mostra apenas o
+              que o Active Directory conhece, sem série/ativo/estado do EZOffice.{" "}
+              <span className="text-amber-600/80">{enrichError}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => load()}
+              className={cn("inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-amber-700 transition-colors hover:bg-amber-100", focusRing)}
+            >
+              <RefreshCw size={12} />
+              Tentar novamente
+            </button>
           </div>
         )}
         {loading ? (

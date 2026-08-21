@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   renderLabel,
   rotateBitmap90,
+  flipBitmap,
   labelToColumnMajor,
   labelToJob,
   fitLabelStyle,
@@ -33,6 +34,8 @@ test("renderLabel embeds the QR readable module-for-module", () => {
   const scale = 3;
   const quiet = 4;
   const r = renderLabel(model, { qrScale: scale, qrQuiet: quiet });
+  assert.ok(r.qr, "a URL payload must embed a QR");
+  assert.ok(r.qrBlock, "a URL payload must reserve a QR block");
 
   const ref = encodeQr(model.qr, { ecc: "M" });
   assert.equal(r.qr.version, ref.version);
@@ -54,8 +57,11 @@ test("renderLabel embeds the QR readable module-for-module", () => {
 
 test("renderLabel dimensions follow the layout formula", () => {
   const model = { qr: "EZ/999", lines: ["ABC", "LONGER LINE 12345"] };
-  const style = { qrScale: 2, qrQuiet: 4, textScale: 2, letterSpacing: 1, lineGap: 2, gap: 6, padding: 2 };
+  // showBrand:false isolates the QR+text formula — the brand mark's own geometry
+  // is covered by its dedicated tests below.
+  const style = { qrScale: 2, qrQuiet: 4, textScale: 2, letterSpacing: 1, lineGap: 2, gap: 6, padding: 2, showBrand: false };
   const r = renderLabel(model, style);
+  assert.ok(r.qrBlock, "a URL payload must reserve a QR block");
 
   const ref = encodeQr(model.qr, { ecc: "M" });
   const qrBlock = (ref.size + 2 * style.qrQuiet) * style.qrScale;
@@ -109,16 +115,55 @@ test("a QR-only label omits the text region", () => {
   const scale = 2;
   const quiet = 4;
   const padding = 2;
-  const r = renderLabel({ qr: "X", lines: [] }, { qrScale: scale, qrQuiet: quiet, padding });
+  const r = renderLabel({ qr: "X", lines: [] }, { qrScale: scale, qrQuiet: quiet, padding, showBrand: false });
   const ref = encodeQr("X", { ecc: "M" });
   const block = (ref.size + 2 * quiet) * scale;
   assert.equal(r.width, padding * 2 + block);
   assert.equal(r.height, padding * 2 + block);
 });
 
+test("no QR payload degrades to a logo + text label (no QR region, single gap)", () => {
+  // Regression: an empty payload (AD-only device / unconfigured URL template) used
+  // to throw in encodeQr and hard-block the print. It must instead compose a
+  // logo + text label with no QR region at all.
+  const model = { qr: "", lines: ["PT-LPT-TI-0007", "DELL 5540"] };
+  const gap = 6;
+  const padding = 2;
+  const textScale = 2;
+  const letterSpacing = 1;
+
+  let r!: LabelRender;
+  assert.doesNotThrow(() => {
+    r = renderLabel(model, { qrScale: 2, gap, padding, textScale, letterSpacing });
+  }, "an empty QR payload must not throw");
+
+  assert.equal(r.qr, null, "empty payload ⇒ no QR encoded");
+  assert.equal(r.qrBlock, null, "empty payload ⇒ no QR block");
+  assert.ok(r.brandBlock, "the logo is still drawn");
+
+  // Width is logo + ONE gap + text (+ padding both ends) — never a phantom double
+  // gap where the QR would have been.
+  const b = r.brandBlock!;
+  const textWidth = Math.max(
+    ...model.lines.map((l) => measureText(l, { scale: textScale, letterSpacing }).width),
+  );
+  assert.equal(b.x, padding, "logo sits at the left padding");
+  assert.equal(r.width, padding + b.width + gap + textWidth + padding, "logo + one gap + text");
+});
+
+test("a QR-less label still fits and maps to the E11 head", () => {
+  const model = { qr: "", lines: ["PT-LPT-TI-0007", "DELL 5540", "SN ABC123"] };
+  const fit = fitLabelStyle(model, E11_GEOMETRY, {}, { quarterTurns: 3 });
+  assert.ok(fit, "a logo + text label must find a fitting style");
+  assert.equal(fit!.render.qr, null, "the fitting render carries no QR");
+  assert.doesNotThrow(() => labelToColumnMajor(fit!.render, E11_GEOMETRY, { quarterTurns: 3 }));
+});
+
 test("text lines render where the font would place them", () => {
   const model = { qr: "EZ/1", lines: ["PT-01", "SERIAL9"] };
-  const style = { qrScale: 2, qrQuiet: 4, textScale: 2, letterSpacing: 1, lineGap: 2, gap: 6, padding: 2 };
+  // showBrand:false keeps contentHeight = max(qrBlock, textHeight); the brand
+  // mark (64 dots tall) would otherwise raise it and shift the vertical centering.
+  const style = { qrScale: 2, qrQuiet: 4, textScale: 2, letterSpacing: 1, lineGap: 2, gap: 6, padding: 2, showBrand: false };
   const r = renderLabel(model, style);
 
   const ref = encodeQr(model.qr, { ecc: "M" });
@@ -147,6 +192,43 @@ test("text lines render where the font would place them", () => {
       }
     }
   }
+});
+
+test("the brand mark is drawn by default at the start, before the QR", () => {
+  const model = { qr: "https://bmap.ezofficeinventory.com/a/611?c=616e", lines: ["PT-LPT-TI-1"] };
+  const withBrand = renderLabel(model, { qrScale: 2 });
+  const bare = renderLabel(model, { qrScale: 2, showBrand: false });
+
+  // Present by default, absent when opted out.
+  assert.ok(withBrand.brandBlock, "brand block should be present by default");
+  assert.ok(withBrand.qrBlock, "a URL payload must reserve a QR block");
+  assert.equal(bare.brandBlock, null, "showBrand:false omits the brand");
+
+  const b = withBrand.brandBlock!;
+  // Layout is logo → QR → text: the logo sits at the left padding, and its right
+  // edge is before the QR block, separated by a gap (so it never touches QR data).
+  assert.equal(b.x, /*padding*/ 2, "brand starts at the left padding");
+  assert.ok(b.x + b.width <= withBrand.qrBlock.x, "brand ends before the QR block");
+  assert.ok(withBrand.qrBlock.x - (b.x + b.width) >= /*gap*/ 6, "a gap separates the logo from the QR");
+  // Only the feed axis grew: the brand lengthens the natural width, not the across
+  // axis for this URL QR (QR block ≥ mark 64 dots).
+  assert.equal(withBrand.height, bare.height, "brand must not change the across axis here");
+  assert.equal(withBrand.width, bare.width + /*gap*/ 6 + b.width, "brand adds gap + its width");
+  // The mark carries ink and lands fully inside the canvas.
+  assert.ok(b.x >= 0 && b.y >= 0 && b.x + b.width <= withBrand.width && b.y + b.height <= withBrand.height);
+  let anyInk = false;
+  for (let y = b.y; y < b.y + b.height && !anyInk; y++)
+    for (let x = b.x; x < b.x + b.width; x++) if (withBrand.canvas.get(x, y)) { anyInk = true; break; }
+  assert.ok(anyInk, "brand mark should have drawn some dots");
+});
+
+test("the brand mark never breaks the E11 across-head fit", () => {
+  // A branded URL label must still fit the 96-dot 12 mm head after the 270° turn.
+  const model = { qr: "https://bmap.ezofficeinventory.com/a/611?c=616e", lines: ["PT-LPT-TI-1", "DELL 5540"] };
+  const fit = fitLabelStyle(model, E11_GEOMETRY, {}, { quarterTurns: 3 });
+  assert.ok(fit, "branded label should still find a fitting scale");
+  assert.ok(fit!.render.brandBlock, "the fitting render keeps the brand");
+  assert.doesNotThrow(() => labelToColumnMajor(fit!.render, E11_GEOMETRY, { quarterTurns: 3 }));
 });
 
 test("rotateBitmap90: 4 turns is identity, odd turns swap dims", () => {
@@ -210,6 +292,61 @@ test("labelToColumnMajor pads the feed with blank margins and centers content", 
     }
   }
   assert.ok(anyContent, "content columns are all blank");
+});
+
+// Read a dot from a column-major LSB-first ColumnMajorImage:
+// byte = data[col*bytesPerLine + (dot>>3)], bit = dot&7.
+const cmBit = (img: { data: Uint8Array; bytesPerLine: number }, col: number, dot: number): boolean =>
+  ((img.data[col * img.bytesPerLine + (dot >> 3)] >> (dot & 7)) & 1) !== 0;
+
+test("flipBitmap is a reflection: identity with no axis, reverses the chosen axis", () => {
+  const c = new MonoCanvas(4, 2);
+  c.set(0, 0, true); // top-left
+  const bmp = c.toBitmap();
+  assert.deepEqual([...flipBitmap(bmp).data], [...bmp.data], "no axis ⇒ identity");
+  const fx = flipBitmap(bmp, { x: true });
+  assert.ok(bitAt(fx, 3, 0) && !bitAt(fx, 0, 0), "x flip: (0,0) → (w-1,0)");
+  const fy = flipBitmap(bmp, { y: true });
+  assert.ok(bitAt(fy, 0, 1) && !bitAt(fy, 0, 0), "y flip: (0,0) → (0,h-1)");
+});
+
+test("labelToColumnMajor mirrors the across-tape axis by default (printhead dot order)", () => {
+  // One dot at the natural top-left. With quarterTurns=0 the mapping is direct:
+  // feed column = source row y (+ marginTop), across dot = source x (+ centering).
+  const c = new MonoCanvas(8, 3);
+  c.set(0, 0, true);
+  const fake = { bitmap: c.toBitmap() } as unknown as LabelRender;
+  const geom: Geometry = { ...DEFAULT_GEOMETRY, canvasWidthDots: 24, marginTop: 1, marginBottom: 1 };
+  const xOffset = Math.floor((24 - 8) / 2); // centerInPrinthead offset = 8
+  const col = geom.marginTop + 0; // the dot's feed column (source y=0)
+
+  const noMirror = labelToColumnMajor(fake, geom, { quarterTurns: 0, mirrorAcross: false });
+  const mirrored = labelToColumnMajor(fake, geom, { quarterTurns: 0, mirrorAcross: true });
+  const dflt = labelToColumnMajor(fake, geom, { quarterTurns: 0 });
+
+  // Unmirrored: source x=0 → across dot xOffset+0. Mirrored: x=0 → x=w-1=7.
+  assert.ok(cmBit(noMirror, col, xOffset + 0) && !cmBit(noMirror, col, xOffset + 7), "unmirrored dot at left");
+  assert.ok(cmBit(mirrored, col, xOffset + 7) && !cmBit(mirrored, col, xOffset + 0), "mirrored dot at right");
+  // The mirror is across-tape only: the feed column is unchanged either way.
+  assert.deepEqual([...dflt.data], [...mirrored.data], "default ⇒ mirrorAcross:true (the hardware default)");
+});
+
+test("mirrorFeed reverses the print/column order, leaving the across axis alone", () => {
+  const c = new MonoCanvas(8, 3);
+  c.set(0, 0, true); // source top row (y=0)
+  const fake = { bitmap: c.toBitmap() } as unknown as LabelRender;
+  const geom: Geometry = { ...DEFAULT_GEOMETRY, canvasWidthDots: 24, marginTop: 1, marginBottom: 1 };
+  const xOffset = Math.floor((24 - 8) / 2);
+
+  // Hold mirrorAcross off so only the feed axis varies between the two.
+  const noFeed = labelToColumnMajor(fake, geom, { quarterTurns: 0, mirrorAcross: false, mirrorFeed: false });
+  const feed = labelToColumnMajor(fake, geom, { quarterTurns: 0, mirrorAcross: false, mirrorFeed: true });
+
+  // y=0 → first content column (marginTop) without the feed mirror,
+  // → last content column (marginTop + h-1) with it — same across dot.
+  assert.ok(cmBit(noFeed, geom.marginTop + 0, xOffset + 0), "no feed mirror: content in first content column");
+  assert.ok(cmBit(feed, geom.marginTop + (3 - 1), xOffset + 0), "feed mirror: content in last content column");
+  assert.ok(!cmBit(feed, geom.marginTop + 0, xOffset + 0), "feed mirror: first content column now clear");
 });
 
 test("labelToColumnMajor rejects a label wider than the printhead", () => {

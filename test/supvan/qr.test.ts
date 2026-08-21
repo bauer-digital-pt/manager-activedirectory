@@ -1,91 +1,128 @@
 /**
- * QR encoder golden-vector suite. Compares our pure-TS byte-mode encoder
- * against `segno` (conformant reference) BYTE-FOR-BYTE across many inputs,
- * versions and ECC levels.
+ * QR encoder tests.
+ *
+ * The encoder delegates to node-qrcode (a conformant library). Rather than pin
+ * its output byte-for-byte against another generator, these tests verify the
+ * symbols are genuinely SCANNABLE by round-tripping each one through a real QR
+ * DECODER (jsQR) — an implementation-agnostic guarantee that survives a future
+ * library swap.
  *
  *     node --test test/supvan/qr.test.ts
- *
- * Regenerate qr-golden.json with test/supvan/gen_qr_golden.py (needs segno).
- *
- * Two record kinds:
- *  - "fixed": mask pinned in both -> validates data placement, RS ECC,
- *    interleaving, format bits, and function patterns independent of masking.
- *  - "auto": mask omitted -> additionally validates OUR penalty-based mask
- *    selection matches segno's chosen mask.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import jsQRImport from "jsqr";
 
-import { encodeQr, type Ecc } from "../../src/main/supvan/qr.ts";
+import { encodeQr, type Ecc, type QrCode } from "../../src/main/supvan/qr.ts";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const golden = JSON.parse(readFileSync(join(HERE, "qr-golden.json"), "utf8")) as {
-  segno: string;
-  vectors: Array<{
-    text: string;
-    ecc: string;
-    version: number;
-    mask: number;
-    kind: "fixed" | "auto";
-    size: number;
-    rows: string[];
-  }>;
-};
+// jsQR is CJS; normalise the callable across default/namespace interop.
+const jsQR = ((jsQRImport as unknown as { default?: typeof jsQRImport }).default ??
+  jsQRImport) as typeof jsQRImport;
 
-const rowsToStrings = (modules: boolean[][]): string[] =>
-  modules.map((row) => row.map((d) => (d ? "1" : "0")).join(""));
-
-test(`QR encoder matches segno ${golden.segno} across all vectors`, () => {
-  assert.ok(golden.vectors.length >= 100, "expected a broad vector set");
-  for (const v of golden.vectors) {
-    const qr = encodeQr(v.text, {
-      ecc: v.ecc as Ecc,
-      mask: v.kind === "fixed" ? v.mask : undefined,
-    });
-    const label = `text=${JSON.stringify(v.text.slice(0, 24))} ecc=${v.ecc} ${v.kind}`;
-    assert.equal(qr.version, v.version, `${label}: version`);
-    assert.equal(qr.size, v.size, `${label}: size`);
-    if (v.kind === "auto") {
-      assert.equal(qr.mask, v.mask, `${label}: auto-selected mask`);
-    } else {
-      assert.equal(qr.mask, v.mask, `${label}: pinned mask`);
+/** Render a QR module matrix to an RGBA buffer jsQR can decode (dark = black). */
+function toRGBA(qr: QrCode, scale = 6, quiet = 4): { data: Uint8ClampedArray; width: number; height: number } {
+  const W = (qr.size + 2 * quiet) * scale;
+  const H = W;
+  const data = new Uint8ClampedArray(W * H * 4).fill(255); // opaque white
+  for (let r = 0; r < qr.size; r++) {
+    for (let c = 0; c < qr.size; c++) {
+      if (!qr.modules[r][c]) continue;
+      for (let dy = 0; dy < scale; dy++) {
+        for (let dx = 0; dx < scale; dx++) {
+          const px = (quiet + c) * scale + dx;
+          const py = (quiet + r) * scale + dy;
+          const i = (py * W + px) * 4;
+          data[i] = 0; data[i + 1] = 0; data[i + 2] = 0; data[i + 3] = 255;
+        }
+      }
     }
-    const got = rowsToStrings(qr.modules);
-    assert.equal(got.length, v.rows.length, `${label}: row count`);
-    for (let y = 0; y < v.rows.length; y++) {
-      assert.equal(got[y], v.rows[y], `${label}: row ${y}`);
+  }
+  return { data, width: W, height: H };
+}
+
+function decode(qr: QrCode): string | null {
+  const img = toRGBA(qr);
+  const res = jsQR(img.data, img.width, img.height);
+  return res ? res.data : null;
+}
+
+// ASCII payloads spanning the real use (asset URLs) plus short ids and a long
+// one that forces a higher version. jsQR decodes byte/alphanumeric segments
+// reliably; UTF-8 (multibyte) round-tripping is decoder-dependent, so it is
+// checked structurally below instead of by exact-string decode.
+const PAYLOADS = [
+  "X",
+  "PT-LPT-TI-0007",
+  "https://ez/42",
+  "https://bmap.ezofficeinventory.com/a/611?c=616e",
+  "https://bauermedia.ezofficeinventory.com/assets/123456",
+  "https://pt.ezofficeinventory.com/assets/1234567890?token=abcDEF",
+  "0123456789".repeat(10), // 100 chars → higher version
+];
+const ECCS: Ecc[] = ["L", "M", "Q", "H"];
+
+test("every payload round-trips through a real QR decoder at each ECC level", () => {
+  for (const text of PAYLOADS) {
+    for (const ecc of ECCS) {
+      const qr = encodeQr(text, { ecc });
+      const decoded = decode(qr);
+      assert.equal(
+        decoded,
+        text,
+        `payload ${JSON.stringify(text.slice(0, 32))} ecc=${ecc} v${qr.version} should decode`,
+      );
     }
   }
 });
 
-test("QR encoder handles empty input (byte mode, version 1)", () => {
-  // segno rejects empty content; verify our encoder still produces a valid
-  // smallest symbol (mode indicator + zero length + padding).
-  const qr = encodeQr("", { ecc: "M" });
-  assert.equal(qr.version, 1);
-  assert.equal(qr.size, 21);
-  assert.equal(qr.modules.length, 21);
+test("encodeQr reports version, size, mask and ecc consistently", () => {
+  const qr = encodeQr("https://bauermedia.ezofficeinventory.com/assets/123456", { ecc: "M" });
+  assert.equal(qr.size, qr.version * 4 + 17, "size follows the version formula");
+  assert.equal(qr.modules.length, qr.size, "row count == size");
+  for (const row of qr.modules) assert.equal(row.length, qr.size, "each row == size");
+  assert.ok(qr.mask >= 0 && qr.mask <= 7, "mask in range");
+  assert.equal(qr.ecc, "M");
 });
 
-test("QR encoder selects the smallest fitting version", () => {
-  // Byte-mode capacity at version 1 / ECC L is 17 data bytes; 18 forces v2.
-  const at1 = encodeQr("x".repeat(17), { ecc: "L" });
-  assert.equal(at1.version, 1, "17 bytes fits version 1");
-  const at2 = encodeQr("x".repeat(18), { ecc: "L" });
-  assert.equal(at2.version, 2, "18 bytes needs version 2");
+test("encodeQr is deterministic for the same input", () => {
+  const a = encodeQr("PT-LPT-TI-0007", { ecc: "M" });
+  const b = encodeQr("PT-LPT-TI-0007", { ecc: "M" });
+  assert.equal(a.version, b.version);
+  assert.equal(a.mask, b.mask);
+  assert.deepEqual(a.modules, b.modules);
 });
 
-test("QR encoder rejects content beyond version 40 / ECC H", () => {
+test("encodeQr selects the smallest fitting version", () => {
+  const short = encodeQr("ABC", { ecc: "M" });
+  assert.equal(short.version, 1, "3 chars fit version 1");
+  const url = encodeQr("https://bauermedia.ezofficeinventory.com/assets/123456", { ecc: "M" });
+  assert.ok(url.version >= 3, "a full URL needs a higher version");
+});
+
+test("encodeQr honours a pinned mask and still decodes", () => {
+  const qr = encodeQr("https://ez/42", { ecc: "M", mask: 5 });
+  assert.equal(qr.mask, 5);
+  assert.equal(decode(qr), "https://ez/42");
+});
+
+test("encodeQr encodes a UTF-8 payload into a well-formed matrix", () => {
+  // Multibyte byte-mode: don't assert the decoded string (decoder-dependent),
+  // just that a valid, square, in-range symbol is produced without throwing.
+  const qr = encodeQr("Ação — çãõ日本語", { ecc: "M" });
+  assert.ok(qr.version >= 1 && qr.version <= 40);
+  assert.equal(qr.size, qr.version * 4 + 17);
+  assert.equal(qr.modules.length, qr.size);
+});
+
+test("encodeQr rejects an empty payload", () => {
+  assert.throws(() => encodeQr("", { ecc: "M" }), /empty/);
+});
+
+test("encodeQr rejects content too long for any version", () => {
   assert.throws(() => encodeQr("x".repeat(5000), { ecc: "H" }), /too long/);
 });
 
-test("QR encoder rejects invalid mask / version bounds", () => {
+test("encodeQr rejects an out-of-range mask", () => {
   assert.throws(() => encodeQr("hi", { mask: 8 }), /mask/);
-  assert.throws(
-    () => encodeQr("hi", { minVersion: 5, maxVersion: 2 }),
-    /minVersion/,
-  );
+  assert.throws(() => encodeQr("hi", { mask: -1 }), /mask/);
 });

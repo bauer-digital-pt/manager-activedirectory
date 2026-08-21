@@ -3,8 +3,11 @@
  * bridge that raster into the print pipeline.
  *
  * `renderLabel` composes in **natural reading orientation** — a landscape image
- * with the QR on the left and the text lines stacked on the right. This is what
- * the in-app preview shows and what a human expects an asset label to look like.
+ * laid out left-to-right as: the Bauer "B" logo, then the QR, then the text lines
+ * (stacked and vertically centered). This is what the in-app preview shows and
+ * what a human expects an asset label to look like. When the model carries no QR
+ * payload (no resolved asset URL) the QR is omitted and the label degrades to
+ * logo + text — a blank/placeholder code is never drawn.
  * It is pure and deterministic (no DOM, no deps): the same bytes render in the
  * main process, in `node --test`, and in the renderer preview.
  *
@@ -20,13 +23,17 @@
 import { encodeQr, type Ecc, type QrCode } from "./qr.ts";
 import { MonoCanvas, type MonoBitmap } from "./mono.ts";
 import { drawText, measureText, GLYPH_H } from "./font.ts";
+import { BAUER_B_MARK } from "./logo.ts";
 import { repackToCanvas, buildJobFromColumnMajor, type Geometry, type ColumnMajorImage } from "./job.ts";
 import type { LzmaAloneEncoder } from "./compress.ts";
 import type { PrintJob } from "./pipeline.ts";
 
 /** The label's content: a QR payload and human-readable text lines. */
 export interface LabelModel {
-  /** Encoded into the QR — the resolved EZOffice asset URL (or assetId). */
+  /**
+   * Encoded into the QR — the resolved EZOffice asset URL. Empty ⇒ no QR is
+   * drawn (the label degrades to logo + text), never a blank/placeholder code.
+   */
   qr: string;
   /** Text lines, top to bottom (e.g. assetId, name, serial). Empty ⇒ QR only. */
   lines: string[];
@@ -50,6 +57,11 @@ export interface LabelStyle {
   gap?: number;
   /** Whitespace around the whole label, in dots (default 2). */
   padding?: number;
+  /**
+   * Draw the Bauer Media "B" mark at the START of the label, before the QR
+   * (default true). Layout is logo → QR → text; set false for a bare label.
+   */
+  showBrand?: boolean;
 }
 
 /** The result of composing a label. */
@@ -61,10 +73,12 @@ export interface LabelRender {
   /** Image dimensions in dots. */
   width: number;
   height: number;
-  /** The QR symbol that was embedded. */
-  qr: QrCode;
-  /** QR block geometry within the image (includes the quiet zone). */
-  qrBlock: { x: number; y: number; size: number; scale: number; quiet: number };
+  /** The QR symbol that was embedded, or null when the payload was empty. */
+  qr: QrCode | null;
+  /** QR block geometry within the image (includes the quiet zone), or null when no QR. */
+  qrBlock: { x: number; y: number; size: number; scale: number; quiet: number } | null;
+  /** Brand-mark geometry within the image, or null when not drawn. */
+  brandBlock: { x: number; y: number; width: number; height: number } | null;
 }
 
 const DEF = {
@@ -80,7 +94,8 @@ const DEF = {
 
 /**
  * Compose an EZOffice label into a 1bpp raster in natural reading orientation
- * (QR left, text lines stacked and vertically centered on the right).
+ * (logo, then QR, then the text lines stacked and vertically centered). An empty
+ * `model.qr` omits the QR region entirely, degrading to a logo + text label.
  */
 export function renderLabel(model: LabelModel, style: LabelStyle = {}): LabelRender {
   const qrEcc = style.qrEcc ?? DEF.qrEcc;
@@ -109,8 +124,12 @@ export function renderLabel(model: LabelModel, style: LabelStyle = {}): LabelRen
   requireSize("gap", gap, 0);
   requireSize("padding", padding, 0);
 
-  const qr = encodeQr(model.qr, { ecc: qrEcc });
-  const qrBlockPx = (qr.size + 2 * quiet) * qrScale;
+  // No payload ⇒ no QR: the label degrades to logo + text rather than throwing.
+  // `encodeQr` keeps its strict empty-input invariant (an empty QR scans to
+  // nothing); the decision to omit the QR region is made here instead.
+  const hasQr = model.qr.length > 0;
+  const qr = hasQr ? encodeQr(model.qr, { ecc: qrEcc }) : null;
+  const qrBlockPx = qr ? (qr.size + 2 * quiet) * qrScale : 0;
 
   const lines = model.lines ?? [];
   const lineHeight = GLYPH_H * textScale;
@@ -125,21 +144,64 @@ export function renderLabel(model: LabelModel, style: LabelStyle = {}): LabelRen
   const textBlockHeight = hasText
     ? lines.length * lineHeight + (lines.length - 1) * lineGap
     : 0;
-  const contentHeight = Math.max(qrBlockPx, textBlockHeight);
-  const width =
-    padding + qrBlockPx + (hasText ? gap + textBlockWidth : 0) + padding;
+
+  // Brand mark (logo) at the START of the label, before the QR. It never touches
+  // QR data: the QR is separated from it by a `gap` PLUS the QR's own quiet zone.
+  // It only lengthens the feed axis (natural width) — its height (64 dots) fits
+  // comfortably across every E11 head — so it can never break the across-head fit
+  // (fitLabelStyle only shrinks the QR).
+  const brand = (style.showBrand ?? true) ? BAUER_B_MARK : null;
+  const brandBlockWidth = brand ? brand.width : 0;
+  const brandBlockHeight = brand ? brand.height : 0;
+
+  const contentHeight = Math.max(qrBlockPx, textBlockHeight, brandBlockHeight);
+
+  // Layout is left-to-right: [padding] logo [gap] QR [gap] text [padding]. Only
+  // PRESENT segments reserve width and a separating gap, so a device with no
+  // asset URL (no QR) collapses cleanly to logo → text with a single gap between
+  // them — not a phantom double gap where the QR would have been.
+  const segWidths: number[] = [];
+  if (brand) segWidths.push(brandBlockWidth);
+  if (qr) segWidths.push(qrBlockPx);
+  if (hasText) segWidths.push(textBlockWidth);
+  const contentWidth =
+    segWidths.reduce((a, b) => a + b, 0) + Math.max(0, segWidths.length - 1) * gap;
+  const width = padding + contentWidth + padding;
   const height = padding + contentHeight + padding;
 
   const canvas = new MonoCanvas(width, height);
 
-  // QR (vertically centered in the content band). The quiet zone stays light.
-  const qrX = padding;
-  const qrY = padding + Math.floor((contentHeight - qrBlockPx) / 2);
-  canvas.blitMatrix(qr.modules, qrX + quiet * qrScale, qrY + quiet * qrScale, qrScale);
+  // Place each present segment left-to-right: `advance` returns the segment's
+  // left x and moves the cursor past it plus one gap.
+  let cursorX = padding;
+  const advance = (segWidth: number): number => {
+    const x = cursorX;
+    cursorX += segWidth + gap;
+    return x;
+  };
 
-  // Text block (vertically centered against the content band).
+  // Logo first (vertically centered in the content band).
+  let brandBlock: LabelRender["brandBlock"] = null;
+  if (brand) {
+    const brandX = advance(brandBlockWidth);
+    const brandY = padding + Math.floor((contentHeight - brandBlockHeight) / 2);
+    canvas.blitGlyph(brand.data, brand.width, brand.height, brandX, brandY, 1);
+    brandBlock = { x: brandX, y: brandY, width: brandBlockWidth, height: brandBlockHeight };
+  }
+
+  // QR after the logo (vertically centered). The quiet zone stays light. Omitted
+  // entirely when there is no payload — the label is then logo + text only.
+  let qrBlock: LabelRender["qrBlock"] = null;
+  if (qr) {
+    const qrX = advance(qrBlockPx);
+    const qrY = padding + Math.floor((contentHeight - qrBlockPx) / 2);
+    canvas.blitMatrix(qr.modules, qrX + quiet * qrScale, qrY + quiet * qrScale, qrScale);
+    qrBlock = { x: qrX, y: qrY, size: qrBlockPx, scale: qrScale, quiet };
+  }
+
+  // Text block last (vertically centered against the content band).
   if (hasText) {
-    const textX = padding + qrBlockPx + gap;
+    const textX = advance(textBlockWidth);
     const textTop = padding + Math.floor((contentHeight - textBlockHeight) / 2);
     for (let i = 0; i < lines.length; i++) {
       const y = textTop + i * (lineHeight + lineGap);
@@ -153,7 +215,8 @@ export function renderLabel(model: LabelModel, style: LabelStyle = {}): LabelRen
     width,
     height,
     qr,
-    qrBlock: { x: qrX, y: qrY, size: qrBlockPx, scale: qrScale, quiet },
+    qrBlock,
+    brandBlock,
   };
 }
 
@@ -194,15 +257,56 @@ export function rotateBitmap90(bmp: MonoBitmap, quarterTurns: number = 1): MonoB
   return out.toBitmap();
 }
 
+/**
+ * Reverse a row-major MSB-first 1bpp bitmap along X (across) and/or Y (feed).
+ * A reflection — NOT a rotation: it changes chirality, which is exactly what a
+ * rotation (rotateBitmap90) can never do. Used to compensate for the printhead's
+ * physical dot order (see LabelMapOptions.mirrorAcross). `x`/`y` default off.
+ */
+export function flipBitmap(bmp: MonoBitmap, opts: { x?: boolean; y?: boolean } = {}): MonoBitmap {
+  if (!opts.x && !opts.y) return bmp;
+  const { width: w, height: h } = bmp;
+  const out = new MonoCanvas(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!bitAt(bmp, x, y)) continue;
+      out.set(opts.x ? w - 1 - x : x, opts.y ? h - 1 - y : y, true);
+    }
+  }
+  return out.toBitmap();
+}
+
 /** Options for mapping a rendered label onto the printhead raster. */
 export interface LabelMapOptions {
   /**
    * Quarter-turns (× 90° CW) applied to the natural-orientation label before it
-   * is packed. The natural label is wide, so the default (1) puts its long axis
-   * along the feed and its short axis across the printhead. This is the single
-   * hardware-tunable knob for physical orientation.
+   * is packed. The natural label is wide, so an odd turn puts its long axis
+   * along the feed and its short axis across the printhead. This only rotates —
+   * it cannot mirror — so it fixes upside-down/sideways, never a reflection.
+   *
+   * Default is 3 (270° CW): the empirically-correct rotation on the real E11.
    */
   quarterTurns?: number;
+  /**
+   * Mirror the ACROSS-tape axis (the printhead dot order) before packing.
+   *
+   * The E11 printhead fires dot 0 at the FAR edge of the tape, so the raster's
+   * across axis is physically reversed. The reference grayscale/dither path
+   * already compensates for this — `ditherLine` in raster.ts mirrors the very
+   * same axis (`mx = width - 1 - x`) — but the 1bpp label path (renderLabel →
+   * rotateBitmap90 → rasterToColumnMajor) never did, so every printed label came
+   * out reflected across the tape. After the 270° turn that reflection reads as a
+   * vertical (top↔bottom) mirror on the label, which no quarterTurns value can
+   * undo (rotation preserves chirality). Default true — the hardware always needs
+   * it. Flip to false only if a future head variant proves otherwise.
+   */
+  mirrorAcross?: boolean;
+  /**
+   * Mirror the FEED axis (reverse the column/print order). Off by default; the
+   * feed direction is already set by quarterTurns. Exposed as an escape hatch in
+   * case a head variant reverses the feed as well as the across axis.
+   */
+  mirrorFeed?: boolean;
 }
 
 /**
@@ -219,8 +323,15 @@ export function labelToColumnMajor(
   geom: Geometry,
   opts: LabelMapOptions = {},
 ): ColumnMajorImage {
-  const quarterTurns = opts.quarterTurns ?? 1;
-  const rotated = rotateBitmap90(render.bitmap, quarterTurns);
+  const quarterTurns = opts.quarterTurns ?? 3;
+  // Rotate for fit/orientation, THEN mirror the across-tape axis to match the
+  // printhead's physical dot order (default on — see LabelMapOptions.mirrorAcross).
+  // The flip is applied after the rotation so `mirrorAcross` always means the
+  // same physical (across-head) axis regardless of quarterTurns.
+  const rotated = flipBitmap(rotateBitmap90(render.bitmap, quarterTurns), {
+    x: opts.mirrorAcross ?? true,
+    y: opts.mirrorFeed ?? false,
+  });
 
   // centerInPrinthead can only place floor(canvasWidthDots/8)*8 dots per column
   // (it works in whole bytes). Guard against that PLACEABLE width, not the raw
@@ -276,7 +387,7 @@ export function fitLabelStyle(
   const placeableDots = Math.floor(geom.canvasWidthDots / 8) * 8;
   // Odd quarter-turns put the label's HEIGHT across the head; even turns its width
   // — matching labelToColumnMajor's guard on the rotated width.
-  const k = (((Math.trunc(opts.quarterTurns ?? 1) % 4) + 4) % 4);
+  const k = (((Math.trunc(opts.quarterTurns ?? 3) % 4) + 4) % 4);
   const acrossIsHeight = (k & 1) === 1;
   const requested = style.qrScale ?? DEF.qrScale;
   for (let qrScale = requested; qrScale >= 1; qrScale--) {

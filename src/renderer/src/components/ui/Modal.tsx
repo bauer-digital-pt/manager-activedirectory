@@ -21,6 +21,12 @@ export interface ModalProps {
   closeOnEscape?: boolean;
   /** Focused when the dialog opens (else the first focusable). */
   initialFocus?: React.RefObject<HTMLElement>;
+  /**
+   * Primary action fired on Enter from anywhere in the dialog (except controls
+   * that own Enter — textareas, buttons, SearchableSelect, etc.). Wire this to
+   * the confirm/submit action so keyboard users don't have to Tab to the button.
+   */
+  onEnter?: () => void;
 }
 
 export function Modal({
@@ -32,10 +38,12 @@ export function Modal({
   closeOnBackdrop = true,
   closeOnEscape = true,
   initialFocus,
+  onEnter,
 }: ModalProps): React.ReactElement | null {
   const titleId = useId();
   const trapRef = useFocusTrap<HTMLDivElement>(open, {
     onEscape: closeOnEscape ? onClose : undefined,
+    onEnter,
     initialFocus,
   });
   const mouseDownInside = useRef(false);

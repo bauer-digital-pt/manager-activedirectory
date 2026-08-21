@@ -54,6 +54,9 @@ export interface ConsolidatedDevice {
   category?: string;
   ezStatus?: string;
   assignedUserEmail?: string;
+  // Exact EZOffice public label URL (incl. the ?c= check code) for the printed QR;
+  // present only once the inventory API exposes it (see InventoryAsset.qr_url).
+  qrUrl?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -148,6 +151,7 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
           category: a.category || prev.category,
           ezStatus: a.status || prev.ezStatus,
           assignedUserEmail: a.assigned_user_email || prev.assignedUserEmail,
+          qrUrl: a.qr_url || prev.qrUrl,
         });
       } else {
         const name = a.name || a.asset_id || "";
@@ -161,6 +165,7 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
           category: a.category || undefined,
           ezStatus: a.status || undefined,
           assignedUserEmail: a.assigned_user_email || undefined,
+          qrUrl: a.qr_url || undefined,
         });
       }
     }

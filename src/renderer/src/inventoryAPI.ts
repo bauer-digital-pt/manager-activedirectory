@@ -6,11 +6,11 @@
 // the internal pyexp-inventory API and returns the same { ok, data, error }
 // envelope the AD calls use. Manager-only — never wired into the Agent installer.
 import type {
-  PSResult, InventoryHealth, InventoryAsset,
+  PSResult, InventoryHealth, InventoryAsset, AssetPublicLink,
   InventorySourceDevice, Reconciliation,
 } from "../../shared/types";
 export type {
-  InventoryHealth, InventoryAsset, InventoryMember,
+  InventoryHealth, InventoryAsset, AssetPublicLink, InventoryMember,
   InventorySourceDevice, Reconciliation, MetricsSummary,
   ReconciliationCounts, OrphanedAsset, StaleDevice, MissingDevice, NewMember,
 } from "../../shared/types";
@@ -22,6 +22,9 @@ declare global {
       // optional override so Settings can test unsaved values before saving.
       test(override?: { baseUrl?: string }): Promise<PSResult<InventoryHealth>>;
       getAssets(): Promise<PSResult<InventoryAsset[]>>;
+      // The coded public label URL for ONE asset, fetched on demand at print time
+      // (kept off getAssets so the rate-limited per-asset lookup can't stall the list).
+      getAssetPublicLink(assetId: string): Promise<PSResult<AssetPublicLink>>;
       // AD computer objects as the inventory API sees them (ldap3), snake_case.
       getADDevices(): Promise<PSResult<InventorySourceDevice[]>>;
       // Cross-check of AD vs EZOffice: orphaned / stale / missing findings.
@@ -32,7 +35,7 @@ declare global {
 
 // --- Mock used when running in the browser (outside Electron) ---
 import {
-  mockAssets, mockADSourceDevices, mockReconciliation,
+  mockAssets, mockAssetPublicLink, mockADSourceDevices, mockReconciliation,
 } from "../../shared/fixtures";
 
 const delay = (ms = 500) => new Promise<void>((r) => setTimeout(r, ms));
@@ -81,6 +84,14 @@ const mockAPI: Window["inventoryAPI"] = {
     if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
     return { ok: true, data: invFlag("invempty") ? [] : mockAssets() };
   },
+  getAssetPublicLink: async (assetId) => {
+    await delay(300);
+    if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
+    // Mirror the on-demand API: resolve the single asset's coded public link (null
+    // when the asset has no public page). This is where the QR URL comes from now —
+    // the list read (getAssets) is deliberately QR-less.
+    return { ok: true, data: { asset_id: assetId, qr_url: mockAssetPublicLink(assetId) } };
+  },
   getADDevices: async () => {
     await delay();
     if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
@@ -98,8 +109,9 @@ if (!window.inventoryAPI) {
 }
 
 export const inventoryAPI = {
-  test:              (o?: { baseUrl?: string }) => window.inventoryAPI.test(o),
-  getAssets:         () => window.inventoryAPI.getAssets(),
-  getADDevices:      () => window.inventoryAPI.getADDevices(),
-  getReconciliation: () => window.inventoryAPI.getReconciliation(),
+  test:                (o?: { baseUrl?: string }) => window.inventoryAPI.test(o),
+  getAssets:           () => window.inventoryAPI.getAssets(),
+  getAssetPublicLink:  (assetId: string) => window.inventoryAPI.getAssetPublicLink(assetId),
+  getADDevices:        () => window.inventoryAPI.getADDevices(),
+  getReconciliation:   () => window.inventoryAPI.getReconciliation(),
 };

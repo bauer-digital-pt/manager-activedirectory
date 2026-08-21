@@ -62,6 +62,10 @@ function normalize(raw: unknown): DeviceConfig {
     printerSource: typeof p.printerSource === "string" ? p.printerSource : "",
     smlPlayerSource: typeof p.smlPlayerSource === "string" ? p.smlPlayerSource : "",
     smlPlayerIni: typeof p.smlPlayerIni === "string" ? p.smlPlayerIni : "",
+    // Empty by default: the label QR now comes from the inventory API's per-asset
+    // qr_url (the real …/a/<seq>?c=<code> public URL), so we no longer inject a
+    // code-less default that would scan to a Sign In page. An admin can still set a
+    // template in Settings for the row's EZOffice link button.
     ezofficeUrlTemplate: typeof p.ezofficeUrlTemplate === "string" ? p.ezofficeUrlTemplate : "",
     screenConnectUrlTemplate: typeof p.screenConnectUrlTemplate === "string" ? p.screenConnectUrlTemplate : "",
   };
@@ -75,6 +79,7 @@ export async function getDeviceConfig(): Promise<DeviceConfig> {
     const stored = localStorage.getItem(LS_KEY);
     if (stored) return normalize(JSON.parse(stored));
   } catch { /* fall through */ }
+  // No prefs stored yet (or unreadable): hand back an empty (but well-formed) config.
   return structuredClone(EMPTY_DEVICE_CONFIG);
 }
 

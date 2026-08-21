@@ -841,7 +841,7 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
               value={config.ezofficeUrlTemplate}
               onChange={(e) => setConfig((c) => ({ ...c, ezofficeUrlTemplate: e.target.value }))}
               onBlur={() => persist(config)}
-              placeholder="ex: https://bauermedia.ezofficeinventory.com/assets?search={name}"
+              placeholder="ex: https://bmap.ezofficeinventory.com/a/{id}"
               className={inputCls}
             />
           </div>

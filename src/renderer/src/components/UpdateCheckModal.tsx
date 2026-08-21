@@ -1,4 +1,4 @@
-import { useEffect, useState, useId } from "react";
+import { useEffect, useRef, useState, useId } from "react";
 import { Loader2, Sparkles, CheckCircle2, Download, AlertTriangle, X } from "lucide-react";
 import { updatesAPI, type UpdateStatus } from "../lib/updates";
 import { Button } from "./ui/Button";
@@ -20,9 +20,19 @@ type Phase =
 export default function UpdateCheckModal({ onClose }: { onClose: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "checking" });
   const titleId = useId();
+  const primaryRef = useRef<HTMLButtonElement>(null);
   // The modal is always live while mounted (the parent conditionally renders it),
-  // so trap focus + wire Escape → close on the panel below.
-  const trapRef = useFocusTrap<HTMLDivElement>(true, { onEscape: onClose });
+  // so trap focus + wire Escape → close. Focus the phase's primary action button
+  // (Transferir / Reiniciar) on open and let Enter trigger it, so Enter doesn't
+  // land on the header ✕ and merely close the dialog.
+  const trapRef = useFocusTrap<HTMLDivElement>(true, {
+    onEscape: onClose,
+    onEnter: () => {
+      if (phase.kind === "available") download();
+      else if (phase.kind === "downloaded") updatesAPI.install();
+    },
+    initialFocus: primaryRef,
+  });
 
   useEffect(() => {
     let done = false;
@@ -79,14 +89,24 @@ export default function UpdateCheckModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="px-5 py-6">
-          <Body phase={phase} onDownload={download} onInstall={() => updatesAPI.install()} />
+          <Body phase={phase} onDownload={download} onInstall={() => updatesAPI.install()} primaryRef={primaryRef} />
         </div>
       </div>
     </div>
   );
 }
 
-function Body({ phase, onDownload, onInstall }: { phase: Phase; onDownload: () => void; onInstall: () => void }) {
+function Body({
+  phase,
+  onDownload,
+  onInstall,
+  primaryRef,
+}: {
+  phase: Phase;
+  onDownload: () => void;
+  onInstall: () => void;
+  primaryRef: React.RefObject<HTMLButtonElement>;
+}) {
   switch (phase.kind) {
     case "checking":
       return (
@@ -104,7 +124,7 @@ function Body({ phase, onDownload, onInstall }: { phase: Phase; onDownload: () =
       return (
         <div className="space-y-4">
           <Row icon={<Sparkles size={22} className="text-brand" />} title="Nova versão disponível" subtitle={phase.version ? `Versão ${phase.version}` : undefined} />
-          <Button size="lg" onClick={onDownload} className="w-full">
+          <Button ref={primaryRef} size="lg" onClick={onDownload} className="w-full">
             <Download size={15} /> Transferir atualização
           </Button>
         </div>
@@ -123,7 +143,7 @@ function Body({ phase, onDownload, onInstall }: { phase: Phase; onDownload: () =
       return (
         <div className="space-y-4">
           <Row icon={<CheckCircle2 size={22} className="text-emerald-500" />} title="Atualização pronta" subtitle={phase.version ? `Versão ${phase.version} — reinicia para aplicar.` : "Reinicia para aplicar."} />
-          <Button size="lg" onClick={onInstall} className="w-full">
+          <Button ref={primaryRef} size="lg" onClick={onInstall} className="w-full">
             Reiniciar e instalar
           </Button>
         </div>

@@ -109,7 +109,9 @@ function render(): void {
 
   const fits = rot.width <= printhead;
   $("meta").innerHTML =
-    `<b>QR</b> v${r.qr.version} · ${r.qr.size}×${r.qr.size} modules · ecc ${r.qr.ecc} · mask ${r.qr.mask}` +
+    (r.qr
+      ? `<b>QR</b> v${r.qr.version} · ${r.qr.size}×${r.qr.size} modules · ecc ${r.qr.ecc} · mask ${r.qr.mask}`
+      : `<b>QR</b> — (no payload)`) +
     ` &nbsp;|&nbsp; <b>image</b> ${r.width}×${r.height} dots` +
     ` &nbsp;|&nbsp; <b>across tape</b> ${rot.width} dots ` +
     (fits

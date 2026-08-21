@@ -20,6 +20,7 @@ import {
   transportMode,
 } from "../lib/printing";
 import { cn } from "../lib/cn";
+import { inventoryAPI } from "../inventoryAPI";
 import { Button } from "./ui/Button";
 import { focusRing } from "./ui/controls";
 import { useFocusTrap } from "../hooks/useFocusTrap";
@@ -49,26 +50,111 @@ function paint(canvas: HTMLCanvasElement, bmp: MonoBitmap, zoom: number): void {
 
 export default function LabelPreviewModal({
   device,
-  qrPayload,
+  codedUrl,
+  templateUrl,
   toast,
   onClose,
 }: {
   device: ConsolidatedDevice;
-  qrPayload: string;
+  // The exact coded EZOffice QR URL (…/a/<seq>?c=<code>) if already known from the
+  // API. Usually empty now that the list read is QR-less — resolved on demand from
+  // device.assetId. A scan of THIS opens the public asset page without a login.
+  codedUrl?: string;
+  // Settings URL-template fallback (…/a/{id} with no ?c= code). Used ONLY when no
+  // coded URL is available; a scan of it may not open the public view without a
+  // session. It must never shadow the coded URL, or the fetch below is dead code.
+  templateUrl?: string;
   toast?: Toast;
   onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const printRef = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
+  const known = (codedUrl ?? "").trim();
+  const template = (templateUrl ?? "").trim();
+  // The coded EZOffice label URL (…/a/<seq>?c=<code>) is no longer carried on the
+  // device-list read (that per-asset lookup is rate-limited and stalled the list),
+  // so when we don't already have one we fetch THIS asset's link on demand. The
+  // Settings template does NOT gate this — a coded ?c= URL always wins over the
+  // code-less template, so the fetch runs even when a template is configured.
+  //   qrState "idle"     — nothing to fetch (coded URL already known, or AD-only)
+  //           "loading"  — fetch in flight
+  //           "resolved" — got a URL (fetchedUrl set)
+  //           "none"     — asset has no public link (public pages disabled)
+  //           "error"    — the lookup failed (connectivity / auth)
+  const needsFetch = !known && !!device.assetId;
+  const [qrState, setQrState] = useState<"idle" | "loading" | "resolved" | "none" | "error">(
+    needsFetch ? "loading" : "idle",
+  );
+  const [fetchedUrl, setFetchedUrl] = useState<string>("");
   // Guard the backdrop dismiss: only close when both the press AND the release
   // land on the backdrop, so a drag that starts inside the card (e.g. selecting
   // the dimension caption) and releases outside doesn't close the preview.
   const mouseDownInside = useRef(false);
-  // Trap focus inside the dialog panel while open, wire Escape, and restore focus
-  // to the trigger on close — replaces the manual focus-on-open + Esc listener.
-  const trapRef = useFocusTrap<HTMLDivElement>(true, { onEscape: onClose });
+  // Trap focus inside the dialog panel while open, wire Escape, and focus the
+  // primary "Imprimir" button on open so Enter prints (not the header ✕, which
+  // would otherwise take initial focus and make Enter dismiss the dialog).
+  const trapRef = useFocusTrap<HTMLDivElement>(true, {
+    onEscape: onClose,
+    onEnter: () => void doPrint(),
+    initialFocus: printRef,
+  });
 
-  const model = useMemo(() => buildLabelModel(device, qrPayload), [device, qrPayload]);
+  // Fetch the asset's coded label URL on demand (one API call, only when needed).
+  // A resolved URL becomes the QR payload; a missing link ("none") or a failed
+  // lookup ("error") falls back to the template (if any), else a QR-less label —
+  // each with its own note below.
+  useEffect(() => {
+    if (!needsFetch) {
+      // Nothing to resolve (coded URL already known, or no asset). Clear any stale
+      // "loading" so the print button can't get stuck if needsFetch flips false.
+      setQrState("idle");
+      return;
+    }
+    let cancelled = false;
+    setQrState("loading");
+    void inventoryAPI
+      .getAssetPublicLink(device.assetId as string)
+      .then((r) => {
+        if (cancelled) return;
+        if (r.ok && r.data) {
+          const url = (r.data.qr_url ?? "").trim();
+          if (url) { setFetchedUrl(url); setQrState("resolved"); }
+          else setQrState("none");
+        } else {
+          setQrState("error");
+        }
+      })
+      .catch(() => { if (!cancelled) setQrState("error"); });
+    return () => { cancelled = true; };
+  }, [needsFetch, device.assetId]);
+
+  // Precedence: the coded API URL (already known, else resolved on demand) always
+  // wins; the Settings template is only a last-resort fallback (no ?c= check code).
+  const codedPayload = known || fetchedUrl;
+  const usingTemplate = !codedPayload && !!template; // the QR (if any) is the fallback
+  const effectivePayload = codedPayload || template;
+  const model = useMemo(() => buildLabelModel(device, effectivePayload), [device, effectivePayload]);
+
+  // The note under the preview, driven by what actually ends up in the QR:
+  //   - coded URL      → ideal, no note
+  //   - template only  → why it's not the public coded link (error / none)
+  //   - no QR at all   → why there's no QR (error / none / AD-only)
+  const qrNote = useMemo<{ text: string; tone: string } | null>(() => {
+    if (qrState === "loading" || codedPayload) return null;
+    if (usingTemplate) {
+      if (qrState === "error")
+        return { tone: "text-amber-600", text: "Não foi possível obter o URL público do ativo (erro de ligação à API de inventário). A etiqueta usa o URL configurado em Definições — tenta novamente para o link público." };
+      if (qrState === "none")
+        return { tone: "text-amber-600", text: "Este ativo não tem link público no EZOffice. A etiqueta usa o URL configurado em Definições (pode não abrir a vista pública sem sessão)." };
+      return null; // AD-only with a {name}/{serial} template: the template is the intended payload here
+    }
+    if (qrState === "error")
+      return { tone: "text-amber-600", text: "Não foi possível obter o URL do ativo (erro de ligação à API de inventário). A etiqueta será impressa sem QR — tenta novamente." };
+    if (qrState === "none")
+      return { tone: "text-amber-600", text: "Este ativo não tem link público no EZOffice, por isso a etiqueta é impressa sem QR." };
+    return { tone: "text-amber-600", text: "Dispositivo sem ativo no EZOffice — a etiqueta será impressa sem QR. Podes definir um modelo de URL em Definições para o botão de ligação." };
+  }, [qrState, codedPayload, usingTemplate]);
 
   // Compose once per model, fitting the QR to the printhead the print will actually
   // use (E11 heads are narrow; a URL QR overflows the default scale). This is the
@@ -93,8 +179,12 @@ export default function LabelPreviewModal({
     paint(canvasRef.current, bmp, zoom);
   }, [render]);
 
+  const unavailable = transportMode() === "none";
+
   const doPrint = async () => {
-    if (!render.ok || busy) return;
+    // Hold off while the QR URL is still resolving so we don't print a QR-less
+    // label a beat before the code arrives.
+    if (!render.ok || busy || unavailable || qrState === "loading") return;
     setBusy(true);
     try {
       const meta = { assetId: device.assetId, serial: device.serialNumber, name: device.displayName || device.name };
@@ -129,8 +219,6 @@ export default function LabelPreviewModal({
       setBusy(false);
     }
   };
-
-  const unavailable = transportMode() === "none";
 
   return (
     <div
@@ -173,8 +261,21 @@ export default function LabelPreviewModal({
                 <canvas ref={canvasRef} style={{ imageRendering: "pixelated" }} />
               </div>
               <p className="text-xs text-zinc-500">
-                {render.value.width}×{render.value.height} pontos · QR v{render.value.qr.version} (ecc {render.value.qr.ecc})
+                {render.value.width}×{render.value.height} pontos
+                {render.value.qr
+                  ? ` · QR v${render.value.qr.version} (ecc ${render.value.qr.ecc})`
+                  : " · sem QR"}
               </p>
+              {qrState === "loading" && (
+                <p role="status" className="max-w-xs text-center text-xs text-zinc-500">
+                  A obter o URL do ativo do EZOffice…
+                </p>
+              )}
+              {qrState !== "loading" && qrNote && (
+                <p role="status" className={cn("max-w-xs text-center text-xs", qrNote.tone)}>
+                  {qrNote.text}
+                </p>
+              )}
             </div>
           ) : (
             <p role="alert" className="text-sm text-red-600 break-words whitespace-pre-wrap">Não foi possível compor a etiqueta: {render.error}</p>
@@ -190,9 +291,13 @@ export default function LabelPreviewModal({
           <Button variant="ghost" onClick={onClose} className="ml-auto">
             Fechar
           </Button>
-          <Button onClick={doPrint} disabled={!render.ok || busy || unavailable}>
+          <Button
+            ref={printRef}
+            onClick={doPrint}
+            disabled={!render.ok || busy || unavailable || qrState === "loading"}
+          >
             <Printer size={14} />
-            {busy ? "A imprimir…" : "Imprimir"}
+            {busy ? "A imprimir…" : qrState === "loading" ? "A obter URL…" : "Imprimir"}
           </Button>
         </div>
       </div>

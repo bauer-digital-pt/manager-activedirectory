@@ -285,6 +285,22 @@ export interface InventoryAsset {
   purchased_on: string;
   assigned_user_email: string;
   exempt: boolean;
+  // The exact EZOffice public label URL, INCLUDING the `?c=` check code, e.g.
+  // "https://bmap.ezofficeinventory.com/a/611?c=616e". This is what the printed QR
+  // must encode so a scan opens the asset's public mobile view without a login —
+  // the `c` code is a server-side hash (not derivable client-side), so it can only
+  // come from the API. Optional: present once pyexp-inventory exposes it (until
+  // then the label falls back to the Settings URL template, never the device name).
+  qr_url?: string;
+}
+
+// GET /api/v1/assets/{asset_id}/public-link — the coded EZOffice label URL for ONE
+// asset, fetched on demand at print time (the per-asset lookup is rate-limited, so
+// it's kept off the /assets list read). qr_url is null when the asset has no public
+// link (public pages disabled) — never a code-less URL.
+export interface AssetPublicLink {
+  asset_id: string;
+  qr_url: string | null;
 }
 
 // EZOffice member (GET /api/v1/members) — mirrors models.py EZUser.

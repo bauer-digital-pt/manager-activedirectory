@@ -7,7 +7,7 @@ import electronUpdater from "electron-updater";
 import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
 import { DEFAULT_DC } from "../shared/constants";
 import { BUILD_FLAVOR, FLAVOR_META } from "../shared/flavor";
-import type { AppSettings, DeviceConfig, OnboardState, StartupInfo, PSResult, InventoryHealth, ADGroup, ADUser, ADUserLite, ADComputer, WifiStatus } from "../shared/types";
+import type { AppSettings, DeviceConfig, OnboardState, StartupInfo, PSResult, InventoryHealth, AssetPublicLink, ADGroup, ADUser, ADUserLite, ADComputer, WifiStatus } from "../shared/types";
 import {
   pushLog,
   getHistory,
@@ -267,6 +267,10 @@ function normalizeDeviceConfig(raw: unknown): DeviceConfig {
     printerSource: typeof r.printerSource === "string" ? r.printerSource : "",
     smlPlayerSource: typeof r.smlPlayerSource === "string" ? r.smlPlayerSource : "",
     smlPlayerIni: typeof r.smlPlayerIni === "string" ? r.smlPlayerIni : "",
+    // Deep-link/QR template for EZOffice. Empty by default: the label QR now comes
+    // from the inventory API's per-asset qr_url (the real …/a/<seq>?c=<code> public
+    // URL), so we no longer inject a code-less default that would scan to a Sign In
+    // page. An admin can still set a template in Settings for the row's link button.
     ezofficeUrlTemplate: typeof r.ezofficeUrlTemplate === "string" ? r.ezofficeUrlTemplate : "",
     screenConnectUrlTemplate: typeof r.screenConnectUrlTemplate === "string" ? r.screenConnectUrlTemplate : "",
   };
@@ -2161,6 +2165,14 @@ handle("inventory:test", async (_e, rawOverride) => {
 });
 
 handle("inventory:assets", async () => inventoryGet("/api/v1/assets"));
+// The public label URL (…/a/<seq>?c=<code>) for ONE asset, fetched on demand when a
+// SUPVAN label is printed. It's a single (rate-limited) EZOffice call, so it stays
+// off the /assets list read — that N+1 fan-out is what timed out the cold list.
+handle("inventory:asset-public-link", async (_e, rawAssetId) => {
+  const assetId = String(rawAssetId ?? "").trim();
+  if (!assetId) return { ok: false, error: "Falta o identificador do ativo." };
+  return inventoryGet<AssetPublicLink>(`/api/v1/assets/${encodeURIComponent(assetId)}/public-link`);
+});
 handle("inventory:ad-devices", async () => inventoryGet("/api/v1/devices/ad"));
 // Reconciliation fetches AND cross-checks every source, so it can be slow on a
 // cold cache — give it a generous ceiling (the API caches the result afterwards).

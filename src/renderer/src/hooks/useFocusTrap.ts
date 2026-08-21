@@ -10,12 +10,37 @@ import { useEffect, useRef } from "react";
 //     else the panel itself),
 //   - Tab / Shift+Tab wrap within the panel,
 //   - Escape (if `onEscape` given) closes it,
+//   - Enter (if `onEnter` given) triggers the dialog's primary action, UNLESS
+//     focus is on a control that owns Enter itself (see consumesEnter),
 //   - on deactivate/unmount, focus returns to the previously-focused element.
 //
-// `onEscape` is read through a ref so an inline closure doesn't re-bind listeners
-// every render (matching useOutsideClick's contract).
+// `onEscape`/`onEnter` are read through refs so an inline closure doesn't re-bind
+// listeners every render (matching useOutsideClick's contract).
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+// Roles whose widgets handle Enter themselves (select an option, activate a menu
+// item, etc.). Enter must reach them, not the dialog's primary action.
+const ENTER_OWNING_ROLES = new Set([
+  "combobox", "listbox", "menu", "menuitem", "menuitemcheckbox", "menuitemradio",
+  "option", "grid", "gridcell", "row", "tab", "tree", "treeitem", "textbox", "searchbox", "spinbutton",
+]);
+
+// True when the focused element consumes Enter on its own, so the trap must NOT
+// hijack it for the primary action. Covers native line/activation controls
+// (textarea newline, button/link/select/summary activation, contenteditable) and
+// ARIA widgets that own Enter (SearchableSelect's combobox/listbox, menus, etc.).
+// A plain single-line <input> is intentionally NOT here: Enter there should submit
+// the dialog, exactly like a form's implicit submission.
+function consumesEnter(el: Element | null): boolean {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A" || tag === "SUMMARY") return true;
+  if ((el as HTMLElement).isContentEditable) return true;
+  if (el.hasAttribute("aria-haspopup") || el.hasAttribute("aria-expanded")) return true;
+  const role = el.getAttribute("role");
+  return role != null && ENTER_OWNING_ROLES.has(role);
+}
 
 // Stack of the currently-active trap panels (mount order). Only the topmost one
 // handles keys, so a modal opened on top of another (e.g. the label-preview
@@ -25,11 +50,13 @@ const trapStack: HTMLElement[] = [];
 
 export function useFocusTrap<T extends HTMLElement = HTMLElement>(
   active: boolean,
-  opts: { onEscape?: () => void; initialFocus?: React.RefObject<HTMLElement> } = {},
+  opts: { onEscape?: () => void; onEnter?: () => void; initialFocus?: React.RefObject<HTMLElement> } = {},
 ): React.RefObject<T> {
   const ref = useRef<T>(null);
   const onEscapeRef = useRef(opts.onEscape);
   onEscapeRef.current = opts.onEscape;
+  const onEnterRef = useRef(opts.onEnter);
+  onEnterRef.current = opts.onEnter;
   const initialFocus = opts.initialFocus;
 
   useEffect(() => {
@@ -57,6 +84,24 @@ export function useFocusTrap<T extends HTMLElement = HTMLElement>(
       if (e.key === "Escape" && onEscapeRef.current) {
         e.stopPropagation();
         onEscapeRef.current();
+        return;
+      }
+      // Enter triggers the dialog's primary action — but only when focus rests on
+      // something that doesn't own Enter itself. If focus is on the primary button
+      // the browser already activates it (so we defer to that, avoiding a double
+      // fire); if it's on a textarea, a menu, or SearchableSelect's combobox, Enter
+      // belongs to them. This is what makes Enter confirm a dialog from anywhere in
+      // it, not only while the primary button happens to hold focus.
+      if (
+        e.key === "Enter" &&
+        onEnterRef.current &&
+        !e.isComposing &&
+        e.keyCode !== 229 && // IME composition still in progress
+        panel.contains(document.activeElement) &&
+        !consumesEnter(document.activeElement)
+      ) {
+        e.preventDefault();
+        onEnterRef.current();
         return;
       }
       if (e.key !== "Tab") return;

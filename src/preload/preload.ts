@@ -118,6 +118,7 @@ contextBridge.exposeInMainWorld("adAPI", {
 contextBridge.exposeInMainWorld("inventoryAPI", {
   test: (override?: { baseUrl?: string }) => ipcRenderer.invoke("inventory:test", override),
   getAssets: () => ipcRenderer.invoke("inventory:assets"),
+  getAssetPublicLink: (assetId: string) => ipcRenderer.invoke("inventory:asset-public-link", assetId),
   getADDevices: () => ipcRenderer.invoke("inventory:ad-devices"),
   getReconciliation: () => ipcRenderer.invoke("inventory:reconciliation"),
 });

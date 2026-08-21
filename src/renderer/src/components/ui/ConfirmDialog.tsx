@@ -43,6 +43,9 @@ export function ConfirmDialog({
       closeOnBackdrop={!busy}
       closeOnEscape={!busy}
       initialFocus={confirmRef}
+      // Enter confirms from anywhere in the dialog (not just while the confirm
+      // button holds focus); suppressed while an action is in flight.
+      onEnter={busy ? undefined : onConfirm}
     >
       <div className="mt-2 text-sm text-zinc-600">{message}</div>
       <div className="mt-6 flex justify-end gap-2">

@@ -45,6 +45,10 @@ export default function BleDeviceChooser() {
   // the request (an in-flight IPC message would otherwise re-open the chooser). A
   // new print is user-initiated, so a short window never blocks a genuine request.
   const closingRef = useRef(false);
+  // Confirm button of the pairing prompt. For the confirm-only variants (no PIN
+  // input) it takes initial focus so Enter confirms — otherwise focus would land
+  // on "Cancelar" (the first focusable) and Enter would reject the pairing.
+  const confirmRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const offDevices = bleAPI.onDevices((list) => {
@@ -176,6 +180,14 @@ export default function BleDeviceChooser() {
           </span>
         }
         className="max-w-sm"
+        // Confirm-only variants: focus "Confirmar" so Enter confirms. The
+        // providePin variant keeps its autoFocus input (Enter routes through
+        // onEnter below since a plain input doesn't own Enter).
+        initialFocus={pairing?.pairingKind === "providePin" ? undefined : confirmRef}
+        onEnter={() => {
+          if (pairing?.pairingKind === "providePin" && !pin.trim()) return;
+          answerPairing(true);
+        }}
       >
         {pairing?.pairingKind === "providePin" ? (
           <>
@@ -188,9 +200,6 @@ export default function BleDeviceChooser() {
               autoFocus
               value={pin}
               onChange={(e) => setPin(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && pin.trim()) answerPairing(true);
-              }}
               placeholder="PIN"
               className={cn(
                 "mt-4 w-full rounded-lg border border-zinc-200 px-3 py-2 font-mono text-lg tracking-widest text-zinc-800",
@@ -218,6 +227,7 @@ export default function BleDeviceChooser() {
             Cancelar
           </Button>
           <Button
+            ref={confirmRef}
             onClick={() => answerPairing(true)}
             disabled={pairing?.pairingKind === "providePin" && !pin.trim()}
           >

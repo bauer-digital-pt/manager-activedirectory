@@ -162,7 +162,7 @@ export function getLabelEncoder(): LzmaAloneEncoder | null {
 export interface BlePrintOptions {
   /** Printhead geometry (defaults to E11_GEOMETRY — 12 mm × 22 mm / 3 mm-gap media; ⚠ verify dpi at bring-up). */
   geometry?: Geometry;
-  /** Physical-orientation knob passed to labelToJob (default 1 quarter-turn). */
+  /** Physical-orientation knob passed to labelToJob (default 3 quarter-turns — the E11's real orientation). */
   quarterTurns?: number;
   /** Force a single concrete transport config (skips candidate auto-probe). */
   transport?: Partial<TransportConfig>;
@@ -243,8 +243,14 @@ export async function printLabelViaBle(
 
 /**
  * Map a consolidated device (+ its resolved EZOffice URL) into a label model:
- * the QR encodes the asset URL (scanning it opens the asset), and the text lines
- * carry the name, serial, asset id and department — whichever are present.
+ * the QR encodes the EZOffice asset URL (scanning it opens the asset), and the
+ * text lines carry the name, serial, asset id and department — whichever present.
+ *
+ * The QR is the resolved URL ONLY (caller passes device.qrUrl → Settings template).
+ * It deliberately does NOT fall back to the device name or a bare asset id: a QR
+ * that just spells the hostname is misleading (it looks scannable but opens
+ * nothing), and the asset number is already printed as an "EZ …" text line. When
+ * no URL is available the QR is left empty rather than encoding non-URL text.
  */
 export function buildLabelModel(device: ConsolidatedDevice, qrPayload: string): LabelModel {
   const lines: string[] = [];
@@ -253,5 +259,5 @@ export function buildLabelModel(device: ConsolidatedDevice, qrPayload: string): 
   if (device.serialNumber) lines.push(`SN ${device.serialNumber}`);
   if (device.assetId) lines.push(`EZ ${device.assetId}`);
   if (device.department) lines.push(device.department);
-  return { qr: qrPayload || device.assetId || name || "", lines };
+  return { qr: qrPayload || device.qrUrl || "", lines };
 }

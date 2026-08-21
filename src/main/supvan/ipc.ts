@@ -71,7 +71,8 @@ export function registerPrintIpc(handle: IpcHandle): void {
       return {
         ok: false,
         error:
-          `Etiqueta composta (${render.width}×${render.height} pts, QR v${render.qr.version}), ` +
+          `Etiqueta composta (${render.width}×${render.height} pts` +
+          `${render.qr ? `, QR v${render.qr.version}` : ", sem QR"}), ` +
           `mas a impressão Bluetooth ainda não está disponível (Fase 3 — chega com o hardware).`,
       };
     } catch (e) {

@@ -116,7 +116,26 @@ export function mockMembers(): InventoryMember[] {
 // the consolidated device list, exercising the peripheral union (req. A), the
 // per-category icons (req. D), and the EZOffice lifecycle states (req. E). They're
 // marked exempt so they don't distort the reconciliation orphan/missing counts.
+// The coded EZOffice public label URL for one asset, mirroring the real shape so
+// the browser preview shows a scannable QR of the right form:
+// https://bmap.ezofficeinventory.com/a/<id>?c=<hex4>. The `?c=` code is a
+// server-side hash in production; here it's a deterministic fake derived from the
+// id (stable across renders, obviously not a real code). Returns null for one
+// asset (id "23") to mirror the real "public pages disabled → no link" case, and
+// for any unknown id. This is what the on-demand /assets/{id}/public-link endpoint
+// returns — NOT a field on the list read (which is deliberately QR-less now).
+export function mockAssetPublicLink(asset_id: string): string | null {
+  if (asset_id === "23") return null; // Cables: no public link (exercises the "none" note)
+  const n = Number.parseInt(asset_id, 10) || 0;
+  if (n < 1) return null;
+  const c = (((n * 40503) & 0xffff) ^ 0x5a5a).toString(16).padStart(4, "0");
+  return `https://bmap.ezofficeinventory.com/a/${asset_id}?c=${c}`;
+}
+
 export function mockAssets(): InventoryAsset[] {
+  // The list read carries NO qr_url — mirrors the real /api/v1/assets, which no
+  // longer fans out the rate-limited per-asset public-link lookup (it timed out the
+  // cold list). The QR URL is fetched on demand at print time via mockAssetPublicLink.
   const laptop = (
     asset_id: string, name: string, serial_number: string, status: string, assigned_user_email: string,
   ): InventoryAsset => ({
