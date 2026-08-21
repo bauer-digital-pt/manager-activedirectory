@@ -85,8 +85,15 @@ export function stripDomain(value?: string | null): string {
 /* Consolidation (req. A)                                                     */
 /* -------------------------------------------------------------------------- */
 
+// The cross-source join key. AD exposes the SHORT host name (`PT-LPT-ADM-08`)
+// while EZOffice stores the FQDN (`PT-LPT-ADM-08.bmap.lis`) for every domain-joined
+// machine — so a raw lowercase compare never matches and the asset (serial, status,
+// assetId → the QR public-link) is silently dropped, printing labels without a QR.
+// Strip the AD domain on BOTH sides first so short name and FQDN collapse to the
+// same key. `stripDomain` is a no-op on already-short names and on non-domain
+// assets (Macs, peripherals), so this only *adds* matches, never false ones.
 function keyOf(name?: string | null): string {
-  return (name || "").trim().toLowerCase();
+  return stripDomain(name).toLowerCase();
 }
 
 // An AD computer object → a base consolidated row.
