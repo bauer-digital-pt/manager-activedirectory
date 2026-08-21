@@ -1,20 +1,30 @@
 /**
  * Device consolidation join (lib/devices.ts). Pins the cross-source key so an AD
- * computer object and its EZOffice asset merge into ONE enriched row.
+ * computer object, its EZOffice asset AND its ScreenConnect session merge into ONE
+ * enriched row, tagged with every source that contributed.
  *
- * The regression this guards: AD exposes the short host name (`PT-LPT-ADM-08`)
- * while EZOffice stores the FQDN (`PT-LPT-ADM-08.bmap.lis`). A raw lowercase key
- * never matched, so the row never got an `assetId` → the SUPVAN label printed
- * without a QR ("Dispositivo sem ativo no EZOffice"). The join key now strips the
+ * The original regression this guards: AD exposes the short host name
+ * (`PT-LPT-ADM-08`) while EZOffice stores the FQDN (`PT-LPT-ADM-08.bmap.lis`). A raw
+ * lowercase key never matched, so the row never got an `assetId` → the SUPVAN label
+ * printed without a QR ("Dispositivo sem ativo no EZOffice"). The join key strips the
  * AD domain on both sides.
+ *
+ * The provenance model is a SET, not a single enum: `sources: DeviceSource[]`. A row
+ * a device is known to AD, EZOffice and ScreenConnect carries all three tags; the
+ * "Fonte" filter is membership, not equality. `sig()` below flattens that set into a
+ * stable string so the old `.source === "both"` assertions map cleanly onto it
+ * ("both" → "ad+ezoffice").
  *
  *     node --test test/devices.test.ts
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { fromAD, consolidate } from "../src/renderer/src/lib/devices.ts";
-import type { ADComputer, InventoryAsset } from "../src/shared/types.ts";
+import {
+  fromAD, fromScreenConnect, mergeDeviceSources, consolidate,
+  type ConsolidatedDevice,
+} from "../src/renderer/src/lib/devices.ts";
+import type { ADComputer, InventoryAsset, InventorySourceDevice } from "../src/shared/types.ts";
 
 function ad(name: string): ADComputer {
   return { Name: name, DistinguishedName: `CN=${name},OU=O365,DC=bmap,DC=lis`, Enabled: true };
@@ -28,13 +38,29 @@ function asset(name: string, over: Partial<InventoryAsset> = {}): InventoryAsset
   };
 }
 
+function sc(name: string, over: Partial<InventorySourceDevice> = {}): InventorySourceDevice {
+  return {
+    name, serial_number: "", platform: "Windows 11 Pro", os_version: "",
+    manufacturer: "", model: "", department: "", last_seen: null,
+    assigned_user_email: "", logged_on_user: "", exempt: false, source: "screenconnect",
+    ...over,
+  };
+}
+
+// Stable signature of a row's provenance set — order-independent, so it survives the
+// SOURCE_ORDER-preserving append order. Maps the old single-enum world onto the set:
+//   "ad"        → an AD-only base row
+//   "ezoffice"  → an asset-only (peripheral / Mac) row
+//   "ad+ezoffice" → the old "both": AD computer enriched by its EZOffice asset
+const sig = (r: ConsolidatedDevice) => r.sources.slice().sort().join("+");
+
 test("AD short name joins the EZOffice FQDN asset (the QR-less-label fix)", () => {
   const base = [fromAD(ad("PT-LPT-ADM-08"))];
   const rows = consolidate(base, [asset("PT-LPT-ADM-08.bmap.lis", { asset_id: "999" })]);
 
   assert.equal(rows.length, 1, "must merge, not produce two rows");
   const row = rows[0];
-  assert.equal(row.source, "both");
+  assert.equal(sig(row), "ad+ezoffice");
   assert.equal(row.assetId, "999", "assetId is what unblocks the public-link QR fetch");
   assert.equal(row.serialNumber, "SN-1");
 });
@@ -53,7 +79,7 @@ test("non-domain asset (Mac) stays its own ezoffice-only row — no false merge"
   assert.equal(rows.length, 2, "the Mac must NOT collapse into the ADM row");
   const mac = rows.find((r) => r.assetId === "77");
   assert.ok(mac, "Mac asset present");
-  assert.equal(mac!.source, "ezoffice");
+  assert.equal(sig(mac!), "ezoffice");
 });
 
 test("same-named asset-only rows each survive (3x Macbook Air M5, no collapse)", () => {
@@ -64,7 +90,7 @@ test("same-named asset-only rows each survive (3x Macbook Air M5, no collapse)",
   ]);
   assert.equal(rows.length, 3, "all three physical Macs must show, not just one");
   assert.deepEqual(rows.map((r) => r.assetId).sort(), ["607", "608", "609"]);
-  for (const r of rows) assert.equal(r.source, "ezoffice");
+  for (const r of rows) assert.equal(sig(r), "ezoffice");
 });
 
 test("N x Apple Magic Mouse do not collapse", () => {
@@ -85,8 +111,8 @@ test("duplicate hostname: the LIVE asset enriches the AD row, the dead one surfa
   for (const order of [[dead, live], [live, dead]]) {
     const rows = consolidate(base, order);
     assert.equal(rows.length, 2, "both EZOffice records must show, not just one");
-    const both = rows.find((r) => r.source === "both");
-    const extra = rows.find((r) => r.source === "ezoffice");
+    const both = rows.find((r) => sig(r) === "ad+ezoffice");
+    const extra = rows.find((r) => sig(r) === "ezoffice");
     assert.ok(both && extra, "one merged AD row + one standalone EZOffice row");
     // Deterministic regardless of input order: the live record wins the merged row.
     assert.equal(both!.assetId, "595", "the live (In Use) asset enriches the AD computer");
@@ -101,7 +127,7 @@ test("duplicate hostname, same status: the newest (highest id) asset wins determ
   const older = asset("PT-LPT-ADM-02.bmap.lis", { asset_id: "588", status: "In Use" });
   const newer = asset("PT-LPT-ADM-02.bmap.lis", { asset_id: "595", status: "In Use" });
   for (const order of [[older, newer], [newer, older]]) {
-    const both = consolidate(base, order).find((r) => r.source === "both");
+    const both = consolidate(base, order).find((r) => sig(r) === "ad+ezoffice");
     assert.equal(both!.assetId, "595", "newest id wins the tie irrespective of array order");
   }
 });
@@ -112,7 +138,7 @@ test("an id-less asset never clobbers the AD row it shares a hostname with", () 
     asset("PT-LPT-ADM-08.bmap.lis", { asset_id: "999", qr_url: "q-999" }),
     asset("PT-LPT-ADM-08.bmap.lis", { asset_id: "" }), // unexpected: no id
   ]);
-  const both = rows.find((r) => r.source === "both");
+  const both = rows.find((r) => sig(r) === "ad+ezoffice");
   assert.ok(both, "the AD computer must remain, enriched");
   assert.equal(both!.assetId, "999", "the real asset's id survives — not wiped by the id-less one");
   assert.equal(both!.qrUrl, "q-999", "the merged row keeps the real asset's QR");
@@ -129,4 +155,96 @@ test("distinct FQDNs do not collide", () => {
   assert.equal(rows.length, 2);
   assert.equal(rows.find((r) => r.name === "PT-LPT-ADM-08")!.assetId, "A");
   assert.equal(rows.find((r) => r.name === "PT-LPT-ADM-09")!.assetId, "B");
+});
+
+/* -------------------------------------------------------------------------- */
+/* ScreenConnect as a third source (mergeDeviceSources + fromScreenConnect)   */
+/*                                                                            */
+/* The join key is "hostname + serial": serial is the stronger key (survives a */
+/* rename), hostname the fallback. A machine ScreenConnect can reach that AD   */
+/* never saw must still appear as its own row — that's the whole point of      */
+/* pulling ScreenConnect in.                                                   */
+/* -------------------------------------------------------------------------- */
+
+test("fromScreenConnect tags the row screenconnect-only and keeps last_seen null", () => {
+  const row = fromScreenConnect(sc("PT-DSK-STUDIO-01", { serial_number: "MJ0X7A2LMN" }));
+  assert.equal(sig(row), "screenconnect");
+  assert.equal(row.serialNumber, "MJ0X7A2LMN");
+  assert.equal(row.lastLogonDate, null, "a session ping is not a real logon");
+  assert.equal(row.displayName, "PT-DSK-STUDIO-01");
+});
+
+test("a nameless ScreenConnect machine still gets a stable serial-scoped key", () => {
+  const row = fromScreenConnect(sc("", { serial_number: "MJ0X7A2LMN" }));
+  assert.equal(row.key, "sc:mj0x7a2lmn", "serial-scoped key so a nameless row is never dropped");
+  assert.equal(sig(row), "screenconnect");
+});
+
+test("ScreenConnect-only machine appears as its own row (AD never saw it)", () => {
+  const base = [fromAD(ad("PT-LPT-IT-01"))];
+  const scOnly = fromScreenConnect(sc("PT-DSK-STUDIO-01", { serial_number: "MJ0X7A2LMN" }));
+  const rows = mergeDeviceSources(base, [scOnly]);
+
+  assert.equal(rows.length, 2, "the ScreenConnect-only desktop must surface, not be swallowed");
+  const studio = rows.find((r) => r.displayName === "PT-DSK-STUDIO-01");
+  assert.ok(studio, "ScreenConnect-only row present");
+  assert.equal(sig(studio!), "screenconnect");
+});
+
+test("ScreenConnect enriches a matching AD row by hostname and adds its tag", () => {
+  const base = [fromAD(ad("PT-LPT-IT-01"))];
+  // AD's fromAD carries no serial; ScreenConnect fills it, matching by hostname.
+  const rows = mergeDeviceSources(base, [
+    fromScreenConnect(sc("PT-LPT-IT-01", { serial_number: "5CD1234ABC" })),
+  ]);
+
+  assert.equal(rows.length, 1, "same hostname collapses to one row");
+  const row = rows[0];
+  assert.equal(sig(row), "ad+screenconnect");
+  assert.equal(row.enabled, true, "the AD identity is preserved (still the primary)");
+  assert.equal(row.serialNumber, "5CD1234ABC", "ScreenConnect fills the serial AD lacked");
+});
+
+test("hostname drift: ScreenConnect still joins an AD row on serial alone", () => {
+  // AD knows the machine under an old name + serial; ScreenConnect reports a renamed
+  // host but the SAME serial. Serial is the stronger key, so they must still merge.
+  const adRow = fromAD(ad("PT-LPT-OLD-01"));
+  adRow.serialNumber = "5CD1234ABC";
+  const rows = mergeDeviceSources([adRow], [
+    fromScreenConnect(sc("PT-LPT-NEW-01", { serial_number: "5CD1234ABC" })),
+  ]);
+
+  assert.equal(rows.length, 1, "serial join beats the hostname mismatch");
+  assert.equal(sig(rows[0]), "ad+screenconnect");
+  assert.equal(rows[0].displayName, "PT-LPT-OLD-01", "primary (AD) keeps its identity");
+});
+
+test("full three-source pipeline: AD → ScreenConnect merge → EZOffice overlay", () => {
+  const base = [fromAD(ad("PT-LPT-IT-01"))];
+  // ScreenConnect adds a serial + a ScreenConnect-only desktop.
+  const merged = mergeDeviceSources(base, [
+    fromScreenConnect(sc("PT-LPT-IT-01", { serial_number: "5CD1234ABC" })),
+    fromScreenConnect(sc("PT-DSK-STUDIO-01", { serial_number: "MJ0X7A2LMN" })),
+  ]);
+  // EZOffice inventories the domain laptop (FQDN) but not the ScreenConnect desktop.
+  const rows = consolidate(merged, [
+    asset("PT-LPT-IT-01.bmap.lis", { asset_id: "1", qr_url: "q-1" }),
+  ]);
+
+  const it01 = rows.find((r) => r.displayName === "PT-LPT-IT-01");
+  const studio = rows.find((r) => r.displayName === "PT-DSK-STUDIO-01");
+  assert.ok(it01 && studio, "both machines present");
+  assert.equal(sig(it01!), "ad+ezoffice+screenconnect", "IT-01 carries all three sources");
+  assert.equal(it01!.assetId, "1", "EZOffice enrichment landed on the merged row");
+  assert.equal(it01!.qrUrl, "q-1");
+  assert.equal(sig(studio!), "screenconnect", "the ScreenConnect-only desktop stays single-source");
+});
+
+test("mergeDeviceSources does not double-tag a source on repeat merges", () => {
+  const base = [fromAD(ad("PT-LPT-IT-01"))];
+  const scRow = fromScreenConnect(sc("PT-LPT-IT-01", { serial_number: "5CD1234ABC" }));
+  const once = mergeDeviceSources(base, [scRow]);
+  const twice = mergeDeviceSources(once, [fromScreenConnect(sc("PT-LPT-IT-01", { serial_number: "5CD1234ABC" }))]);
+  assert.equal(twice.length, 1);
+  assert.deepEqual(twice[0].sources.slice().sort(), ["ad", "screenconnect"], "no duplicate tags");
 });

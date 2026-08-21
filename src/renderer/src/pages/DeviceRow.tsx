@@ -1,7 +1,7 @@
 import { useState, useEffect, useId, memo } from "react";
 import {
   Eye, X, Boxes, Copy, ExternalLink, Power, PowerOff, MonitorSmartphone,
-  Server, Layers, AlertTriangle, Printer,
+  Server, AlertTriangle, Printer,
 } from "lucide-react";
 import { adAPI } from "../adAPI";
 import { cn } from "../lib/cn";
@@ -12,7 +12,7 @@ import { focusRing } from "../components/ui/controls";
 import {
   type ConsolidatedDevice, type DeviceSource, type Tone,
   deviceState, ezStatusLabel, categoryIcon, daysSince, stripDomain,
-  applyUrlTemplate, openExternal,
+  applyUrlTemplate, openExternal, sourceLabel, SOURCE_ORDER,
 } from "../lib/devices";
 import LabelPreviewModal from "../components/LabelPreviewModal";
 
@@ -42,19 +42,30 @@ function StatusBadge({ device }: { device: ConsolidatedDevice }) {
   );
 }
 
-// Where a row's data came from — a compact chip + a matching icon.
+// Where a row's data came from — one compact chip per ATOMIC source, so a row
+// merged across systems (e.g. AD + ScreenConnect) shows every origin.
 const SOURCE_META: Record<DeviceSource, { label: string; short: string; Icon: React.ElementType }> = {
-  ad:       { label: "Active Directory",     short: "AD",          Icon: Server },
-  ezoffice: { label: "EZOffice",             short: "EZOffice",    Icon: Boxes },
-  both:     { label: "AD + EZOffice",        short: "AD + EZ",     Icon: Layers },
+  ad:            { label: "Active Directory", short: "AD",       Icon: Server },
+  ezoffice:      { label: "EZOffice",         short: "EZOffice", Icon: Boxes },
+  screenconnect: { label: "ScreenConnect",    short: "SC",       Icon: MonitorSmartphone },
 };
 
-function SourceChip({ source }: { source: DeviceSource }) {
-  const { short, Icon } = SOURCE_META[source];
+function SourceChips({ sources }: { sources: DeviceSource[] }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-zinc-100 text-zinc-500">
-      <Icon size={10} />
-      {short}
+    <span className="inline-flex items-center gap-1">
+      {SOURCE_ORDER.filter((s) => sources.includes(s)).map((s) => {
+        const { short, Icon, label } = SOURCE_META[s];
+        return (
+          <span
+            key={s}
+            title={label}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-zinc-100 text-zinc-500"
+          >
+            <Icon size={10} />
+            {short}
+          </span>
+        );
+      })}
     </span>
   );
 }
@@ -132,7 +143,7 @@ function DeviceRow({
   // The enable/disable write only makes sense for an AD-backed object whose state
   // we actually know (the Mac/inventory source carries no enabled flag, and AD
   // writes are unavailable off-Windows anyway — so this naturally hides there).
-  const canToggle = (device.source === "ad" || device.source === "both") && device.enabled !== undefined;
+  const canToggle = device.sources.includes("ad") && device.enabled !== undefined;
   const identity = device.distinguishedName || device.name;
 
   // Resolved external links (null when the template is empty or can't be filled).
@@ -205,7 +216,7 @@ function DeviceRow({
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <p className="text-sm font-medium text-zinc-900 truncate">{name}</p>
-                <SourceChip source={device.source} />
+                <SourceChips sources={device.sources} />
               </div>
               <p className="text-xs text-zinc-400 truncate">{subLine}</p>
             </div>
@@ -302,7 +313,7 @@ function DeviceRow({
                       )}
                       <div className="mt-1 flex items-center gap-2">
                         <StatusBadge device={device} />
-                        <SourceChip source={device.source} />
+                        <SourceChips sources={device.sources} />
                       </div>
                     </div>
                   </div>
@@ -311,7 +322,7 @@ function DeviceRow({
                     <DetailRow label="Nome" value={name} />
                     {device.dnsHostName && <DetailRow label="DNS" value={device.dnsHostName} />}
                     <DetailRow label="Departamento" value={device.department || "—"} />
-                    <DetailRow label="Fonte" value={SOURCE_META[device.source].label} />
+                    <DetailRow label="Fonte" value={sourceLabel(device.sources)} />
                   </DetailSection>
 
                   {(device.operatingSystem || device.operatingSystemVersion) && (

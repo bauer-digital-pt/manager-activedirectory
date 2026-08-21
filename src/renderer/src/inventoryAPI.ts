@@ -27,6 +27,9 @@ declare global {
       getAssetPublicLink(assetId: string): Promise<PSResult<AssetPublicLink>>;
       // AD computer objects as the inventory API sees them (ldap3), snake_case.
       getADDevices(): Promise<PSResult<InventorySourceDevice[]>>;
+      // ScreenConnect Access machines (same shape, source="screenconnect"). Returns
+      // [] when ScreenConnect isn't configured server-side.
+      getScreenConnectDevices(): Promise<PSResult<InventorySourceDevice[]>>;
       // Cross-check of AD vs EZOffice: orphaned / stale / missing findings.
       getReconciliation(): Promise<PSResult<Reconciliation>>;
     };
@@ -35,7 +38,8 @@ declare global {
 
 // --- Mock used when running in the browser (outside Electron) ---
 import {
-  mockAssets, mockAssetPublicLink, mockADSourceDevices, mockReconciliation,
+  mockAssets, mockAssetPublicLink, mockADSourceDevices, mockScreenConnectDevices,
+  mockReconciliation,
 } from "../../shared/fixtures";
 
 const delay = (ms = 500) => new Promise<void>((r) => setTimeout(r, ms));
@@ -97,6 +101,11 @@ const mockAPI: Window["inventoryAPI"] = {
     if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
     return { ok: true, data: invFlag("invempty") ? [] : mockADSourceDevices() };
   },
+  getScreenConnectDevices: async () => {
+    await delay();
+    if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
+    return { ok: true, data: invFlag("invempty") ? [] : mockScreenConnectDevices() };
+  },
   getReconciliation: async () => {
     await delay(800);
     if (invFlag("invfail")) return { ok: false, error: INV_FAIL_ERROR };
@@ -113,5 +122,6 @@ export const inventoryAPI = {
   getAssets:           () => window.inventoryAPI.getAssets(),
   getAssetPublicLink:  (assetId: string) => window.inventoryAPI.getAssetPublicLink(assetId),
   getADDevices:        () => window.inventoryAPI.getADDevices(),
+  getScreenConnectDevices: () => window.inventoryAPI.getScreenConnectDevices(),
   getReconciliation:   () => window.inventoryAPI.getReconciliation(),
 };

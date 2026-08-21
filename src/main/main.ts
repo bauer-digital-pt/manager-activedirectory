@@ -2180,6 +2180,11 @@ handle("inventory:asset-public-link", async (_e, rawAssetId) => {
   return inventoryGet<AssetPublicLink>(`/api/v1/assets/${encodeURIComponent(assetId)}/public-link`);
 });
 handle("inventory:ad-devices", async () => inventoryGet("/api/v1/devices/ad"));
+// ScreenConnect Access machines as InventorySourceDevice rows (source="screenconnect").
+// Feeds the consolidated device list so a machine seen ONLY over ScreenConnect still
+// appears; merges into AD/EZOffice rows by serial/hostname on the renderer side. The
+// API returns [] when ScreenConnect isn't configured, so this degrades cleanly.
+handle("inventory:screenconnect-devices", async () => inventoryGet("/api/v1/devices/screenconnect"));
 // Reconciliation fetches AND cross-checks every source, so it can be slow on a
 // cold cache — give it a generous ceiling (the API caches the result afterwards).
 handle("inventory:reconciliation", async () => inventoryGet("/api/v1/reconciliation", 90000));

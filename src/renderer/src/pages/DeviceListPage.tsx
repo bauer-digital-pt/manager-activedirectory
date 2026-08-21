@@ -15,7 +15,8 @@ import { Button } from "../components/ui/Button";
 import { focusRing } from "../components/ui/controls";
 import {
   type ConsolidatedDevice, type DeviceSource, type StateId,
-  fromAD, fromSource, consolidate, deviceState, ezStatusLabel, STATE_RANK,
+  fromAD, fromSource, fromScreenConnect, mergeDeviceSources, consolidate,
+  deviceState, ezStatusLabel, sourceLabel, STATE_RANK, SOURCE_ORDER, SOURCE_LABEL,
 } from "../lib/devices";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
@@ -57,10 +58,6 @@ const STATE_LABEL: Record<StateId, string> = {
   retired: "Abatido", available: "Disponível", inuse: "Em uso", active: "Ativo",
   unknown: "Desconhecido",
 };
-const SOURCE_LABEL: Record<DeviceSource, string> = {
-  ad: "Active Directory", ezoffice: "EZOffice", both: "AD + EZOffice",
-};
-
 /* --------------------------------- cache ---------------------------------- */
 
 // Module-level cache so returning from another page (e.g. Settings) is instant
@@ -192,15 +189,28 @@ export default function DeviceListPage({
           })
       : Promise.resolve(null);
 
+    // ScreenConnect machines ride the same inventory API as the assets, so they're
+    // fetched under the same `enrich` gate. This feed is best-effort AUGMENTATION
+    // (it only ADDS ScreenConnect-only rows + source tags), so a failure is swallowed
+    // to null rather than surfaced as a banner — the AD/EZOffice list stands alone.
+    const scP: Promise<ConsolidatedDevice[]> = enrich
+      ? inventoryAPI
+          .getScreenConnectDevices()
+          .then((r) => (r.ok && r.data ? toArray<InventorySourceDevice>(r.data).map(fromScreenConnect) : []))
+          .catch(() => [])
+      : Promise.resolve([]);
+
     const run = async (): Promise<{ base: ConsolidatedDevice[]; assets: InventoryAsset[] | null }> => {
       if (useInventorySource) {
-        const [devRes, a] = await Promise.all([inventoryAPI.getADDevices(), assetsP]);
+        const [devRes, a, sc] = await Promise.all([inventoryAPI.getADDevices(), assetsP, scP]);
         if (!devRes.ok) throw new Error(devRes.error ?? "Não foi possível obter os dispositivos da API de inventário.");
-        return { base: toArray<InventorySourceDevice>(devRes.data).map(fromSource), assets: a };
+        const base = mergeDeviceSources(toArray<InventorySourceDevice>(devRes.data).map(fromSource), sc);
+        return { base, assets: a };
       }
-      const [devRes, a] = await Promise.all([adAPI.getDevices(), assetsP]);
+      const [devRes, a, sc] = await Promise.all([adAPI.getDevices(), assetsP, scP]);
       if (!devRes.ok) throw new Error(devRes.error ?? "Não foi possível carregar os dispositivos do Active Directory.");
-      return { base: toArray<ADComputer>(devRes.data).map(fromAD), assets: a };
+      const base = mergeDeviceSources(toArray<ADComputer>(devRes.data).map(fromAD), sc);
+      return { base, assets: a };
     };
 
     run()
@@ -259,7 +269,7 @@ export default function DeviceListPage({
         d.category, d.department, d.operatingSystem, d.operatingSystemVersion,
         d.assignedUserEmail, d.description, d.distinguishedName, d.managedBy,
         d.ezStatus, ezStatusLabel(d.ezStatus), STATE_LABEL[stateId],
-        SOURCE_LABEL[d.source],
+        sourceLabel(d.sources),
       ].filter(Boolean).join("\n").toLowerCase();
       m.set(d, { stateId, search });
     }
@@ -296,11 +306,12 @@ export default function DeviceListPage({
       .sort((a, b) => STATE_RANK[a] - STATE_RANK[b])
       .map((id) => ({ value: id, label: STATE_LABEL[id] }));
   }, [derived]);
+  // "Fonte" is now MEMBERSHIP, not equality: a row merged from AD + ScreenConnect
+  // appears under both. Offer every atomic source that any row actually carries.
   const fonteOptions = useMemo<FilterOption[]>(() => {
     const set = new Set<DeviceSource>();
-    for (const d of devices) set.add(d.source);
-    const order: DeviceSource[] = ["both", "ad", "ezoffice"];
-    return order.filter((s) => set.has(s)).map((s) => ({ value: s, label: SOURCE_LABEL[s] }));
+    for (const d of devices) for (const s of d.sources) set.add(s);
+    return SOURCE_ORDER.filter((s) => set.has(s)).map((s) => ({ value: s, label: SOURCE_LABEL[s] }));
   }, [devices]);
 
   const anyFilterActive = !!(categoria || estado || departamento || fonte || search.trim());
@@ -334,7 +345,7 @@ export default function DeviceListPage({
       const dv = derived.get(d)!; // built from this same `devices` above → always present
       if (categoria && (d.category ?? "") !== categoria) return false;
       if (departamento && (d.department ?? "") !== departamento) return false;
-      if (fonte && d.source !== fonte) return false;
+      if (fonte && !d.sources.includes(fonte as DeviceSource)) return false;
       if (estado && dv.stateId !== estado) return false;
       // Free text matches the precomputed haystack (all fields + PT labels).
       if (q && !dv.search.includes(q)) return false;

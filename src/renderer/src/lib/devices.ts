@@ -24,9 +24,31 @@ const STALE_DAYS = 90;
 /* Consolidated view-model                                                    */
 /* -------------------------------------------------------------------------- */
 
-// Where a consolidated row's data came from — drives the "Fonte" filter and a
-// small badge. "both" = matched an AD object AND an EZOffice asset.
-export type DeviceSource = "ad" | "ezoffice" | "both";
+// The ATOMIC origins a consolidated row draws from. A single row can carry more
+// than one: sources are MERGED, so a domain-joined laptop that AD knows, EZOffice
+// inventories AND ScreenConnect can reach is ONE row tagged with all three. Drives
+// the "Fonte" filter (membership, not equality) and the per-source chips.
+export type DeviceSource = "ad" | "ezoffice" | "screenconnect";
+
+// Fixed display order + PT labels for the sources — shared by the filter, the
+// row chips and the free-text search haystack.
+export const SOURCE_ORDER: readonly DeviceSource[] = ["ad", "ezoffice", "screenconnect"];
+export const SOURCE_LABEL: Record<DeviceSource, string> = {
+  ad: "Active Directory",
+  ezoffice: "EZOffice",
+  screenconnect: "ScreenConnect",
+};
+
+// A stable, human-readable label for a row's combined provenance, sources always
+// in SOURCE_ORDER (e.g. "Active Directory + EZOffice"). Empty → "—".
+export function sourceLabel(sources: DeviceSource[]): string {
+  return SOURCE_ORDER.filter((s) => sources.includes(s)).map((s) => SOURCE_LABEL[s]).join(" + ") || "—";
+}
+
+// Append a source to a row's provenance without duplicating it (order preserved).
+function withSource(sources: DeviceSource[], add: DeviceSource): DeviceSource[] {
+  return sources.includes(add) ? sources : [...sources, add];
+}
 
 export interface ConsolidatedDevice {
   // Stable de-dupe / React key (lowercased name, or the asset id when nameless).
@@ -34,7 +56,9 @@ export interface ConsolidatedDevice {
   // Raw name as stored (may carry a domain suffix); use `displayName` in the UI.
   name: string;
   displayName: string;
-  source: DeviceSource;
+  // Every source that contributed to this row (deduped, no fixed order). Use
+  // `sourceLabel(sources)` for display and `sources.includes(...)` for the filter.
+  sources: DeviceSource[];
 
   // AD-side
   dnsHostName?: string;
@@ -116,7 +140,7 @@ export function fromAD(d: ADComputer): ConsolidatedDevice {
     key: keyOf(name) || (d.DistinguishedName || "").toLowerCase(),
     name,
     displayName: stripDomain(name) || name,
-    source: "ad",
+    sources: ["ad"],
     dnsHostName: d.DNSHostName || undefined,
     enabled: d.Enabled,
     operatingSystem: d.OperatingSystem || undefined,
@@ -139,7 +163,7 @@ export function fromSource(s: InventorySourceDevice): ConsolidatedDevice {
     key: keyOf(name),
     name,
     displayName: stripDomain(name) || name,
-    source: "ad",
+    sources: ["ad"],
     operatingSystem: s.platform || undefined,
     operatingSystemVersion: s.os_version || undefined,
     department: s.department || undefined,
@@ -149,9 +173,77 @@ export function fromSource(s: InventorySourceDevice): ConsolidatedDevice {
   };
 }
 
+// A ScreenConnect Access machine → a base row. Same InventorySourceDevice shape as
+// the AD feed, but `source: "screenconnect"`. ScreenConnect is the one source that
+// reliably carries a hardware serial for a machine AD may never have seen, so a
+// ScreenConnect-ONLY device still surfaces in the list (and joins to AD/EZOffice by
+// serial or hostname — see mergeDeviceSources / consolidate). `last_seen` is always
+// null here (ScreenConnect's session-info ping is not a real logon), so lifecycle
+// state falls back to the EZOffice status rather than a bogus recency.
+export function fromScreenConnect(s: InventorySourceDevice): ConsolidatedDevice {
+  const name = s.name || "";
+  const serial = s.serial_number || undefined;
+  return {
+    // Hostname key when named, else a serial-scoped key so a nameless machine still
+    // gets a stable, collision-free row (never an empty key that would be dropped).
+    key: keyOf(name) || (serial ? `sc:${serial.toLowerCase()}` : ""),
+    name,
+    displayName: stripDomain(name) || name,
+    sources: ["screenconnect"],
+    operatingSystem: s.platform || undefined,
+    operatingSystemVersion: s.os_version || undefined,
+    department: s.department || undefined,
+    lastLogonDate: s.last_seen ?? null,
+    serialNumber: serial,
+    assignedUserEmail: s.assigned_user_email || undefined,
+  };
+}
+
+// Merge a secondary device feed (ScreenConnect) into the primary base rows (AD),
+// joining on serial when both carry one, else on the hostname key — the
+// "hostname + serial" cross-source join. A machine present in BOTH collapses to ONE
+// row: the primary keeps its identity, the secondary only fills empty fields (serial,
+// OS, holder) and adds its source tag. A machine seen ONLY by the secondary is
+// appended as its own row, so a ScreenConnect-only device still appears (req. A).
+// Enriches matched primary rows in place — callers pass freshly-mapped rows.
+export function mergeDeviceSources(
+  primary: ConsolidatedDevice[],
+  extra: ConsolidatedDevice[],
+): ConsolidatedDevice[] {
+  const byHost = new Map<string, ConsolidatedDevice>();
+  const bySerial = new Map<string, ConsolidatedDevice>();
+  const index = (d: ConsolidatedDevice) => {
+    if (d.key) byHost.set(d.key, d);
+    const sn = (d.serialNumber || "").toLowerCase();
+    if (sn) bySerial.set(sn, d);
+  };
+  for (const d of primary) index(d);
+
+  const out = [...primary];
+  for (const e of extra) {
+    const sn = (e.serialNumber || "").toLowerCase();
+    // Serial is the stronger key (survives hostname drift/renames); fall back to host.
+    const match = (sn && bySerial.get(sn)) || (e.key ? byHost.get(e.key) : undefined);
+    if (match) {
+      if (!match.serialNumber && e.serialNumber) match.serialNumber = e.serialNumber;
+      if (!match.operatingSystem && e.operatingSystem) match.operatingSystem = e.operatingSystem;
+      if (!match.operatingSystemVersion && e.operatingSystemVersion) match.operatingSystemVersion = e.operatingSystemVersion;
+      if (!match.department && e.department) match.department = e.department;
+      if (!match.assignedUserEmail && e.assignedUserEmail) match.assignedUserEmail = e.assignedUserEmail;
+      if (match.lastLogonDate == null && e.lastLogonDate != null) match.lastLogonDate = e.lastLogonDate;
+      for (const s of e.sources) match.sources = withSource(match.sources, s);
+      index(match); // may have just gained a serial → let later rows join on it too
+      continue;
+    }
+    out.push(e);
+    index(e);
+  }
+  return out;
+}
+
 // Overlay EZOffice assets onto a base device list, keyed by name. Matched assets
-// enrich their device (authoritative for serial/category/status/holder, so
-// source becomes "both"); UNmatched assets become their own "ezoffice" rows so
+// enrich their device (authoritative for serial/category/status/holder, adding the
+// "ezoffice" source tag); UNmatched assets become their own "ezoffice" rows so
 // peripherals AD never sees (mice, adapters, monitors) still appear (req. A).
 export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[] | null): ConsolidatedDevice[] {
   const map = new Map<string, ConsolidatedDevice>();
@@ -168,21 +260,22 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
     );
     ordered.forEach((a, i) => {
       const nameKey = keyOf(a.name);
-      // An asset enriches an AD computer ONLY on the first match of that host name
-      // (the row is still a bare "ad" base row). Once matched it becomes "both", so
-      // a SECOND asset sharing the hostname won't overwrite it — it falls through to
-      // its own row below (surfacing an EZOffice duplicate rather than hiding it).
-      const adRow = nameKey ? map.get(nameKey) : undefined;
-      if (adRow && adRow.source === "ad") {
+      // A device row (AD and/or ScreenConnect) is enriched by the FIRST asset that
+      // matches its host name, which adds the "ezoffice" tag to its sources. Once
+      // tagged, a SECOND asset sharing the hostname won't overwrite it — it falls
+      // through to its own row below, surfacing an EZOffice duplicate rather than
+      // hiding it.
+      const devRow = nameKey ? map.get(nameKey) : undefined;
+      if (devRow && !devRow.sources.includes("ezoffice")) {
         map.set(nameKey, {
-          ...adRow,
-          source: "both",
-          assetId: a.asset_id || adRow.assetId,
-          serialNumber: a.serial_number || adRow.serialNumber,
-          category: a.category || adRow.category,
-          ezStatus: a.status || adRow.ezStatus,
-          assignedUserEmail: a.assigned_user_email || adRow.assignedUserEmail,
-          qrUrl: a.qr_url || adRow.qrUrl,
+          ...devRow,
+          sources: withSource(devRow.sources, "ezoffice"),
+          assetId: a.asset_id || devRow.assetId,
+          serialNumber: a.serial_number || devRow.serialNumber,
+          category: a.category || devRow.category,
+          ezStatus: a.status || devRow.ezStatus,
+          assignedUserEmail: a.assigned_user_email || devRow.assignedUserEmail,
+          qrUrl: a.qr_url || devRow.qrUrl,
         });
         return;
       }
@@ -191,7 +284,7 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
       // N× "Apple Magic Mouse", power adapters …); name-keying collapsed them all
       // into a single last-writer-wins row. asset_id keeps each physical unit
       // distinct. An id-less asset (unexpected) gets a synthetic per-index key so it
-      // still surfaces as its own row and can never clobber a hostname/"both" row.
+      // still surfaces as its own row and can never clobber a device (AD/SC) row.
       const k = a.asset_id ? `asset:${a.asset_id}` : nameKey ? `asset:noid:${i}` : "";
       if (!k) return;
       const name = a.name || a.asset_id || "";
@@ -199,7 +292,7 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
         key: k,
         name,
         displayName: stripDomain(name) || name,
-        source: "ezoffice",
+        sources: ["ezoffice"],
         assetId: a.asset_id || undefined,
         serialNumber: a.serial_number || undefined,
         category: a.category || undefined,

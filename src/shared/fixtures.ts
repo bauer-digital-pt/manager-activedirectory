@@ -109,7 +109,7 @@ export function mockMembers(): InventoryMember[] {
   ];
 }
 
-// EZOffice assets. The four laptops match AD devices by name (→ "both" rows):
+// EZOffice assets. The four laptops match AD devices by name (→ ad+ezoffice rows):
 // ADM-01 is assigned to the inactive Ana → orphan; MKT-01 has no matching device
 // → "no source object" orphan. The rest are PERIPHERALS EZOffice tracks but AD
 // never sees (mice, power adapters, monitors, …) — they become asset-only rows in
@@ -188,6 +188,25 @@ export function mockADSourceDevices(): InventorySourceDevice[] {
     d("PT-LPT-ADM-01", "5CD9999XYZ", "Windows 10 Pro", 28,  "ana.ferreira@bmap.lis"),
     d("PT-LPT-RCM-01", "5CDMISS001", "Windows 11 Pro", 11,  ""),
     d("PT-LPT-COM-01", "5CDSTALE99", "Windows 10 Pro", 260, ""),
+  ];
+}
+
+// ScreenConnect Access machines (GET /api/v1/devices/screenconnect). last_seen is
+// always null (a session ping, not a logon). PT-LPT-IT-01 overlaps AD by hostname
+// (→ merges, gaining a ScreenConnect tag); PT-DSK-STUDIO-01 is ScreenConnect-ONLY —
+// never domain-joined, absent from AD and EZOffice — so it exercises the "a machine
+// seen only over ScreenConnect still appears" path.
+export function mockScreenConnectDevices(): InventorySourceDevice[] {
+  const d = (
+    name: string, serial_number: string, platform: string, manufacturer: string, model: string,
+  ): InventorySourceDevice => ({
+    name, serial_number, platform, os_version: "", manufacturer, model,
+    department: name.split("-")[2] ?? "", last_seen: null,
+    assigned_user_email: "", logged_on_user: "", exempt: false, source: "screenconnect",
+  });
+  return [
+    d("PT-LPT-IT-01",     "5CD1234ABC", "Windows 11 Pro", "HP",     "EliteBook 840 G8"),
+    d("PT-DSK-STUDIO-01", "MJ0X7A2LMN", "Windows 11 Pro", "Dell",   "OptiPlex 7090"),
   ];
 }
 
