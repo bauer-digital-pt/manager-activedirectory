@@ -3,11 +3,19 @@
  * bridge that raster into the print pipeline.
  *
  * `renderLabel` composes in **natural reading orientation** — a landscape image
- * laid out left-to-right as: the Bauer "B" logo, then the QR, then the text lines
- * (stacked and vertically centered). This is what the in-app preview shows and
- * what a human expects an asset label to look like. When the model carries no QR
- * payload (no resolved asset URL) the QR is omitted and the label degrades to
- * logo + text — a blank/placeholder code is never drawn.
+ * laid out left-to-right as: the text lines (stacked and vertically centered),
+ * then the QR, then the Bauer "B" logo. When the model carries no QR payload (no
+ * resolved asset URL) the QR is omitted and the label degrades to text + logo — a
+ * blank/placeholder code is never drawn.
+ *
+ * WHY text-first (and not the human-intuitive logo-first): the 270° print turn
+ * maps the natural-RIGHT edge to the printer's LEADING feed edge (printed first,
+ * always on the die-cut label) and the natural-LEFT edge to the TRAILING edge
+ * (printed last, the end that runs off a too-long label). The essential content —
+ * logo + QR — therefore sits on the right so it lands on the leading edge and
+ * survives; only the text (least critical, and duplicated by the QR target) can
+ * overflow the 22 mm die-cut and be clipped. See labelToColumnMajor.
+ *
  * It is pure and deterministic (no DOM, no deps): the same bytes render in the
  * main process, in `node --test`, and in the renderer preview.
  *
@@ -58,8 +66,10 @@ export interface LabelStyle {
   /** Whitespace around the whole label, in dots (default 2). */
   padding?: number;
   /**
-   * Draw the Bauer Media "B" mark at the START of the label, before the QR
-   * (default true). Layout is logo → QR → text; set false for a bare label.
+   * Draw the Bauer Media "B" mark at the END of the natural image, after the QR
+   * (default true). Layout is text → QR → logo; set false for a bare label. The
+   * logo is last in natural order so it lands on the printer's LEADING feed edge
+   * (see the file header) and is never the content clipped by a too-long label.
    */
   showBrand?: boolean;
 }
@@ -145,25 +155,28 @@ export function renderLabel(model: LabelModel, style: LabelStyle = {}): LabelRen
     ? lines.length * lineHeight + (lines.length - 1) * lineGap
     : 0;
 
-  // Brand mark (logo) at the START of the label, before the QR. It never touches
-  // QR data: the QR is separated from it by a `gap` PLUS the QR's own quiet zone.
-  // It only lengthens the feed axis (natural width) — its height (64 dots) fits
-  // comfortably across every E11 head — so it can never break the across-head fit
-  // (fitLabelStyle only shrinks the QR).
+  // Brand mark (logo) at the END of the natural image, after the QR. It never
+  // touches QR data: the QR is separated from it by a `gap` PLUS the QR's own
+  // quiet zone. It only lengthens the feed axis (natural width) — its height (64
+  // dots) fits comfortably across every E11 head — so it can never break the
+  // across-head fit (fitLabelStyle only shrinks the QR).
   const brand = (style.showBrand ?? true) ? BAUER_B_MARK : null;
   const brandBlockWidth = brand ? brand.width : 0;
   const brandBlockHeight = brand ? brand.height : 0;
 
   const contentHeight = Math.max(qrBlockPx, textBlockHeight, brandBlockHeight);
 
-  // Layout is left-to-right: [padding] logo [gap] QR [gap] text [padding]. Only
-  // PRESENT segments reserve width and a separating gap, so a device with no
-  // asset URL (no QR) collapses cleanly to logo → text with a single gap between
-  // them — not a phantom double gap where the QR would have been.
+  // Layout is left-to-right: [padding] text [gap] QR [gap] logo [padding]. Text
+  // sits on the LEFT (the trailing feed edge after the print turn) so it — not the
+  // logo/QR — is what a too-long label clips; logo+QR are on the right (leading
+  // edge) and always survive. See the file header. Only PRESENT segments reserve
+  // width and a separating gap, so a device with no asset URL (no QR) collapses
+  // cleanly to text → logo with a single gap — not a phantom double gap where the
+  // QR would have been.
   const segWidths: number[] = [];
-  if (brand) segWidths.push(brandBlockWidth);
-  if (qr) segWidths.push(qrBlockPx);
   if (hasText) segWidths.push(textBlockWidth);
+  if (qr) segWidths.push(qrBlockPx);
+  if (brand) segWidths.push(brandBlockWidth);
   const contentWidth =
     segWidths.reduce((a, b) => a + b, 0) + Math.max(0, segWidths.length - 1) * gap;
   const width = padding + contentWidth + padding;
@@ -180,17 +193,18 @@ export function renderLabel(model: LabelModel, style: LabelStyle = {}): LabelRen
     return x;
   };
 
-  // Logo first (vertically centered in the content band).
-  let brandBlock: LabelRender["brandBlock"] = null;
-  if (brand) {
-    const brandX = advance(brandBlockWidth);
-    const brandY = padding + Math.floor((contentHeight - brandBlockHeight) / 2);
-    canvas.blitGlyph(brand.data, brand.width, brand.height, brandX, brandY, 1);
-    brandBlock = { x: brandX, y: brandY, width: brandBlockWidth, height: brandBlockHeight };
+  // Text block first (vertically centered against the content band).
+  if (hasText) {
+    const textX = advance(textBlockWidth);
+    const textTop = padding + Math.floor((contentHeight - textBlockHeight) / 2);
+    for (let i = 0; i < lines.length; i++) {
+      const y = textTop + i * (lineHeight + lineGap);
+      drawText(canvas, lines[i], textX, y, { scale: textScale, letterSpacing });
+    }
   }
 
-  // QR after the logo (vertically centered). The quiet zone stays light. Omitted
-  // entirely when there is no payload — the label is then logo + text only.
+  // QR after the text (vertically centered). The quiet zone stays light. Omitted
+  // entirely when there is no payload — the label is then text + logo only.
   let qrBlock: LabelRender["qrBlock"] = null;
   if (qr) {
     const qrX = advance(qrBlockPx);
@@ -199,14 +213,13 @@ export function renderLabel(model: LabelModel, style: LabelStyle = {}): LabelRen
     qrBlock = { x: qrX, y: qrY, size: qrBlockPx, scale: qrScale, quiet };
   }
 
-  // Text block last (vertically centered against the content band).
-  if (hasText) {
-    const textX = advance(textBlockWidth);
-    const textTop = padding + Math.floor((contentHeight - textBlockHeight) / 2);
-    for (let i = 0; i < lines.length; i++) {
-      const y = textTop + i * (lineHeight + lineGap);
-      drawText(canvas, lines[i], textX, y, { scale: textScale, letterSpacing });
-    }
+  // Logo last (vertically centered in the content band) — on the leading feed edge.
+  let brandBlock: LabelRender["brandBlock"] = null;
+  if (brand) {
+    const brandX = advance(brandBlockWidth);
+    const brandY = padding + Math.floor((contentHeight - brandBlockHeight) / 2);
+    canvas.blitGlyph(brand.data, brand.width, brand.height, brandX, brandY, 1);
+    brandBlock = { x: brandX, y: brandY, width: brandBlockWidth, height: brandBlockHeight };
   }
 
   return {

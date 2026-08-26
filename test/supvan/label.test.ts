@@ -22,7 +22,13 @@ import {
 import { encodeQr } from "../../src/main/supvan/qr.ts";
 import { measureText, drawText, GLYPH_H } from "../../src/main/supvan/font.ts";
 import { MonoCanvas } from "../../src/main/supvan/mono.ts";
-import { DEFAULT_GEOMETRY, E11_GEOMETRY, type Geometry } from "../../src/main/supvan/job.ts";
+import {
+  DEFAULT_GEOMETRY,
+  E11_GEOMETRY,
+  E11_LABEL_LENGTH_MM,
+  E11_DOTS_PER_MM,
+  type Geometry,
+} from "../../src/main/supvan/job.ts";
 import { expectedAloneHeaderPrefix, LZMA_ALONE_HEADER_LEN } from "../../src/main/supvan/compress.ts";
 
 /** Read a pixel from a row-major MSB-first bitmap (dark = 1). */
@@ -122,10 +128,10 @@ test("a QR-only label omits the text region", () => {
   assert.equal(r.height, padding * 2 + block);
 });
 
-test("no QR payload degrades to a logo + text label (no QR region, single gap)", () => {
+test("no QR payload degrades to a text + logo label (no QR region, single gap)", () => {
   // Regression: an empty payload (AD-only device / unconfigured URL template) used
   // to throw in encodeQr and hard-block the print. It must instead compose a
-  // logo + text label with no QR region at all.
+  // text + logo label with no QR region at all.
   const model = { qr: "", lines: ["PT-LPT-TI-0007", "DELL 5540"] };
   const gap = 6;
   const padding = 2;
@@ -141,14 +147,15 @@ test("no QR payload degrades to a logo + text label (no QR region, single gap)",
   assert.equal(r.qrBlock, null, "empty payload ⇒ no QR block");
   assert.ok(r.brandBlock, "the logo is still drawn");
 
-  // Width is logo + ONE gap + text (+ padding both ends) — never a phantom double
-  // gap where the QR would have been.
+  // Width is text + ONE gap + logo (+ padding both ends) — never a phantom double
+  // gap where the QR would have been. The logo lands on the right (leading edge).
   const b = r.brandBlock!;
   const textWidth = Math.max(
     ...model.lines.map((l) => measureText(l, { scale: textScale, letterSpacing }).width),
   );
-  assert.equal(b.x, padding, "logo sits at the left padding");
-  assert.equal(r.width, padding + b.width + gap + textWidth + padding, "logo + one gap + text");
+  assert.equal(b.x, padding + textWidth + gap, "logo sits after the text");
+  assert.equal(b.x + b.width, r.width - padding, "logo ends at the right padding");
+  assert.equal(r.width, padding + textWidth + gap + b.width + padding, "text + one gap + logo");
 });
 
 test("a QR-less label still fits and maps to the E11 head", () => {
@@ -171,7 +178,8 @@ test("text lines render where the font would place them", () => {
   const lineHeight = GLYPH_H * style.textScale;
   const textHeight = model.lines.length * lineHeight + (model.lines.length - 1) * style.lineGap;
   const contentHeight = Math.max(qrBlock, textHeight);
-  const textX = style.padding + qrBlock + style.gap;
+  // Layout is text → QR → logo, so the text block sits at the left padding.
+  const textX = style.padding;
   const textTop = style.padding + Math.floor((contentHeight - textHeight) / 2);
 
   for (let i = 0; i < model.lines.length; i++) {
@@ -194,7 +202,7 @@ test("text lines render where the font would place them", () => {
   }
 });
 
-test("the brand mark is drawn by default at the start, before the QR", () => {
+test("the brand mark is drawn by default at the end, after the QR", () => {
   const model = { qr: "https://bmap.ezofficeinventory.com/a/611?c=616e", lines: ["PT-LPT-TI-1"] };
   const withBrand = renderLabel(model, { qrScale: 2 });
   const bare = renderLabel(model, { qrScale: 2, showBrand: false });
@@ -205,11 +213,13 @@ test("the brand mark is drawn by default at the start, before the QR", () => {
   assert.equal(bare.brandBlock, null, "showBrand:false omits the brand");
 
   const b = withBrand.brandBlock!;
-  // Layout is logo → QR → text: the logo sits at the left padding, and its right
-  // edge is before the QR block, separated by a gap (so it never touches QR data).
-  assert.equal(b.x, /*padding*/ 2, "brand starts at the left padding");
-  assert.ok(b.x + b.width <= withBrand.qrBlock.x, "brand ends before the QR block");
-  assert.ok(withBrand.qrBlock.x - (b.x + b.width) >= /*gap*/ 6, "a gap separates the logo from the QR");
+  // Layout is text → QR → logo: the logo sits on the right (the leading feed edge
+  // after the print turn), its left edge AFTER the QR block, separated by a gap
+  // (so it never touches QR data), and its right edge at the right padding.
+  const qrRight = withBrand.qrBlock.x + withBrand.qrBlock.size;
+  assert.ok(b.x >= qrRight, "brand starts after the QR block");
+  assert.ok(b.x - qrRight >= /*gap*/ 6, "a gap separates the QR from the logo");
+  assert.equal(b.x + b.width, withBrand.width - /*padding*/ 2, "brand ends at the right padding");
   // Only the feed axis grew: the brand lengthens the natural width, not the across
   // axis for this URL QR (QR block ≥ mark 64 dots).
   assert.equal(withBrand.height, bare.height, "brand must not change the across axis here");
@@ -220,6 +230,59 @@ test("the brand mark is drawn by default at the start, before the QR", () => {
   for (let y = b.y; y < b.y + b.height && !anyInk; y++)
     for (let x = b.x; x < b.x + b.width; x++) if (withBrand.canvas.get(x, y)) { anyInk = true; break; }
   assert.ok(anyInk, "brand mark should have drawn some dots");
+});
+
+test("logo+QR print on the leading feed edge; text is what a too-long label clips", () => {
+  // The core of the "cut the text, not the logo" fix. With the default E11 turn
+  // (quarterTurns=3) the natural-RIGHT edge maps to the LEADING feed column
+  // (printed first, always on the die-cut label) and the natural-LEFT edge to the
+  // TRAILING column (printed last, the end that runs off a too-long label). Since
+  // the layout is text → QR → logo, logo+QR sit on the right and must therefore
+  // occupy strictly-lower (leading) columns than the text.
+  const model = {
+    qr: "https://bmap.ezofficeinventory.com/a/611?c=616e",
+    lines: ["PT-LPT-TI-0007", "SN ABC123", "TECNOLOGIAS DE INFORMACAO"],
+  };
+  const fit = fitLabelStyle(model, E11_GEOMETRY, {}, { quarterTurns: 3 });
+  assert.ok(fit && fit.render.qrBlock, "the fitting render must carry a QR block");
+  const r = fit!.render;
+
+  // Split the natural image at the QR's left edge: [0, qrBlock.x) is the text
+  // region, [qrBlock.x, width) is the QR + logo region. Masking keeps r.width
+  // constant so the two mapped footprints share one column coordinate space.
+  const maskCols = (x0: number, x1: number): LabelRender => {
+    const c = new MonoCanvas(r.width, r.height);
+    for (let y = 0; y < r.height; y++)
+      for (let x = x0; x < x1; x++) if (r.canvas.get(x, y)) c.set(x, y, true);
+    return { ...r, bitmap: c.toBitmap() };
+  };
+  const colRange = (img: { data: Uint8Array; bytesPerLine: number; totalCols: number }) => {
+    let min = Infinity;
+    let max = -Infinity;
+    for (let col = 0; col < img.totalCols; col++) {
+      for (let b = 0; b < img.bytesPerLine; b++) {
+        if (img.data[col * img.bytesPerLine + b] !== 0) {
+          if (col < min) min = col;
+          if (col > max) max = col;
+          break;
+        }
+      }
+    }
+    return { min, max };
+  };
+
+  const logoQr = colRange(labelToColumnMajor(maskCols(r.qrBlock!.x, r.width), E11_GEOMETRY, { quarterTurns: 3 }));
+  const text = colRange(labelToColumnMajor(maskCols(0, r.qrBlock!.x), E11_GEOMETRY, { quarterTurns: 3 }));
+
+  // Logo+QR are strictly ahead of (lower feed columns than) the text.
+  assert.ok(logoQr.max < text.min, "logo+QR must occupy leading feed columns, text the trailing ones");
+  // And logo+QR fit within the 22 mm die-cut length, so they survive a clip that
+  // eats only the trailing text. (Feed content starts at column marginTop.)
+  const budgetDots = E11_LABEL_LENGTH_MM * E11_DOTS_PER_MM;
+  assert.ok(
+    logoQr.max - E11_GEOMETRY.marginTop < budgetDots,
+    `logo+QR feed extent (${logoQr.max - E11_GEOMETRY.marginTop}) must fit the ${budgetDots}-dot label`,
+  );
 });
 
 test("the brand mark never breaks the E11 across-head fit", () => {
