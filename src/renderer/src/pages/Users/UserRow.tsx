@@ -158,13 +158,13 @@ function UserRow({
   const statusBadge = () => {
     switch (userStatusKind(user)) {
       case "disabled":
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-600 border border-amber-200">Desativado</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap bg-amber-50 text-amber-600 border border-amber-200">Desativado</span>;
       case "locked":
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600 border border-red-200"><Lock size={10} />Bloqueado</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap bg-red-50 text-red-600 border border-red-200"><Lock size={10} />Bloqueado</span>;
       case "expired":
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-600 border border-orange-200"><Clock size={10} />Palavra-passe expirada</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap bg-orange-50 text-orange-600 border border-orange-200"><Clock size={10} />Palavra-passe expirada</span>;
       default:
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 border border-emerald-200"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Ativo</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap bg-emerald-50 text-emerald-600 border border-emerald-200"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Ativo</span>;
     }
   };
 
@@ -188,10 +188,10 @@ function UserRow({
             </div>
           </div>
         </td>
-        <td className="px-6 py-3.5 hidden sm:table-cell">
+        <td className="px-6 py-3.5 max-lg:hidden">
           <span className="text-sm text-zinc-500 truncate">{user.EmailAddress || "—"}</span>
         </td>
-        <td className="px-6 py-3.5">
+        <td className="px-6 py-3.5 max-md:hidden">
           {groupName && (
             <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-zinc-100 text-zinc-500">{groupName}</span>
           )}
@@ -218,7 +218,7 @@ function UserRow({
             </button>
 
             {menu && (
-              <div role="menu" className="anim-popover absolute right-0 mt-1 w-52 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20">
+              <div role="menu" className="anim-popover absolute right-0 mt-1 w-52 max-w-[calc(100vw-1rem)] bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20">
                 <MenuItem
                   icon={<User size={13} />}
                   label="Abrir"
@@ -261,14 +261,14 @@ function UserRow({
               role="dialog"
               aria-modal="true"
               aria-labelledby={titleId}
-              className="anim-overlay fixed inset-0 z-30 bg-black/30 backdrop-blur-sm flex items-center justify-center"
+              className="anim-overlay fixed inset-0 z-30 flex items-center justify-center overflow-y-auto p-4 bg-black/30 backdrop-blur-sm"
               // Don't dismiss on a backdrop click while an action is in flight.
               onClick={() => { if (!busy) setModal(null); }}
             >
               <div
                 ref={modalRef}
                 tabIndex={-1}
-                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden focus:outline-none"
+                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto focus:outline-none"
                 onClick={(e) => e.stopPropagation()}
               >
 
@@ -369,7 +369,7 @@ function UserRow({
                 {modal === "details" && (
                   <>
                     <ModalHeader icon={<User size={15} />} title="Detalhes do utilizador" titleId={titleId} subtitle={user.DisplayName || user.SamAccountName} onClose={() => setModal(null)} />
-                    <div className="px-6 py-5 space-y-4 max-h-[60vh] overflow-y-auto">
+                    <div className="px-6 py-5 space-y-4 max-h-[calc(100dvh-13rem)] overflow-y-auto">
                       <div className="flex items-center gap-4 pb-4 border-b border-zinc-100">
                         <div className="w-14 h-14 rounded-full bg-violet-100 flex items-center justify-center flex-shrink-0">
                           <span className="text-xl font-semibold text-violet-700">{initials}</span>

@@ -13,6 +13,11 @@
   --color-deep-purple: #1a0538;
   --color-console: #0f1117;
   --color-tape: #f7f4ec;
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+  --breakpoint-2xl: 1536px;
 }
 
 @font-face {
@@ -54,7 +59,7 @@
 
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
-  html { font-size: 19.6px; }
+  html { font-size: clamp(15px, 1.633vw, 20.5px); }
   body {
     font-family: "BauerMediaSans", system-ui, sans-serif;
     @apply bg-white text-zinc-900 antialiased;

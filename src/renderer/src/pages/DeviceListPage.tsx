@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Search, ServerCrash, RotateCcw, RefreshCw, Settings, Boxes, PackageSearch,
-  Tag, Activity, Building2, Layers, ArrowUpNarrowWide, ArrowDownWideNarrow, X,
+  Tag, Activity, Building2, Layers, ArrowUpNarrowWide, ArrowDownWideNarrow, X, Printer,
 } from "lucide-react";
 import { adAPI, type ADComputer } from "../adAPI";
 import { inventoryAPI, type InventoryAsset, type InventorySourceDevice } from "../inventoryAPI";
@@ -10,6 +10,7 @@ import { getDeviceConfig } from "../lib/deviceConfig";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
 import DeviceRow, { type UrlTemplates } from "./DeviceRow";
+import BatchLabelPrintModal from "../components/BatchLabelPrintModal";
 import FilterDropdown, { type FilterOption } from "../components/ui/FilterDropdown";
 import { Button } from "../components/ui/Button";
 import { focusRing } from "../components/ui/controls";
@@ -54,9 +55,9 @@ function nameCmp(a: ConsolidatedDevice, b: ConsolidatedDevice): number {
 
 // PT labels for the Estado filter, keyed by the StateId deviceState() returns.
 const STATE_LABEL: Record<StateId, string> = {
-  disabled: "Desativado", broken: "Avariado", lost: "Perdido", inactive: "Inativo",
-  retired: "Abatido", available: "Disponível", inuse: "Em uso", active: "Ativo",
-  unknown: "Desconhecido",
+  disabled: "Desativado", maintenance: "Em manutenção", broken: "Avariado", lost: "Perdido",
+  inactive: "Inativo", retired: "Abatido", available: "Disponível", inuse: "Em uso",
+  active: "Ativo", unknown: "Desconhecido",
 };
 /* --------------------------------- cache ---------------------------------- */
 
@@ -116,12 +117,33 @@ export default function DeviceListPage({
   const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Admin-configured deep-link templates (EZOffice / ScreenConnect) from Settings.
+  // Multi-select for batch actions (batch label print). A Set of device.key; the
+  // toggle is a stable useCallback so DeviceRow's memo() stays effective. Selection
+  // persists across filtering (a filtered-out row stays selected in the Set).
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchOpen, setBatchOpen] = useState(false);
+  const toggleSelect = useCallback((key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  // Admin-configured deep-link templates (EZOffice / ScreenConnect) + per-type
+  // maintenance description templates, all from Settings → Dispositivos.
   const [urlTemplates, setUrlTemplates] = useState<UrlTemplates>({ ezoffice: "", screenConnect: "" });
+  const [maintenanceTemplates, setMaintenanceTemplates] = useState<Record<string, string>>({});
   useEffect(() => {
     let alive = true;
     getDeviceConfig()
-      .then((c) => { if (alive) setUrlTemplates({ ezoffice: c.ezofficeUrlTemplate, screenConnect: c.screenConnectUrlTemplate }); })
+      .then((c) => {
+        if (!alive) return;
+        setUrlTemplates({ ezoffice: c.ezofficeUrlTemplate, screenConnect: c.screenConnectUrlTemplate });
+        setMaintenanceTemplates(c.maintenanceTemplates ?? {});
+      })
       .catch(() => {});
     return () => { alive = false; };
   }, []);
@@ -287,6 +309,42 @@ export default function DeviceListPage({
     });
   }, []);
 
+  // Patch a single asset's custody in place after a successful checkout/checkin, so
+  // the row's EZOffice status + holder update immediately. Deliberately NOT a full
+  // refetch: the API's /assets read is stale-while-revalidate (up to ~5 min stale),
+  // so re-fetching right after the write returns the PRE-write row and the change
+  // appears to undo itself. We patch the underlying `assets` (the source of ezStatus
+  // + assignedUserEmail via consolidate) keyed by asset_id, so BOTH an enriched AD row
+  // and an asset-only peripheral row reflect it. Mirrored into the cache.
+  const onCustodyChanged = useCallback(
+    (assetId: string, status: string, assignedUserEmail: string) => {
+      setAssets((prev) => {
+        if (!prev) return prev;
+        const next = prev.map((a) =>
+          a.asset_id === assetId
+            ? { ...a, status, assigned_user_email: assignedUserEmail }
+            : a,
+        );
+        devicesCache = { ...devicesCache, assets: next };
+        return next;
+      });
+    },
+    [],
+  );
+
+  // Patch a single asset's maintenance flag in place after a work order is created,
+  // so the row flips to "Ver manutenção" immediately. Same rationale as
+  // onCustodyChanged: the /assets read is SWR-cached and would return the pre-write
+  // (not-in-maintenance) row. Keyed by asset_id; mirrored into the cache.
+  const onMaintenanceChanged = useCallback((assetId: string, ongoing: boolean) => {
+    setAssets((prev) => {
+      if (!prev) return prev;
+      const next = prev.map((a) => (a.asset_id === assetId ? { ...a, in_maintenance: ongoing } : a));
+      devicesCache = { ...devicesCache, assets: next };
+      return next;
+    });
+  }, []);
+
   // Filter option lists, drawn from the loaded fleet so each dropdown only offers
   // values that actually exist (parity with the Users page).
   const categoriaOptions = useMemo<FilterOption[]>(() => {
@@ -391,24 +449,44 @@ export default function DeviceListPage({
     }
   };
 
+  // The selected devices that still exist in the fleet (stale keys from a reload are
+  // dropped) — drives the action-bar count and the batch modal's snapshot.
+  const selectedDevices = useMemo(() => devices.filter((d) => selected.has(d.key)), [devices, selected]);
+  // Header "select all" acts on the CURRENT filtered set; indeterminate when only
+  // some of it is selected. Recomputed against `filtered` so a filter change re-reads.
+  const allFilteredSelected = filtered.length > 0 && filtered.every((d) => selected.has(d.key));
+  const someFilteredSelected = !allFilteredSelected && filtered.some((d) => selected.has(d.key));
+  const toggleSelectAll = useCallback(() => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSel = filtered.length > 0 && filtered.every((d) => next.has(d.key));
+      if (allSel) for (const d of filtered) next.delete(d.key);
+      else for (const d of filtered) next.add(d.key);
+      return next;
+    });
+  }, [filtered]);
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someFilteredSelected;
+  }, [someFilteredSelected]);
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Toolbar */}
       <div className="px-6 pt-5 pb-4 border-b border-zinc-200 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-zinc-900">Dispositivos</h2>
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
-              <input
-                ref={searchRef}
-                placeholder="Procurar dispositivos…"
-                aria-label="Procurar dispositivos"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-56 focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand transition-all"
-              />
-            </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-base font-semibold text-zinc-900 shrink-0">Dispositivos</h2>
+          <div className="relative min-w-0 flex-1 sm:max-w-xs">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <input
+              ref={searchRef}
+              placeholder="Procurar dispositivos…"
+              aria-label="Procurar dispositivos"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand transition-all"
+            />
+          </div>
+          <div className="flex items-center gap-2 shrink-0 ml-auto">
             {onOpenReconciliation && (
               <button
                 onClick={onOpenReconciliation}
@@ -505,10 +583,29 @@ export default function DeviceListPage({
             )}
           </div>
         )}
+
+        {/* Contextual batch-action bar — only while a selection exists. */}
+        {selectedDevices.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-violet-200 bg-violet-50/60 px-3 py-2">
+            <span className="text-sm font-medium text-violet-800">
+              {selectedDevices.length} {selectedDevices.length === 1 ? "selecionado" : "selecionados"}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <Button size="sm" onClick={() => setBatchOpen(true)}>
+                <Printer size={14} />
+                Imprimir {selectedDevices.length} {selectedDevices.length === 1 ? "etiqueta" : "etiquetas"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={clearSelection}>
+                <X size={13} />
+                Limpar seleção
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-y-auto" onScroll={onScroll}>
+      <div className="flex-1 min-h-0 overflow-y-auto" onScroll={onScroll}>
         {/* Mac/Linux Manager: the fleet comes from the inventory API, not local AD. */}
         {!loading && !error && sourced && (
           <div className="mx-6 mt-4 flex items-center gap-2 rounded-lg border border-violet-100 bg-violet-50/60 px-3 py-2 text-xs text-violet-700">
@@ -560,30 +657,47 @@ export default function DeviceListPage({
             )}
           </div>
         ) : (
-          <table className="anim-fade-in w-full">
-            <thead>
-              <tr className="border-b border-zinc-100">
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Dispositivo</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Departamento</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider hidden md:table-cell">Categoria</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider hidden sm:table-cell">Último início de sessão</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Estado</th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider"><span className="sr-only">Detalhes</span></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-50">
-              {visible.map((d) => (
-                <DeviceRow
-                  key={d.key}
-                  device={d}
-                  toast={toast}
-                  ensureFreshAuth={ensureFreshAuth}
-                  urlTemplates={urlTemplates}
-                  onToggledEnabled={onToggledEnabled}
-                />
-              ))}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="anim-fade-in w-full min-w-[720px]">
+              <thead>
+                <tr className="border-b border-zinc-100">
+                  <th className="pl-6 pr-1 py-3 w-0">
+                    <input
+                      ref={selectAllRef}
+                      type="checkbox"
+                      checked={allFilteredSelected}
+                      onChange={toggleSelectAll}
+                      aria-label="Selecionar todos os dispositivos filtrados"
+                      className={cn("h-4 w-4 cursor-pointer rounded border-zinc-300 accent-violet-600", focusRing)}
+                    />
+                  </th>
+                  <th className="pl-3 pr-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Dispositivo</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-md:hidden">Departamento</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-lg:hidden">Categoria</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-lg:hidden whitespace-nowrap">Último início de sessão</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Estado</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider"><span className="sr-only">Detalhes</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-50">
+                {visible.map((d) => (
+                  <DeviceRow
+                    key={d.key}
+                    device={d}
+                    toast={toast}
+                    ensureFreshAuth={ensureFreshAuth}
+                    urlTemplates={urlTemplates}
+                    maintenanceTemplates={maintenanceTemplates}
+                    onToggledEnabled={onToggledEnabled}
+                    onCustodyChanged={onCustodyChanged}
+                    onMaintenanceChanged={onMaintenanceChanged}
+                    selected={selected.has(d.key)}
+                    onToggleSelect={toggleSelect}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         {hasMore && (
           <div className="px-6 py-3 text-center text-xs text-zinc-500">
@@ -600,6 +714,15 @@ export default function DeviceListPage({
             {anyFilterActive && " — filtrado"}
           </span>
         </div>
+      )}
+
+      {batchOpen && selectedDevices.length > 0 && (
+        <BatchLabelPrintModal
+          devices={selectedDevices}
+          ezofficeTemplate={urlTemplates.ezoffice}
+          toast={toast}
+          onClose={() => setBatchOpen(false)}
+        />
       )}
     </div>
   );

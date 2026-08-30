@@ -332,26 +332,28 @@ function FindingTable<T>({ rows, columns, keyOf }: {
   keyOf: (row: T, index: number) => string;
 }) {
   return (
-    <table className="anim-fade-in w-full">
-      <thead>
-        <tr className="border-b border-zinc-100">
-          {columns.map((c) => (
-            <th key={c.header} className="px-6 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-zinc-500">
-              {c.header}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-zinc-50">
-        {rows.map((row, i) => (
-          <tr key={keyOf(row, i)} className="hover:bg-zinc-50/50 transition-colors">
+    <div className="overflow-x-auto">
+      <table className="anim-fade-in w-full min-w-[720px]">
+        <thead>
+          <tr className="border-b border-zinc-100">
             {columns.map((c) => (
-              <td key={c.header} className="px-6 py-3 text-sm text-zinc-600">{c.cell(row)}</td>
+              <th key={c.header} className="px-6 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-zinc-500">
+                {c.header}
+              </th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody className="divide-y divide-zinc-50">
+          {rows.map((row, i) => (
+            <tr key={keyOf(row, i)} className="hover:bg-zinc-50/50 transition-colors">
+              {columns.map((c) => (
+                <td key={c.header} className="px-6 py-3 text-sm text-zinc-600">{c.cell(row)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

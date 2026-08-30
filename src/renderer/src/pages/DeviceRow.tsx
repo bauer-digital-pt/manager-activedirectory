@@ -1,13 +1,15 @@
 import { useState, useEffect, useId, memo } from "react";
 import {
   Eye, X, Boxes, Copy, ExternalLink, Power, PowerOff, MonitorSmartphone,
-  Server, AlertTriangle, Printer,
+  Server, AlertTriangle, Printer, UserCheck, UserMinus, Wrench, ClipboardList,
 } from "lucide-react";
 import { adAPI } from "../adAPI";
+import { inventoryAPI } from "../inventoryAPI";
 import { cn } from "../lib/cn";
 import { useOutsideClick } from "../hooks/useOutsideClick";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { Button } from "../components/ui/Button";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { focusRing } from "../components/ui/controls";
 import {
   type ConsolidatedDevice, type DeviceSource, type Tone,
@@ -15,6 +17,9 @@ import {
   applyUrlTemplate, openExternal, sourceLabel, SOURCE_ORDER,
 } from "../lib/devices";
 import LabelPreviewModal from "../components/LabelPreviewModal";
+import CheckoutMemberModal from "../components/CheckoutMemberModal";
+import MaintenanceStartModal from "../components/MaintenanceStartModal";
+import MaintenanceViewModal from "../components/MaintenanceViewModal";
 
 // Admin-configured deep-link templates (from Settings → Dispositivos). Empty
 // strings mean the corresponding action is hidden.
@@ -30,12 +35,13 @@ const TONE_BADGE: Record<Tone, string> = {
   red: "bg-red-50 text-red-600 border-red-200",
   zinc: "bg-zinc-100 text-zinc-500 border-zinc-200",
   violet: "bg-violet-50 text-violet-600 border-violet-200",
+  sky: "bg-sky-50 text-sky-600 border-sky-200",
 };
 
 function StatusBadge({ device }: { device: ConsolidatedDevice }) {
   const { label, tone } = deviceState(device);
   return (
-    <span className={cn("inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border", TONE_BADGE[tone])}>
+    <span className={cn("inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border whitespace-nowrap", TONE_BADGE[tone])}>
       {tone === "emerald" && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
       {label}
     </span>
@@ -107,7 +113,12 @@ function DeviceRow({
   toast,
   ensureFreshAuth,
   urlTemplates,
+  maintenanceTemplates,
   onToggledEnabled,
+  onCustodyChanged,
+  onMaintenanceChanged,
+  selected = false,
+  onToggleSelect,
 }: {
   device: ConsolidatedDevice;
   toast?: { success: (m: string) => void; error: (m: string) => void };
@@ -118,6 +129,25 @@ function DeviceRow({
   // Called after a successful enable/disable so the list can patch the row's state
   // in place (no full refetch). Receives the row key + the new enabled value.
   onToggledEnabled?: (key: string, enabled: boolean) => void;
+  // Called after a successful EZOffice custody write (checkout/checkin) so the list
+  // can patch the underlying asset in place — status → "in use"/"available" and the
+  // holder's email. A full refetch is deliberately avoided: the API's /assets read is
+  // SWR-cached (up to ~5 min stale), so it would return the PRE-write row and appear
+  // to "undo" the change. Keyed by asset_id (consolidate overlays assets by that id).
+  // Wire to a STABLE callback (DeviceListPage.onCustodyChanged) to keep memo() effective.
+  onCustodyChanged?: (assetId: string, status: string, assignedUserEmail: string) => void;
+  // Per-maintenance-type description templates (Settings → Dispositivos), passed to
+  // the start-maintenance modal to pre-fill the description.
+  maintenanceTemplates?: Record<string, string>;
+  // Called after a maintenance work order is created so the list can flag the asset
+  // in maintenance in place (ongoing → true). Keyed by asset_id, mirroring
+  // onCustodyChanged — a refetch would return the SWR-cached, pre-write row.
+  onMaintenanceChanged?: (assetId: string, ongoing: boolean) => void;
+  // Multi-select for batch actions (e.g. batch label print). `selected` is this
+  // row's checkbox state; `onToggleSelect(key)` flips it. A stable callback keeps
+  // the memo() effective (see DeviceListPage). Absent → the checkbox is inert.
+  selected?: boolean;
+  onToggleSelect?: (key: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -125,6 +155,13 @@ function DeviceRow({
   // Label preview + print dialog (SUPVAN E11). Pure client-side render; the print
   // button degrades gracefully until the Bluetooth transport lands.
   const [preview, setPreview] = useState(false);
+  // EZOffice custody: checkout picker modal + checkin confirm dialog (+ its busy).
+  const [checkout, setCheckout] = useState(false);
+  const [checkin, setCheckin] = useState(false);
+  const [checkinBusy, setCheckinBusy] = useState(false);
+  // Maintenance work orders: start (two-phase form + PDF) / read-only view.
+  const [maintStart, setMaintStart] = useState(false);
+  const [maintView, setMaintView] = useState(false);
   // Two-step confirm for the (reversible but disruptive) enable/disable write.
   const [confirmToggle, setConfirmToggle] = useState(false);
   const titleId = useId();
@@ -145,6 +182,22 @@ function DeviceRow({
   // writes are unavailable off-Windows anyway — so this naturally hides there).
   const canToggle = device.sources.includes("ad") && device.enabled !== undefined;
   const identity = device.distinguishedName || device.name;
+
+  // EZOffice custody actions live only on rows backed by an asset we can target by
+  // id. The label reads the RAW ezStatus (not deviceState(), which AD enabled /
+  // last-logon recency would override): "available" → checkout, "in use" → checkin;
+  // retired/broken/lost (or no assetId) → no custody action at all.
+  const ezSource = device.sources.includes("ezoffice") && !!device.assetId;
+  const ez = (device.ezStatus || "").toLowerCase();
+  const canCheckout = ezSource && ez === "available";
+  const canCheckin = ezSource && ez === "in use";
+
+  // Maintenance work orders (also asset-backed). The heuristic ongoingMaintenance
+  // flag splits the action: not in maintenance → "Começar manutenção" (opens the
+  // create flow); already in maintenance → "Ver manutenção" (read-only). Any
+  // EZOffice-backed asset can start one, regardless of custody state.
+  const hasMaintenance = ezSource && !!device.ongoingMaintenance;
+  const canStartMaint = ezSource && !device.ongoingMaintenance;
 
   // Resolved external links (null when the template is empty or can't be filled).
   const linkVars = { name: device.name, serial: device.serialNumber, id: device.assetId };
@@ -179,6 +232,24 @@ function DeviceRow({
     }
   };
 
+  // Return the asset to the inventory (checkin). Confirmed via the ConfirmDialog; on
+  // success the list patches the asset in place (available + no holder) rather than
+  // refetching the SWR-cached, still-stale /assets read (see onCustodyChanged).
+  const doCheckin = async () => {
+    if (!device.assetId || checkinBusy) return;
+    const assetId = device.assetId;
+    setCheckinBusy(true);
+    const r = await inventoryAPI.checkin(assetId);
+    setCheckinBusy(false);
+    setCheckin(false);
+    if (r.ok) {
+      toast?.success(`${name} devolvido ao inventário`);
+      onCustodyChanged?.(assetId, "available", "");
+    } else {
+      toast?.error(r.error ?? "Não foi possível fazer checkin do ativo.");
+    }
+  };
+
   // Esc closes; Enter closes when no toggle-confirm is pending.
   useEffect(() => {
     if (!open) return;
@@ -204,11 +275,27 @@ function DeviceRow({
   return (
     <>
       <tr
-        className="group hover:bg-zinc-50/80 transition-colors select-none"
+        className={cn(
+          "group transition-colors select-none",
+          selected ? "bg-violet-50/60 hover:bg-violet-50" : "hover:bg-zinc-50/80",
+        )}
         onDoubleClick={() => setOpen(true)}
         onContextMenu={(e) => { e.preventDefault(); setMenu(true); }}
       >
-        <td className="px-6 py-3.5">
+        <td
+          className="pl-6 pr-1 py-3.5 w-0"
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect?.(device.key)}
+            aria-label={`Selecionar ${name}`}
+            className={cn("h-4 w-4 cursor-pointer rounded border-zinc-300 accent-violet-600", focusRing)}
+          />
+        </td>
+        <td className="pl-3 pr-6 py-3.5">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-violet-100 flex items-center justify-center flex-shrink-0">
               <Icon size={15} className="text-violet-700" />
@@ -222,15 +309,15 @@ function DeviceRow({
             </div>
           </div>
         </td>
-        <td className="px-6 py-3.5">
+        <td className="px-6 py-3.5 max-md:hidden">
           {device.department
             ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-zinc-100 text-zinc-500">{device.department}</span>
             : <span className="text-xs text-zinc-300">—</span>}
         </td>
-        <td className="px-6 py-3.5 hidden md:table-cell">
+        <td className="px-6 py-3.5 max-lg:hidden">
           <span className="text-sm text-zinc-500 truncate">{categoryCol}</span>
         </td>
-        <td className="px-6 py-3.5 hidden sm:table-cell">
+        <td className="px-6 py-3.5 max-lg:hidden">
           <span className="text-sm text-zinc-500" title={absoluteDate(device.lastLogonDate)}>{lastSeenText(device)}</span>
         </td>
         <td className="px-6 py-3.5"><StatusBadge device={device} /></td>
@@ -252,7 +339,7 @@ function DeviceRow({
             </button>
 
             {menu && (
-              <div role="menu" className="anim-popover absolute right-0 mt-1 w-56 bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20 text-left">
+              <div role="menu" className="anim-popover absolute right-0 mt-1 w-56 max-w-[calc(100vw-1rem)] bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20 text-left">
                 <DeviceMenuItem icon={<Eye size={13} />} label="Abrir detalhes" onClick={() => { setMenu(false); setOpen(true); }} />
                 <div className="border-t border-zinc-100" />
                 <DeviceMenuItem icon={<Copy size={13} />} label="Copiar nome" onClick={() => copy(device.name, "Nome copiado")} />
@@ -269,6 +356,28 @@ function DeviceRow({
                 {screenConnectUrl && (
                   <DeviceMenuItem icon={<ExternalLink size={13} />} label="Abrir no ScreenConnect" onClick={() => { setMenu(false); openLink(screenConnectUrl); }} />
                 )}
+                {(canCheckout || canCheckin) && (
+                  <>
+                    <div className="border-t border-zinc-100" />
+                    {canCheckout && (
+                      <DeviceMenuItem icon={<UserCheck size={13} />} label="Fazer checkout" onClick={() => { setMenu(false); setCheckout(true); }} />
+                    )}
+                    {canCheckin && (
+                      <DeviceMenuItem icon={<UserMinus size={13} />} label="Fazer checkin" onClick={() => { setMenu(false); setCheckin(true); }} />
+                    )}
+                  </>
+                )}
+                {(canStartMaint || hasMaintenance) && (
+                  <>
+                    <div className="border-t border-zinc-100" />
+                    {canStartMaint && (
+                      <DeviceMenuItem icon={<Wrench size={13} />} label="Começar manutenção" onClick={() => { setMenu(false); setMaintStart(true); }} />
+                    )}
+                    {hasMaintenance && (
+                      <DeviceMenuItem icon={<ClipboardList size={13} />} label="Ver manutenção" onClick={() => { setMenu(false); setMaintView(true); }} />
+                    )}
+                  </>
+                )}
                 <div className="border-t border-zinc-100" />
                 <DeviceMenuItem icon={<Printer size={13} />} label="Imprimir etiqueta" onClick={() => { setMenu(false); setPreview(true); }} />
               </div>
@@ -279,19 +388,19 @@ function DeviceRow({
 
       {open && (
         <tr>
-          <td colSpan={6} className="p-0 border-0">
+          <td colSpan={7} className="p-0 border-0">
             <div
               role="dialog"
               aria-modal="true"
               aria-labelledby={titleId}
-              className="anim-overlay fixed inset-0 z-30 bg-black/30 backdrop-blur-sm flex items-center justify-center"
+              className="anim-overlay fixed inset-0 z-30 flex items-center justify-center overflow-y-auto p-4 bg-black/30 backdrop-blur-sm"
               // Don't dismiss on a backdrop click while a toggle write is in flight.
               onClick={() => { if (!busy) setOpen(false); }}
             >
               <div
                 ref={cardRef}
                 tabIndex={-1}
-                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden focus:outline-none"
+                className="anim-modal bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto focus:outline-none"
                 onClick={(e) => e.stopPropagation()}
               >
                 <ModalHeader
@@ -301,7 +410,7 @@ function DeviceRow({
                   subtitle={stripDomain(device.dnsHostName) || name}
                   onClose={() => setOpen(false)}
                 />
-                <div className="px-6 py-5 space-y-4 max-h-[60vh] overflow-y-auto">
+                <div className="px-6 py-5 space-y-4 max-h-[calc(100dvh-13rem)] overflow-y-auto">
                   <div className="flex items-center gap-4 pb-4 border-b border-zinc-100">
                     <div className="w-14 h-14 rounded-2xl bg-violet-100 flex items-center justify-center flex-shrink-0">
                       <Icon size={24} className="text-violet-700" />
@@ -337,6 +446,7 @@ function DeviceRow({
                       {device.serialNumber && <DetailRow label="Nº de série" value={device.serialNumber} mono />}
                       {device.category && <DetailRow label="Categoria" value={device.category} />}
                       {device.ezStatus && <DetailRow label="Estado (EZOffice)" value={ezStatusLabel(device.ezStatus)} />}
+                      {device.ongoingMaintenance && <DetailRow label="Manutenção" value="Em curso" />}
                       {device.assignedUserEmail && <DetailRow label="Utilizador atribuído" value={device.assignedUserEmail} />}
                       {device.assetId && <DetailRow label="ID do ativo" value={device.assetId} mono />}
                     </DetailSection>
@@ -425,7 +535,7 @@ function DeviceRow({
 
       {preview && (
         <tr>
-          <td colSpan={6} className="p-0 border-0">
+          <td colSpan={7} className="p-0 border-0">
             <LabelPreviewModal
               device={device}
               // The coded EZOffice QR URL (…/a/<seq>?c=<code>) — what a scan needs to
@@ -439,6 +549,69 @@ function DeviceRow({
               toast={toast}
               onClose={() => setPreview(false)}
             />
+          </td>
+        </tr>
+      )}
+
+      {checkout && (
+        <tr>
+          <td colSpan={7} className="p-0 border-0">
+            <CheckoutMemberModal
+              device={device}
+              toast={toast}
+              onClose={() => setCheckout(false)}
+              onDone={(email) => {
+                setCheckout(false);
+                if (device.assetId) onCustodyChanged?.(device.assetId, "in use", email);
+              }}
+            />
+          </td>
+        </tr>
+      )}
+
+      {checkin && (
+        <tr>
+          <td colSpan={7} className="p-0 border-0">
+            <ConfirmDialog
+              open
+              title="Fazer checkin"
+              message={
+                <>
+                  Devolver <span className="font-medium text-zinc-700">{name}</span>
+                  {holder ? <> (atribuído a <span className="font-medium text-zinc-700">{holder}</span>)</> : null}
+                  {" "}ao inventário?
+                </>
+              }
+              confirmLabel="Fazer checkin"
+              busy={checkinBusy}
+              onConfirm={doCheckin}
+              onCancel={() => setCheckin(false)}
+            />
+          </td>
+        </tr>
+      )}
+
+      {maintStart && (
+        <tr>
+          <td colSpan={7} className="p-0 border-0">
+            <MaintenanceStartModal
+              device={device}
+              maintenanceTemplates={maintenanceTemplates}
+              toast={toast}
+              onClose={() => setMaintStart(false)}
+              onDone={(ongoing) => {
+                setMaintStart(false);
+                if (device.assetId) onMaintenanceChanged?.(device.assetId, ongoing);
+              }}
+            />
+          </td>
+        </tr>
+      )}
+
+      {maintView && (
+        <tr>
+          <td colSpan={7} className="p-0 border-0">
+            <MaintenanceViewModal device={device} onClose={() => setMaintView(false)} />
           </td>
         </tr>
       )}

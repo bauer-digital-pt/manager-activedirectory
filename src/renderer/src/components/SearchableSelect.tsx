@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronsUpDown, Loader2, Search, X } from "lucide-react";
 import { cn } from "../lib/cn";
 import { useOutsideClick } from "../hooks/useOutsideClick";
@@ -59,6 +59,15 @@ export default function SearchableSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0); // highlighted index within `rows`
+  // Which way the menu opens. Dropped into scrollable wizard steps, a trigger
+  // near the bottom would open downward and get clipped by the step's
+  // `overflow-y-auto` (the "disappearing dropdown"); flip it up when there's
+  // more room above than below.
+  const [placement, setPlacement] = useState<"down" | "up">("down");
+  // Hard cap on the popover height = the room actually available on the chosen
+  // side, so it can never spill past the clip rect even when neither side fits
+  // the full menu. null = unconstrained (max-h-60 governs).
+  const [maxH, setMaxH] = useState<number | null>(null);
   const listId = useId();
   // Close on outside click while open (ref goes on the root wrapper).
   const rootRef = useOutsideClick<HTMLDivElement>(open, () => setOpen(false));
@@ -96,6 +105,37 @@ export default function SearchableSelect({
     ],
     [clearable, clearLabel, filtered]
   );
+
+  // On open, decide up vs down BEFORE paint (useLayoutEffect avoids a flash).
+  // Boundaries: the nearest scrollable ancestor's clip rect, capped by the
+  // viewport — whichever clips first is what would eat the menu.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const root = rootRef.current;
+    if (!root) return;
+    const rect = root.getBoundingClientRect();
+    let top = 0;
+    let bottom = window.innerHeight;
+    let el = root.parentElement;
+    while (el) {
+      const oy = getComputedStyle(el).overflowY;
+      if (oy === "auto" || oy === "scroll") {
+        const r = el.getBoundingClientRect();
+        top = Math.max(top, r.top);
+        bottom = Math.min(bottom, r.bottom);
+        break;
+      }
+      el = el.parentElement;
+    }
+    const below = bottom - rect.bottom;
+    const above = rect.top - top;
+    // Open toward the side with more room; cap to what that side offers.
+    const down = below >= above;
+    const avail = (down ? below : above) - 12; // leave a small gap
+    setPlacement(down ? "down" : "up");
+    setMaxH(Math.max(160, Math.min(320, Math.round(avail))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // On open: focus the search, reset the query, and highlight the current value.
   useEffect(() => {
@@ -186,8 +226,14 @@ export default function SearchableSelect({
       )}
 
       {open && (
-        <div className="anim-popover absolute z-30 mt-1.5 w-full rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden">
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100">
+        <div
+          style={maxH ? { maxHeight: maxH } : undefined}
+          className={cn(
+            "anim-popover absolute z-30 w-full flex flex-col rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden",
+            placement === "up" ? "bottom-full mb-1.5" : "top-full mt-1.5"
+          )}
+        >
+          <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2 border-b border-zinc-100">
             {loading
               ? <Loader2 size={14} className="flex-shrink-0 text-violet-500 animate-spin" />
               : <Search size={14} className="flex-shrink-0 text-zinc-400" />}
@@ -204,7 +250,7 @@ export default function SearchableSelect({
               className="flex-1 bg-transparent text-sm text-zinc-800 placeholder:text-zinc-300 focus:outline-none"
             />
           </div>
-          <div ref={listRef} id={listId} role="listbox" className="max-h-60 overflow-y-auto py-1">
+          <div ref={listRef} id={listId} role="listbox" className="flex-1 min-h-0 max-h-60 overflow-y-auto py-1">
             {rows.length === 0 ? (
               <div className="px-3 py-6 text-center text-sm text-zinc-400">
                 {loading

@@ -502,7 +502,7 @@ export default function CreateUserWizard({
           and become unscrollable (First/Last name unreachable on short windows).
           Instead the card centres itself with `my-auto`, which collapses to 0
           once it overflows, keeping it fully scrollable from the top. */}
-      <div className="flex-1 overflow-y-auto flex flex-col items-center px-6 py-8">
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center px-6 py-8">
         <div key={step} className={cn(
           "anim-step w-full max-w-md space-y-5",
           step !== "group" && "my-auto"
@@ -594,7 +594,7 @@ export default function CreateUserWizard({
                 <h3 className="text-sm font-semibold text-zinc-900">Detalhes do utilizador</h3>
                 <p className="text-xs text-zinc-500 mt-0.5">Preenche os dados pessoais do utilizador.</p>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
                 <Field label="Nome próprio">
                   <input ref={firstNameRef} value={form.firstName}
                     onChange={(e) => set("firstName", e.target.value)}
@@ -711,7 +711,7 @@ export default function CreateUserWizard({
                 <input ref={streetRef} value={form.street}
                   onChange={(e) => set("street", e.target.value)} className={inputCls} />
               </Field>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
                 <Field label="Cidade">
                   <input ref={cityRef} value={form.city}
                     onChange={(e) => set("city", e.target.value)} className={inputCls} />
@@ -790,7 +790,7 @@ export default function CreateUserWizard({
                 ).map(([label, val]) => (
                   <div key={label} className="flex items-center justify-between px-4 py-3">
                     <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">{label}</span>
-                    <span className="text-sm font-medium text-zinc-800 text-right max-w-xs">{val}</span>
+                    <span className="text-sm font-medium text-zinc-800 text-right max-w-xs min-w-0 truncate">{val}</span>
                   </div>
                 ))}
                 <div className="px-4 py-3 space-y-1">
@@ -862,7 +862,7 @@ function CheckOption({ checked, onChange, label, disabled, hint }: { checked: bo
 
 function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5 min-w-0">
       <label htmlFor={htmlFor} className="text-xs font-medium text-zinc-600">{label}</label>
       {children}
     </div>

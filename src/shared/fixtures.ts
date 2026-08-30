@@ -150,7 +150,8 @@ export function mockAssets(): InventoryAsset[] {
     purchased_on: "", assigned_user_email, exempt: true,
   });
   return [
-    laptop("1", "PT-LPT-IT-01",  "5CD1234ABC", "in use",    "joao.silva@bmap.lis"),
+    // IT-01 is flagged under maintenance so the device menu shows "Ver manutenção".
+    { ...laptop("1", "PT-LPT-IT-01", "5CD1234ABC", "in use", "joao.silva@bmap.lis"), in_maintenance: true },
     laptop("2", "PT-LPT-IT-02",  "5CD5678DEF", "in use",    "maria.costa@bmap.lis"),
     laptop("3", "PT-LPT-ADM-01", "5CD9999XYZ", "in use",    "ana.ferreira@bmap.lis"),
     laptop("4", "PT-LPT-MKT-01", "5CDNOSRC00", "available", ""),

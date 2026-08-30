@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, Menu, systemPreferences, shell } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, Menu, systemPreferences, shell, dialog } from "electron";
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { spawn, execFile } from "child_process";
@@ -18,6 +18,7 @@ import {
 } from "./logbus";
 import { registerPrintIpc } from "./supvan/ipc";
 import { wireBluetooth } from "./ble/picker";
+import { renderHtmlToPdf, printHtml } from "./pdf/render";
 
 const { autoUpdater } = electronUpdater;
 
@@ -255,6 +256,18 @@ function normalizePrinterMap(raw: unknown): Record<string, string[]> {
   return out;
 }
 
+// Coerce a plain string->string map (maintenance templates), dropping non-string
+// values. Empty-string templates are kept: an admin may deliberately clear one.
+function normalizeStringMap(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (raw && typeof raw === "object") {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+  }
+  return out;
+}
+
 // Extracted so the same coercion guards a device config merged in from the remote
 // (pyexp) settings document, not just the local file.
 function normalizeDeviceConfig(raw: unknown): DeviceConfig {
@@ -273,6 +286,7 @@ function normalizeDeviceConfig(raw: unknown): DeviceConfig {
     // page. An admin can still set a template in Settings for the row's link button.
     ezofficeUrlTemplate: typeof r.ezofficeUrlTemplate === "string" ? r.ezofficeUrlTemplate : "",
     screenConnectUrlTemplate: typeof r.screenConnectUrlTemplate === "string" ? r.screenConnectUrlTemplate : "",
+    maintenanceTemplates: normalizeStringMap(r.maintenanceTemplates),
   };
 }
 
@@ -287,7 +301,7 @@ function demoDeviceConfig(): DeviceConfig {
   for (const d of ["ADM", "RCM", "CDD", "MKT", "NWS", "RTO", "COM", "DIG", "EVT", "HR", "IT", "LEG"]) {
     ouMap[d] = `OU=${d},OU=O365,OU=BMAP Devices,DC=bmap,DC=lis`;
   }
-  return { ouMap, anyConnectSource: "", screenConnectSource: "", printerMap: { ADM: ["ADM"], IT: ["PRO", "MRK"] }, printerSource: "", smlPlayerSource: "", smlPlayerIni: "", ezofficeUrlTemplate: "", screenConnectUrlTemplate: "" };
+  return { ouMap, anyConnectSource: "", screenConnectSource: "", printerMap: { ADM: ["ADM"], IT: ["PRO", "MRK"] }, printerSource: "", smlPlayerSource: "", smlPlayerIni: "", ezofficeUrlTemplate: "", screenConnectUrlTemplate: "", maintenanceTemplates: {} };
 }
 function readDeviceConfig(): DeviceConfig {
   // Fleet (pyexp) config wins when present, so every install sees the same device
@@ -1588,6 +1602,14 @@ function friendlyInventoryError(status: number, body: string): string {
   if (status === 404) {
     return "Endpoint de inventário não encontrado. Confirma o endereço da API em Definições → Inventário.";
   }
+  // Write-path conflicts (checkout/checkin): the asset moved under us, or the API
+  // rejected the payload. Read callers effectively never see these.
+  if (status === 409) {
+    return "O estado do ativo mudou entretanto (conflito). Atualiza a lista e tenta novamente.";
+  }
+  if (status === 422) {
+    return "A API de inventário rejeitou o pedido (dados inválidos).";
+  }
   if (status >= 500) {
     return `A API de inventário devolveu um erro do servidor (${status}). Tenta novamente dentro de momentos.`;
   }
@@ -1775,6 +1797,63 @@ async function inventoryPut<T>(
       return { ok: false, status: 0, error: `A API de inventário não respondeu em ${Math.round(timeoutMs / 1000)}s.` };
     }
     return { ok: false, status: 0, error: describeFetchError(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Core POST: an authenticated WRITE against /api/v1, signed with the CURRENT LOGIN
+// credentials (same credential passthrough as inventoryGet — no service account, no
+// shared token). The only writes the app makes are EZOffice custody actions
+// (checkout/checkin), each gated server-side on require_ad_login (any signed-in AD
+// user). It returns the same PSResult<T> envelope as the reads — a non-2xx collapses
+// to { ok:false, error } via friendlyInventoryError — so callers surface one
+// consistent shape. A 204 / empty / non-JSON success is a bare { ok:true } (the
+// renderer refetches the fleet after a write, so the response body isn't needed).
+async function inventoryPost<T>(path: string, body: unknown, timeoutMs = 20000): Promise<PSResult<T>> {
+  if (!readStoredInventory().enabled) {
+    return { ok: false, error: "A integração de inventário está desativada (Definições → Inventário)." };
+  }
+  const auth = sessionAuthHeader();
+  if (!auth) {
+    return { ok: false, error: "É necessário iniciar sessão para escrever na API de inventário." };
+  }
+  const resolved = resolveInventory();
+  if (!resolved.ok) return resolved;
+  warnIfInsecureInventory(resolved.baseUrl);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(`${resolved.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: auth,
+      },
+      body: JSON.stringify(body ?? {}),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return { ok: false, error: friendlyInventoryError(resp.status, text) };
+    }
+    const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
+    if (resp.status === 204 || !contentType.includes("application/json")) {
+      return { ok: true };
+    }
+    try {
+      return { ok: true, data: (await resp.json()) as T };
+    } catch {
+      // A 2xx with an unreadable body is still a success (the write went through).
+      return { ok: true };
+    }
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      return { ok: false, error: `A API de inventário não respondeu em ${Math.round(timeoutMs / 1000)}s.` };
+    }
+    return { ok: false, error: describeFetchError(e) };
   } finally {
     clearTimeout(timer);
   }
@@ -2189,6 +2268,133 @@ handle("inventory:screenconnect-devices", async () => inventoryGet("/api/v1/devi
 // cold cache — give it a generous ceiling (the API caches the result afterwards).
 handle("inventory:reconciliation", async () => inventoryGet("/api/v1/reconciliation", 90000));
 
+// --- Inventory custody writes (EZOffice checkout / checkin) ---
+// Signed with the login session; the API gates each on require_ad_login (ANY
+// signed-in AD user, not admin-only). The renderer refetches the fleet on success,
+// so the row's EZOffice status + assigned user reflect the write.
+//
+// The member list feeds the checkout picker. The API returns every member and the
+// picker filters locally; the optional `q` is forwarded as ?q= so a future
+// server-side filter can use it without a client change.
+handle("inventory:members", async (_e, rawQuery) => {
+  const q = String(rawQuery ?? "").trim();
+  const path = q ? `/api/v1/members?q=${encodeURIComponent(q)}` : "/api/v1/members";
+  return inventoryGet(path);
+});
+// Assign the asset to an EZOffice member. Body: { member_id, comments? }.
+handle("inventory:checkout", async (_e, rawAssetId, rawMemberId, rawComments) => {
+  const assetId = String(rawAssetId ?? "").trim();
+  const memberId = String(rawMemberId ?? "").trim();
+  if (!assetId) return { ok: false, error: "Falta o identificador do ativo." };
+  if (!memberId) return { ok: false, error: "Falta o utilizador para atribuir o ativo." };
+  const comments = String(rawComments ?? "").trim();
+  const body: { member_id: string; comments?: string } = { member_id: memberId };
+  if (comments) body.comments = comments;
+  return inventoryPost(`/api/v1/assets/${encodeURIComponent(assetId)}/checkout`, body);
+});
+// Return a checked-out asset to available. Body: { comments? }.
+handle("inventory:checkin", async (_e, rawAssetId, rawComments) => {
+  const assetId = String(rawAssetId ?? "").trim();
+  if (!assetId) return { ok: false, error: "Falta o identificador do ativo." };
+  const comments = String(rawComments ?? "").trim();
+  const body: { comments?: string } = {};
+  if (comments) body.comments = comments;
+  return inventoryPost(`/api/v1/assets/${encodeURIComponent(assetId)}/checkin`, body);
+});
+
+// --- Inventory maintenance (EZOffice work orders) ---
+// Same auth model as the custody writes (login session, require_ad_login).
+// The type list feeds the "Começar manutenção" category dropdown; the server wraps
+// the names in { types: [...] } so we unwrap to the flat string[] the picker wants
+// (an empty list when the Work Orders module is disabled server-side).
+handle("inventory:maintenance-types", async () => {
+  const r = await inventoryGet<{ types?: string[] }>("/api/v1/maintenance-types");
+  if (!r.ok) return r;
+  return { ok: true, data: Array.isArray(r.data?.types) ? r.data.types : [] };
+});
+// The asset's current open work order (read-only "Ver manutenção" view).
+handle("inventory:maintenance", async (_e, rawAssetId) => {
+  const assetId = String(rawAssetId ?? "").trim();
+  if (!assetId) return { ok: false, error: "Falta o identificador do ativo." };
+  return inventoryGet(`/api/v1/assets/${encodeURIComponent(assetId)}/maintenance`);
+});
+// Open a maintenance work order. Body: { title, priority?, work_type_name?,
+// description?, asset_name?, start? }. title is required.
+handle("inventory:start-maintenance", async (_e, rawAssetId, rawBody) => {
+  const assetId = String(rawAssetId ?? "").trim();
+  if (!assetId) return { ok: false, error: "Falta o identificador do ativo." };
+  const src = (rawBody ?? {}) as Record<string, unknown>;
+  const title = String(src.title ?? "").trim();
+  if (!title) return { ok: false, error: "Falta o título da manutenção." };
+  const body: {
+    title: string; priority?: string; work_type_name?: string;
+    description?: string; asset_name?: string; start?: boolean;
+  } = { title };
+  const priority = String(src.priority ?? "").trim();
+  if (priority) body.priority = priority;
+  const workType = String(src.work_type_name ?? "").trim();
+  if (workType) body.work_type_name = workType;
+  const description = String(src.description ?? "").trim();
+  if (description) body.description = description;
+  const assetName = String(src.asset_name ?? "").trim();
+  if (assetName) body.asset_name = assetName;
+  if (src.start === true) body.start = true;
+  return inventoryPost(`/api/v1/assets/${encodeURIComponent(assetId)}/maintenance`, body);
+});
+
+// --- Generic document PDF / print IPC ---
+// The renderer builds the finished HTML (e.g. a maintenance order) and hands it
+// here; main renders it in a hidden BrowserWindow (see ./pdf/render) — save to a
+// user-chosen file, or send to the system printer. Main is document-agnostic.
+
+// Strip anything but a safe filename so the caller can't smuggle a path into the
+// save dialog's default; always land on a .pdf extension.
+function safePdfName(raw: unknown): string {
+  const base = String(raw ?? "").replace(/[/\\]+/g, " ").replace(/[\x00-\x1f]+/g, "").trim();
+  const name = base || "documento";
+  return name.toLowerCase().endsWith(".pdf") ? name : `${name}.pdf`;
+}
+
+// Render HTML to a PDF and let the user pick where to save it. Returns the chosen
+// path, or { canceled: true } if the user dismissed the dialog (not an error).
+handle("pdf:save", async (_e, rawPayload): Promise<PSResult<{ path?: string; canceled?: boolean }>> => {
+  const p = (rawPayload ?? {}) as { html?: unknown; suggestedName?: unknown };
+  const html = typeof p.html === "string" ? p.html : "";
+  if (!html.trim()) return { ok: false, error: "Documento vazio." };
+  let pdf: Buffer;
+  try {
+    pdf = await renderHtmlToPdf(html);
+  } catch (err) {
+    return { ok: false, error: `Falha ao gerar o PDF: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const defaultPath = join(app.getPath("downloads"), safePdfName(p.suggestedName));
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const res = parent
+    ? await dialog.showSaveDialog(parent, { defaultPath, filters: [{ name: "PDF", extensions: ["pdf"] }] })
+    : await dialog.showSaveDialog({ defaultPath, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+  if (res.canceled || !res.filePath) return { ok: true, data: { canceled: true } };
+  try {
+    writeFileSync(res.filePath, pdf);
+  } catch (err) {
+    return { ok: false, error: `Não foi possível guardar o ficheiro: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  return { ok: true, data: { path: res.filePath } };
+});
+
+// Render HTML and open the system print dialog for it. A user-cancelled print
+// dialog resolves cleanly (ok:true) — only a real printer error surfaces.
+handle("pdf:print", async (_e, rawPayload): Promise<PSResult<null>> => {
+  const p = (rawPayload ?? {}) as { html?: unknown };
+  const html = typeof p.html === "string" ? p.html : "";
+  if (!html.trim()) return { ok: false, error: "Documento vazio." };
+  try {
+    await printHtml(html);
+    return { ok: true, data: null };
+  } catch (err) {
+    return { ok: false, error: `Falha ao imprimir: ${err instanceof Error ? err.message : String(err)}` };
+  }
+});
+
 // --- Inventory config IPC ---
 // Only the address + master switch are persisted; credentials come from the live
 // login session (see inventoryGet), never from disk.
@@ -2231,6 +2437,7 @@ handle("config:set-device-config", async (_e, rawPayload) => {
     smlPlayerIni: p.smlPlayerIni !== undefined ? String(p.smlPlayerIni) : current.smlPlayerIni,
     ezofficeUrlTemplate: p.ezofficeUrlTemplate !== undefined ? String(p.ezofficeUrlTemplate) : current.ezofficeUrlTemplate,
     screenConnectUrlTemplate: p.screenConnectUrlTemplate !== undefined ? String(p.screenConnectUrlTemplate) : current.screenConnectUrlTemplate,
+    maintenanceTemplates: p.maintenanceTemplates !== undefined ? normalizeStringMap(p.maintenanceTemplates) : current.maintenanceTemplates,
   };
   writeDeviceConfig(next);
   // Persist the dirty flag and push fire-and-forget — same rationale as set-settings:

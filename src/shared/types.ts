@@ -222,6 +222,51 @@ export interface DeviceConfig {
   // placeholders. Empty = the corresponding button is hidden.
   ezofficeUrlTemplate: string;
   screenConnectUrlTemplate: string;
+  // EZOffice maintenance-type name -> default description template, pre-filled in the
+  // "Começar manutenção" modal (editable there). May use {name}, {serial}, {id}
+  // placeholders. Missing key = an empty starting description for that type.
+  maintenanceTemplates: Record<string, string>;
+}
+
+// --- Maintenance (EZOffice work orders) ---
+// A maintenance work order as the inventory API returns it. The shape is a loose
+// pass-through of EZOffice's payload (fields vary by tenant/version), so only the
+// bits the UI reads are typed; everything else is preserved as unknown.
+export interface MaintenanceWorkOrder {
+  id?: number | string;
+  title?: string;
+  state?: string;
+  status?: string;
+  priority?: string;
+  description?: string;
+  created_on?: string;
+  [key: string]: unknown;
+}
+
+// GET /api/v1/assets/{id}/maintenance — the asset's current open work order, if any.
+export interface AssetMaintenance {
+  asset_id: string;
+  ongoing: boolean;
+  work_order: MaintenanceWorkOrder | null;
+}
+
+// POST /api/v1/assets/{id}/maintenance body — start a maintenance work order.
+export interface MaintenanceStartBody {
+  title: string;
+  priority?: string;
+  work_type_name?: string;
+  description?: string;
+  asset_name?: string;
+  // Move the order straight to "in progress" after creating it.
+  start?: boolean;
+}
+
+// POST /api/v1/assets/{id}/maintenance ack — the created work order echoed back.
+export interface MaintenanceResult {
+  ok: boolean;
+  asset_id: string;
+  action: string;
+  work_order: MaintenanceWorkOrder | Record<string, never>;
 }
 
 // --- Startup / version info ---
@@ -292,6 +337,11 @@ export interface InventoryAsset {
   // come from the API. Optional: present once pyexp-inventory exposes it (until
   // then the label falls back to the Settings URL template, never the device name).
   qr_url?: string;
+  // Best-effort "this asset is currently under maintenance" flag from the list read
+  // (models.py EZAsset.in_maintenance — a heuristic on the native state, defaults
+  // false). Drives the device menu's "Ver manutenção" vs "Começar manutenção" label;
+  // the authoritative detail comes from GET /assets/{id}/maintenance on demand.
+  in_maintenance?: boolean;
 }
 
 // GET /api/v1/assets/{asset_id}/public-link — the coded EZOffice label URL for ONE

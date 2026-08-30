@@ -70,6 +70,23 @@ module.exports = {
     category: "public.app-category.business",
     hardenedRuntime: true,
     gatekeeperAssess: false,
+    // Bluetooth usage strings: macOS TCC hard-kills (SIGABRT) any process that
+    // touches Bluetooth without a declared usage description. The E11 label
+    // printer talks over Web Bluetooth (renderer → GATT), so the packaged app
+    // MUST carry these — otherwise the print flow crashes the instant the device
+    // chooser opens. Electron ships a generic default string; we override it with
+    // a branded, Portuguese one (and the legacy key for macOS < 13). NOTE: this
+    // only affects the PACKAGED build. `npm run electron:dev` launches the stock
+    // node_modules Electron.app whose Info.plist we don't control here — and when
+    // that dev app is spawned by a terminal/CLI, TCC attributes Bluetooth to the
+    // PARENT process, so dev BLE only works when the app is its own responsible
+    // process (launched from Finder / a user-owned terminal, not from a tool).
+    extendInfo: {
+      NSBluetoothAlwaysUsageDescription:
+        "O AD Manager usa o Bluetooth para ligar à impressora de etiquetas SUPVAN e imprimir etiquetas de inventário.",
+      NSBluetoothPeripheralUsageDescription:
+        "O AD Manager usa o Bluetooth para ligar à impressora de etiquetas SUPVAN e imprimir etiquetas de inventário.",
+    },
     target: [{ target: "dmg", arch: ["x64", "arm64"] }],
   },
   dmg: {

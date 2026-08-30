@@ -351,20 +351,20 @@ export default function UsersPage({
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Toolbar */}
       <div className="px-6 pt-5 pb-4 border-b border-zinc-200 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-zinc-900">Utilizadores</h2>
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
-              <input
-                ref={searchRef}
-                placeholder="Procurar utilizadores…"
-                aria-label="Procurar utilizadores"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-52 focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand transition-all"
-              />
-            </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-base font-semibold text-zinc-900 shrink-0">Utilizadores</h2>
+          <div className="relative min-w-0 flex-1 sm:max-w-xs">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <input
+              ref={searchRef}
+              placeholder="Procurar utilizadores…"
+              aria-label="Procurar utilizadores"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-8 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand transition-all"
+            />
+          </div>
+          <div className="flex items-center gap-2 shrink-0 ml-auto">
             <button
               onClick={refresh}
               disabled={isLoading}
@@ -474,7 +474,7 @@ export default function UsersPage({
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-y-auto" onScroll={onScroll}>
+      <div className="flex-1 min-h-0 overflow-y-auto" onScroll={onScroll}>
         {isLoading ? (
           <div className="px-6 py-4 space-y-3">
             {Array.from({ length: 5 }).map((_, i) => (
@@ -492,22 +492,24 @@ export default function UsersPage({
             {anyFilterActive ? "Nenhum utilizador corresponde aos filtros atuais" : "Nenhum utilizador encontrado"}
           </div>
         ) : (
-          <table className="anim-fade-in w-full">
-            <thead>
-              <tr className="border-b border-zinc-100">
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Utilizador</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider hidden sm:table-cell">Email</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Grupo</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Estado</th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">Ações</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-50">
-              {visible.map((u, i) => (
-                <UserRow key={u.SamAccountName || `row-${i}`} user={u} groupName={u.groupName} toast={toast} onRefresh={refresh} ensureFreshAuth={ensureFreshAuth} />
-              ))}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="anim-fade-in w-full min-w-[720px]">
+              <thead>
+                <tr className="border-b border-zinc-100">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Utilizador</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-lg:hidden">Email</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-md:hidden">Grupo</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Estado</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">Ações</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-50">
+                {visible.map((u, i) => (
+                  <UserRow key={u.SamAccountName || `row-${i}`} user={u} groupName={u.groupName} toast={toast} onRefresh={refresh} ensureFreshAuth={ensureFreshAuth} />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         {hasMore && (
           <div className="px-6 py-3 text-center text-xs text-zinc-500">

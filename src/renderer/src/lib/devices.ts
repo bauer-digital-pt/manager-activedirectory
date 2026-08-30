@@ -81,6 +81,11 @@ export interface ConsolidatedDevice {
   // Exact EZOffice public label URL (incl. the ?c= check code) for the printed QR;
   // present only once the inventory API exposes it (see InventoryAsset.qr_url).
   qrUrl?: string;
+  // The asset has an open maintenance/service work order. Heuristic (derived from
+  // EZOffice state on the bulk read — see InventoryAsset.in_maintenance); drives the
+  // "Começar manutenção" vs "Ver manutenção" menu split. Authoritative per-asset
+  // detail is fetched on demand (inventoryAPI.getMaintenance).
+  ongoingMaintenance?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -276,6 +281,7 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
           ezStatus: a.status || devRow.ezStatus,
           assignedUserEmail: a.assigned_user_email || devRow.assignedUserEmail,
           qrUrl: a.qr_url || devRow.qrUrl,
+          ongoingMaintenance: a.in_maintenance || devRow.ongoingMaintenance,
         });
         return;
       }
@@ -299,6 +305,7 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
         ezStatus: a.status || undefined,
         assignedUserEmail: a.assigned_user_email || undefined,
         qrUrl: a.qr_url || undefined,
+        ongoingMaintenance: a.in_maintenance || undefined,
       });
     });
   }
@@ -309,18 +316,20 @@ export function consolidate(base: ConsolidatedDevice[], assets: InventoryAsset[]
 /* Lifecycle state (req. E — fixes "ESTADO DESCONHECIDO" on every row)        */
 /* -------------------------------------------------------------------------- */
 
-export type Tone = "emerald" | "amber" | "red" | "zinc" | "violet";
+export type Tone = "emerald" | "amber" | "red" | "zinc" | "violet" | "sky";
 export type StateId =
-  | "disabled" | "broken" | "lost" | "inactive"
+  | "disabled" | "maintenance" | "broken" | "lost" | "inactive"
   | "retired" | "available" | "inuse" | "active" | "unknown";
 
 export interface DeviceState { id: StateId; label: string; tone: Tone; }
 
 // Ordering for the default sort + Estado buckets: attention states first,
-// healthy last, genuinely-unknown dead last.
+// healthy last, genuinely-unknown dead last. "Em manutenção" ranks just below
+// AD-disabled — a device being actively serviced is the next most actionable
+// operational state.
 export const STATE_RANK: Record<StateId, number> = {
-  disabled: 0, broken: 1, lost: 2, inactive: 3, retired: 4,
-  available: 5, inuse: 6, active: 7, unknown: 8,
+  disabled: 0, maintenance: 1, broken: 2, lost: 3, inactive: 4,
+  retired: 5, available: 6, inuse: 7, active: 8, unknown: 9,
 };
 
 // Days since a "yyyy-MM-dd HH:mm:ss" (PowerShell) or ISO-8601 (inventory API)
@@ -343,6 +352,11 @@ export function daysSince(dateStr?: string | null): number | null {
 //      no status and no dates, e.g. a spare mouse)
 export function deviceState(d: ConsolidatedDevice): DeviceState {
   if (d.enabled === false) return { id: "disabled", label: "Desativado", tone: "red" };
+
+  // An open EZOffice work order overrides recency/lifecycle: a device on the
+  // bench reads "Em manutenção" even if it was seen recently, so the operator
+  // can filter the fleet down to what's actually being serviced.
+  if (d.ongoingMaintenance) return { id: "maintenance", label: "Em manutenção", tone: "sky" };
 
   const days = daysSince(d.lastLogonDate);
   if (days !== null) {

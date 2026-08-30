@@ -21,7 +21,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  fromAD, fromScreenConnect, mergeDeviceSources, consolidate,
+  fromAD, fromScreenConnect, mergeDeviceSources, consolidate, deviceState,
   type ConsolidatedDevice,
 } from "../src/renderer/src/lib/devices.ts";
 import type { ADComputer, InventoryAsset, InventorySourceDevice } from "../src/shared/types.ts";
@@ -247,4 +247,54 @@ test("mergeDeviceSources does not double-tag a source on repeat merges", () => {
   const twice = mergeDeviceSources(once, [fromScreenConnect(sc("PT-LPT-IT-01", { serial_number: "5CD1234ABC" }))]);
   assert.equal(twice.length, 1);
   assert.deepEqual(twice[0].sources.slice().sort(), ["ad", "screenconnect"], "no duplicate tags");
+});
+
+// The bulk /assets read carries a heuristic in_maintenance flag; consolidate() must
+// surface it as ongoingMaintenance so DeviceRow can flip the menu item between
+// "Começar manutenção" and "Ver manutenção" without a per-asset probe.
+test("in_maintenance flag surfaces as ongoingMaintenance on an enriched AD row", () => {
+  const base = [fromAD(ad("PT-LPT-ADM-08"))];
+  const rows = consolidate(base, [asset("PT-LPT-ADM-08.bmap.lis", { asset_id: "999", in_maintenance: true })]);
+  const both = rows.find((r) => sig(r) === "ad+ezoffice");
+  assert.ok(both, "the AD row joined its asset");
+  assert.equal(both!.ongoingMaintenance, true, "the maintenance flag rode the join");
+});
+
+test("in_maintenance flag surfaces on an asset-only (peripheral/Mac) row", () => {
+  const rows = consolidate([], [asset("Macbook Air M5", { asset_id: "77", category: "Laptops", in_maintenance: true })]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].ongoingMaintenance, true);
+});
+
+test("no in_maintenance flag leaves ongoingMaintenance falsy (menu shows Começar)", () => {
+  const base = [fromAD(ad("PT-LPT-ADM-08"))];
+  const merged = consolidate(base, [asset("PT-LPT-ADM-08.bmap.lis", { asset_id: "999" })]);
+  const only = consolidate([], [asset("Magic Mouse", { asset_id: "5" })]);
+  assert.ok(!merged[0].ongoingMaintenance, "enriched row not falsely flagged");
+  assert.ok(!only[0].ongoingMaintenance, "asset-only row not falsely flagged");
+});
+
+// A device with an open work order reads "Em manutenção" — and that state wins
+// over last-seen recency, so a recently-seen laptop on the bench is still
+// filterable as under maintenance (it does NOT fall through to "Ativo").
+test("ongoingMaintenance yields the 'Em manutenção' state, overriding recency", () => {
+  const base = [fromAD(ad("PT-LPT-IT-01"))];
+  const [row] = consolidate(base, [
+    asset("PT-LPT-IT-01.bmap.lis", { asset_id: "1", in_maintenance: true }),
+  ]);
+  // Seen today — normally "Ativo".
+  row.lastLogonDate = new Date().toISOString();
+  const st = deviceState(row);
+  assert.equal(st.id, "maintenance");
+  assert.equal(st.label, "Em manutenção");
+});
+
+// An AD-disabled device still reads "Desativado": maintenance does not mask a
+// decommissioned machine.
+test("AD-disabled outranks maintenance", () => {
+  const base = [fromAD({ Name: "OLD-PC", DistinguishedName: "CN=OLD-PC,DC=bmap,DC=lis", Enabled: false })];
+  const [row] = consolidate(base, [
+    asset("OLD-PC.bmap.lis", { asset_id: "2", in_maintenance: true }),
+  ]);
+  assert.equal(deviceState(row).id, "disabled");
 });

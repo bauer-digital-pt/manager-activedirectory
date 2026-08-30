@@ -33,6 +33,7 @@ export const EMPTY_DEVICE_CONFIG: DeviceConfig = {
   smlPlayerIni: "",
   ezofficeUrlTemplate: "",
   screenConnectUrlTemplate: "",
+  maintenanceTemplates: {},
 };
 
 // Coerce arbitrary stored/bridged data into a well-formed config so a corrupt
@@ -54,6 +55,12 @@ function normalize(raw: unknown): DeviceConfig {
       }
     }
   }
+  const maintenanceTemplates: Record<string, string> = {};
+  if (p.maintenanceTemplates && typeof p.maintenanceTemplates === "object") {
+    for (const [k, v] of Object.entries(p.maintenanceTemplates as Record<string, unknown>)) {
+      if (typeof v === "string") maintenanceTemplates[k] = v;
+    }
+  }
   return {
     ouMap,
     anyConnectSource: typeof p.anyConnectSource === "string" ? p.anyConnectSource : "",
@@ -68,6 +75,7 @@ function normalize(raw: unknown): DeviceConfig {
     // template in Settings for the row's EZOffice link button.
     ezofficeUrlTemplate: typeof p.ezofficeUrlTemplate === "string" ? p.ezofficeUrlTemplate : "",
     screenConnectUrlTemplate: typeof p.screenConnectUrlTemplate === "string" ? p.screenConnectUrlTemplate : "",
+    maintenanceTemplates,
   };
 }
 

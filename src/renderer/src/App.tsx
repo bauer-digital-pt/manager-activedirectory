@@ -784,9 +784,9 @@ function ReAuthModal({
   onResult: (ok: boolean) => void;
 }) {
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-zinc-900/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto p-4 bg-zinc-900/50 backdrop-blur-sm">
       <div
-        className="anim-popover w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl"
+        className="anim-popover w-full max-w-sm max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl"
         onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onResult(false); } }}
       >
         <div className="flex items-center gap-3">
@@ -829,8 +829,8 @@ function LockScreen({
   onLogout: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-zinc-900/70 backdrop-blur-md">
-      <div className="anim-popover w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto p-4 bg-zinc-900/70 backdrop-blur-md">
+      <div className="anim-popover w-full max-w-sm max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
         <div className="flex items-center gap-3">
           <span className="flex h-11 w-11 items-center justify-center rounded-full bg-violet-100 text-violet-600">
             <Lock size={20} />

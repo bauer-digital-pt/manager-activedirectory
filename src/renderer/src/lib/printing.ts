@@ -20,8 +20,8 @@ import {
   resolveTransportConfig,
   type TransportConfig,
 } from "../../../main/supvan/transport/config.ts";
-import { connectWebBtPrinter } from "./supvan-webbt";
-import type { ConsolidatedDevice } from "./devices";
+import { connectWebBtPrinter } from "./supvan-webbt.ts";
+import type { ConsolidatedDevice } from "./devices.ts";
 
 /** A printer the main process discovered (Bluetooth / serial). */
 export interface PrintDeviceInfo {
@@ -174,8 +174,12 @@ export interface BlePrintOptions {
   signal?: AbortSignal;
 }
 
-/** Candidate probe list for a Web BT print, honoring any override. */
-function bleCandidates(opts: BlePrintOptions): readonly TransportConfig[] {
+/** Candidate probe list for a Web BT print, honoring any override. Takes just the
+ * transport-selection fields so both the single- and batch-print option types work. */
+function bleCandidates(opts: {
+  candidates?: readonly TransportConfig[];
+  transport?: Partial<TransportConfig>;
+}): readonly TransportConfig[] {
   if (opts.candidates) return opts.candidates;
   if (opts.transport) return [resolveTransportConfig(opts.transport)];
   return CANDIDATE_TRANSPORT_CONFIGS;
@@ -239,6 +243,188 @@ export async function printLabelViaBle(
   } finally {
     await conn.disconnect().catch(() => {});
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Batch print — connect once, print many labels on one GATT link.            */
+/* -------------------------------------------------------------------------- */
+
+/** Per-label outcome inside a batch run. `index` is the position in the input
+ * `reqs` array, so callers can map results back to their own device list. */
+export interface BatchLabelItemResult {
+  index: number;
+  ok: boolean;
+  /** PT/raw error when this specific label failed (compose or print). */
+  error?: string;
+}
+
+/** Summary of a whole batch. `ok` is false ONLY on a connection-level failure
+ * (no printer chosen / transport error) — per-label failures live in `items`
+ * and do NOT flip `ok`, since the batch policy is skip-and-continue. */
+export interface BatchLabelPrintResult {
+  ok: boolean;
+  /** Connection-level error (device cancel / transport) when `ok` is false. */
+  error?: string;
+  /** One entry per input request (compose errors, prints, cancels). */
+  items: BatchLabelItemResult[];
+}
+
+/** Options for a batch Web Bluetooth print. Mirrors BlePrintOptions but replaces
+ * the single onEvent with per-item progress callbacks. */
+export interface BatchPrintOptions {
+  geometry?: Geometry;
+  quarterTurns?: number;
+  transport?: Partial<TransportConfig>;
+  candidates?: readonly TransportConfig[];
+  /** Cooperative cancellation for the whole batch (stops before the next label,
+   * and aborts the in-flight label via runPrintJob's own signal handling). */
+  signal?: AbortSignal;
+  /** Progress from the print state machine, tagged with the item index. */
+  onItemEvent?: (index: number, event: PrintEvent) => void;
+  /** Fired once per item after it settles (printed, skipped or cancelled). */
+  onItemSettled?: (result: BatchLabelItemResult) => void;
+}
+
+/** Human message for labels not printed because the batch was aborted. */
+export const BATCH_CANCELLED = "Impressão cancelada.";
+
+/** A built label ready to print, tagged with its position in the caller's list. */
+export interface BuiltLabelJob {
+  index: number;
+  job: PrintJob;
+}
+
+/** Anything that can run one print job — a SupvanClient, or a fake in tests. */
+export interface PrintJobRunner {
+  runPrintJob(
+    job: PrintJob,
+    opts?: { signal?: AbortSignal; onEvent?: (event: PrintEvent) => void },
+  ): Promise<unknown>;
+}
+
+/**
+ * Run pre-built jobs sequentially on ONE already-connected runner.
+ *
+ * This is the pure heart of the batch policy, factored out of `printLabelsViaBle`
+ * so it can be unit-tested without a BLE connection (the connect step needs a user
+ * gesture + navigator.bluetooth). Policy:
+ *  - skip-and-continue: a label that throws is recorded failed and the loop moves on;
+ *  - abort (opts.signal, checked before each label + surfaced as a runPrintJob
+ *    "aborted" error): stop and mark every remaining label cancelled.
+ * Fires `onItemSettled` exactly once per input job. Returns one result per input job.
+ */
+export async function runBatchOnRunner(
+  runner: PrintJobRunner,
+  built: readonly BuiltLabelJob[],
+  opts: {
+    signal?: AbortSignal;
+    onItemEvent?: (index: number, event: PrintEvent) => void;
+    onItemSettled?: (result: BatchLabelItemResult) => void;
+  } = {},
+): Promise<BatchLabelItemResult[]> {
+  const out: BatchLabelItemResult[] = [];
+  const settle = (r: BatchLabelItemResult) => {
+    out.push(r);
+    opts.onItemSettled?.(r);
+  };
+  for (let b = 0; b < built.length; b++) {
+    const { index, job } = built[b];
+    if (opts.signal?.aborted) {
+      // Aborted before this label — mark it and everything after cancelled.
+      for (let r = b; r < built.length; r++) settle({ index: built[r].index, ok: false, error: BATCH_CANCELLED });
+      break;
+    }
+    try {
+      await runner.runPrintJob(job, {
+        signal: opts.signal,
+        onEvent: (event) => opts.onItemEvent?.(index, event),
+      });
+      settle({ index, ok: true });
+    } catch (e) {
+      const aborted = (e as { code?: string })?.code === "aborted";
+      settle({ index, ok: false, error: aborted ? BATCH_CANCELLED : (e as Error).message });
+      if (aborted) {
+        // The connection is being torn down — don't attempt the rest.
+        for (let r = b + 1; r < built.length; r++) settle({ index: built[r].index, ok: false, error: BATCH_CANCELLED });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Print MANY labels over ONE Web Bluetooth connection.
+ *
+ * Why this exists (and printLabelViaBle can't just be looped): printLabelViaBle
+ * fuses connect+print+disconnect and calls requestDevice() every time, and
+ * requestDevice() must run inside the user gesture — so only a loop's first
+ * iteration would be valid. This connects ONCE and reuses the pipe for every job.
+ *
+ * GESTURE CONSTRAINT (same as printLabelViaBle): every job is built SYNCHRONOUSLY
+ * up front (fitLabelStyle + labelToJob) BEFORE the connect, so requestDevice()
+ * still fires with no prior await. Callers must therefore have resolved every
+ * request's QR payload ahead of the click (the connect gesture can't await).
+ *
+ * FAILURE POLICY = skip-and-continue: a label that fails to compose or print is
+ * recorded in `items` and the batch moves on; only a connection-level failure
+ * (no printer / transport) returns { ok: false }. Abort (opts.signal) stops
+ * before the next label and marks the remainder cancelled.
+ */
+export async function printLabelsViaBle(
+  reqs: LabelPrintRequest[],
+  encode: LzmaAloneEncoder,
+  opts: BatchPrintOptions = {},
+): Promise<BatchLabelPrintResult> {
+  const geom = opts.geometry ?? E11_GEOMETRY;
+
+  // --- synchronous prelude: build every job before touching the transport ---
+  // A per-label compose failure (too wide / render error) is recorded and skipped,
+  // never aborting the batch. Buildable jobs keep their original index so progress
+  // maps back to the caller's device list.
+  const built: BuiltLabelJob[] = [];
+  const items: BatchLabelItemResult[] = [];
+  for (let i = 0; i < reqs.length; i++) {
+    try {
+      const fit = fitLabelStyle(reqs[i].model, geom, reqs[i].style ?? {}, { quarterTurns: opts.quarterTurns });
+      if (!fit) {
+        const r = { index: i, ok: false, error: LABEL_TOO_WIDE };
+        items.push(r);
+        opts.onItemSettled?.(r);
+        continue;
+      }
+      built.push({ index: i, job: labelToJob(fit.render, geom, encode, { quarterTurns: opts.quarterTurns }) });
+    } catch (e) {
+      const r = { index: i, ok: false, error: (e as Error).message };
+      items.push(r);
+      opts.onItemSettled?.(r);
+    }
+  }
+
+  // Nothing printable (all failed to compose) — no reason to open the picker.
+  if (built.length === 0) return { ok: true, items };
+
+  // requestDevice() fires here — still no prior await on the happy path.
+  let conn: Awaited<ReturnType<typeof connectWebBtPrinter>>;
+  try {
+    conn = await connectWebBtPrinter(bleCandidates(opts));
+  } catch (e) {
+    const error = isDeviceSelectionCancelled(e) ? PRINTER_SELECTION_CANCELLED : (e as Error).message;
+    return { ok: false, error, items };
+  }
+
+  try {
+    const loopItems = await runBatchOnRunner(new SupvanClient(conn.pipe), built, {
+      signal: opts.signal,
+      onItemEvent: opts.onItemEvent,
+      onItemSettled: opts.onItemSettled,
+    });
+    items.push(...loopItems);
+  } finally {
+    await conn.disconnect().catch(() => {});
+  }
+
+  return { ok: true, items };
 }
 
 /**

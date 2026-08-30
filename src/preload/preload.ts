@@ -122,6 +122,28 @@ contextBridge.exposeInMainWorld("inventoryAPI", {
   getADDevices: () => ipcRenderer.invoke("inventory:ad-devices"),
   getScreenConnectDevices: () => ipcRenderer.invoke("inventory:screenconnect-devices"),
   getReconciliation: () => ipcRenderer.invoke("inventory:reconciliation"),
+  // EZOffice custody writes (checkout/checkin) + the member list they need. Signed
+  // with the login session in main; gated server-side on require_ad_login.
+  getMembers: (query?: string) => ipcRenderer.invoke("inventory:members", query),
+  checkout: (assetId: string, memberId: string, comments?: string) =>
+    ipcRenderer.invoke("inventory:checkout", assetId, memberId, comments),
+  checkin: (assetId: string, comments?: string) =>
+    ipcRenderer.invoke("inventory:checkin", assetId, comments),
+  // Maintenance work orders: type list + per-asset ongoing read + start (write).
+  getMaintenanceTypes: () => ipcRenderer.invoke("inventory:maintenance-types"),
+  getMaintenance: (assetId: string) => ipcRenderer.invoke("inventory:maintenance", assetId),
+  startMaintenance: (assetId: string, body: unknown) =>
+    ipcRenderer.invoke("inventory:start-maintenance", assetId, body),
+});
+
+// Generic document PDF / print bridge. The renderer builds the finished HTML
+// (e.g. a maintenance order) and asks main to save it as a PDF (native save
+// dialog) or send it to the system printer. Both return the PSResult shape; the
+// renderer wrapper degrades gracefully when this bridge is absent (browser mock).
+contextBridge.exposeInMainWorld("pdfAPI", {
+  save: (html: string, suggestedName?: string) =>
+    ipcRenderer.invoke("pdf:save", { html, suggestedName }),
+  print: (html: string) => ipcRenderer.invoke("pdf:print", { html }),
 });
 
 contextBridge.exposeInMainWorld("updatesAPI", {

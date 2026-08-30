@@ -57,16 +57,16 @@ export default function SettingsPage({ toast, onSettingsChange, onUpdateModal, i
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="border-b border-zinc-200 px-6">
-        <div className="flex items-center gap-6 h-12">
-          <span className="text-sm font-semibold text-zinc-900">Definições</span>
-          <div className="flex items-center gap-1 h-full">
+        <div className="flex items-center gap-6 max-lg:gap-3 h-12 overflow-x-auto whitespace-nowrap">
+          <span className="shrink-0 text-sm font-semibold text-zinc-900">Definições</span>
+          <div className="flex items-center gap-1 h-full shrink-0">
             {TABS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 h-full text-xs font-medium border-b-2 transition-colors",
+                  "shrink-0 flex items-center gap-1.5 px-3 h-full text-xs font-medium border-b-2 transition-colors",
                   tab === id
                     ? "border-brand text-brand"
                     : "border-transparent text-zinc-500 hover:text-zinc-800",
@@ -96,7 +96,7 @@ function ConnectionsTab({ toast, onSaved }: {
 }) {
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="px-8 py-6 space-y-10 max-w-xl">
+      <div className="px-8 max-sm:px-4 py-6 space-y-10 max-w-xl">
         <ConnectionSection toast={toast} />
         {FLAVOR === "manager" && (
           <>
@@ -166,7 +166,7 @@ function GeneralTab({ toast, onSettingsChange, onUpdateModal }: {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="px-8 py-6 space-y-8 max-w-xl">
+      <div className="px-8 max-sm:px-4 py-6 space-y-8 max-w-xl">
         {/* Developer mode */}
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-4">
@@ -627,8 +627,22 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
   const [ous, setOUs] = useState<DeviceOU[]>([]);
   const [loadingOUs, setLoadingOUs] = useState(true);
   const [ouError, setOUError] = useState<string | null>(null);
+  // Maintenance work-order types — one description template per type. Fetched from
+  // the inventory API (empty when the Work Orders module is disabled server-side).
+  const [maintTypes, setMaintTypes] = useState<string[]>([]);
+  const [maintTypesError, setMaintTypesError] = useState<string | null>(null);
 
   useEffect(() => { getDeviceConfig().then(setConfig); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    inventoryAPI.getMaintenanceTypes().then((r) => {
+      if (cancelled) return;
+      if (r.ok && Array.isArray(r.data)) setMaintTypes(r.data);
+      else setMaintTypesError(r.error ?? "Não foi possível obter os tipos de manutenção.");
+    }).catch(() => { if (!cancelled) setMaintTypesError("Não foi possível obter os tipos de manutenção."); });
+    return () => { cancelled = true; };
+  }, []);
 
   // Load the destination folders (sub-OUs under BMAP Devices → O365) once.
   useEffect(() => {
@@ -674,9 +688,31 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
     persist({ ...config, printerMap });
   };
 
+  // The maintenance-type rows to show: the fetched types plus any type that already
+  // has a saved template (so a template survives even if its type later disappears
+  // from EZOffice), sorted for a stable order.
+  const maintenanceTypeRows = useMemo(() => {
+    const set = new Set<string>(maintTypes);
+    for (const k of Object.keys(config.maintenanceTemplates ?? {})) set.add(k);
+    return [...set].sort((a, b) => a.localeCompare(b, "pt"));
+  }, [maintTypes, config.maintenanceTemplates]);
+
+  // Update one type's template in local state; persisted on blur (like the text
+  // inputs) so it's one write per edit, not per keystroke.
+  const setMaintTemplate = (type: string, value: string) => {
+    setConfig((c) => ({ ...c, maintenanceTemplates: { ...(c.maintenanceTemplates ?? {}), [type]: value } }));
+  };
+  // Persist maintenance templates, pruning blank entries so the stored map stays
+  // clean (an absent template pre-fills the description as empty, same as blank).
+  const persistMaintTemplates = () => {
+    const cleaned: Record<string, string> = {};
+    for (const [k, v] of Object.entries(config.maintenanceTemplates ?? {})) if (v.trim()) cleaned[k] = v;
+    persist({ ...config, maintenanceTemplates: cleaned });
+  };
+
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="px-8 py-6 space-y-8 max-w-xl">
+      <div className="px-8 max-sm:px-4 py-6 space-y-8 max-w-xl">
         <div>
           <h2 className="text-sm font-semibold text-zinc-900">Pastas de dispositivos por departamento</h2>
           <p className="text-xs text-zinc-500 mt-0.5">
@@ -824,6 +860,37 @@ function DevicesTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) 
             />
             <p className="text-[11px] text-zinc-500">Copiado para %APPDATA%\SMLPlayer7 depois de abrir/fechar a aplicação.</p>
           </div>
+
+          <div className="pt-4 mt-2 border-t border-zinc-100 space-y-1">
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Modelos de manutenção</h3>
+            <p className="text-xs text-zinc-500">
+              Descrição pré-preenchida ao começar uma manutenção, por tipo de ordem de trabalho.
+              O técnico pode editá-la antes de confirmar. Deixa em branco para não sugerir nada.
+            </p>
+          </div>
+          {maintTypesError ? (
+            <p className="text-xs text-amber-600">{maintTypesError}</p>
+          ) : maintenanceTypeRows.length === 0 ? (
+            <p className="text-xs text-zinc-400">
+              Sem tipos de manutenção disponíveis (o módulo de ordens de trabalho pode estar desativado no EZOffice).
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {maintenanceTypeRows.map((type) => (
+                <div key={type} className="space-y-1.5">
+                  <label className="text-xs font-medium text-zinc-600">{type}</label>
+                  <textarea
+                    value={config.maintenanceTemplates?.[type] ?? ""}
+                    onChange={(e) => setMaintTemplate(type, e.target.value)}
+                    onBlur={persistMaintTemplates}
+                    rows={2}
+                    placeholder="Descrição sugerida para este tipo…"
+                    className={cn(inputCls, "resize-y")}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="pt-4 mt-2 border-t border-zinc-100 space-y-1">
             <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">Links externos</h3>
@@ -1019,7 +1086,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
     <div className="flex flex-1 overflow-hidden">
 
       {/* Left — group list */}
-      <div className="w-56 flex-shrink-0 border-r border-zinc-200 flex flex-col overflow-hidden bg-zinc-50/40">
+      <div className="w-56 max-lg:w-48 max-sm:w-40 flex-shrink-0 border-r border-zinc-200 flex flex-col overflow-hidden bg-zinc-50/40">
         <div className="px-4 py-4 space-y-3">
           <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Grupos</p>
           <div className="flex gap-2">
@@ -1091,11 +1158,11 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
           <p className="text-sm">Seleciona um grupo para configurar</p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 min-w-0 overflow-y-auto">
           {/* Header */}
-          <div className="px-8 py-5 border-b border-zinc-200 flex items-start justify-between">
-            <div>
-              <h2 className="text-sm font-semibold text-zinc-900">{selected}</h2>
+          <div className="px-8 max-sm:px-4 py-5 border-b border-zinc-200 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-zinc-900 truncate">{selected}</h2>
               <p className="text-xs text-zinc-500 mt-0.5">Configura os valores de onboarding para <span className="text-zinc-700 font-medium">{selected}</span></p>
             </div>
             <Button
@@ -1109,7 +1176,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
             </Button>
           </div>
 
-          <div className="px-8 py-6 space-y-8 max-w-xl">
+          <div className="px-8 max-sm:px-4 py-6 space-y-8 max-w-xl">
 
             {/* Default template user — whose group memberships new users copy */}
             <section className="space-y-3">
@@ -1180,7 +1247,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
                   onChange={(e) => setNewJobTitle(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addJobTitle()}
                   placeholder="ex: Jornalista"
-                  className={cn(inputCls, "flex-1")}
+                  className={cn(inputCls, "flex-1 min-w-0")}
                 />
                 <Button onClick={addJobTitle} disabled={!newJobTitle.trim()}>
                   <Plus size={14} strokeWidth={2.5} />
@@ -1222,7 +1289,7 @@ function GroupsTab({ toast }: { toast: { success: ToastFn; error: ToastFn } }) {
                   onChange={(e) => setNewADGroup(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addADGroup()}
                   placeholder="ex: GRP_REDACAO_EDITOR"
-                  className={cn(inputCls, "flex-1")}
+                  className={cn(inputCls, "flex-1 min-w-0")}
                 />
                 <Button onClick={addADGroup} disabled={!newADGroup.trim()}>
                   <Plus size={14} strokeWidth={2.5} />
