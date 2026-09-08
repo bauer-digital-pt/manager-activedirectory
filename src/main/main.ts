@@ -987,6 +987,17 @@ handle("ad:get-group-members", async (_e, groupName) => {
   return ps("Get-ADGroupMembers.ps1", [groupName as string]);
 });
 
+// Whole directory in ONE shot: categories + every member, each tagged with its
+// category. On Windows this is a single PowerShell spawn (one AD-module import)
+// instead of the old N+1 fan-out (one spawn per category) that made loading the
+// Users page slow. Off-Windows there's no bulk API endpoint, so we assemble the
+// same shape from the existing per-category reads (still parallel — same wire
+// cost as the renderer's old fan-out, but with the shape the page now expects).
+handle("ad:get-all-users", async () => {
+  if (AD_VIA_API) return apiGetAllUsers();
+  return ps("Get-ADAllUsers.ps1");
+});
+
 handle("ad:create-user", async (_e, rawParams) => {
   if (AD_VIA_API) return adWriteUnavailable();
   const params = rawParams as Record<string, string>;
@@ -2189,6 +2200,25 @@ async function apiGetGroupMembers(category: string): Promise<PSResult<ADUser[]>>
   const name = (category ?? "").trim();
   if (!name) return { ok: true, data: [] };
   return inventoryGet<ADUser[]>(`/api/v1/ad/categories/${encodeURIComponent(name)}/members`);
+}
+
+// Bulk directory read for the off-Windows (API) path. There's no single bulk
+// endpoint, so fan out one members read per category in parallel and assemble the
+// { groups, users } shape the Windows script returns in one process. Each user is
+// tagged with its category via `groupName`. A partial failure still returns the
+// categories + whatever members loaded, mirroring the renderer's old tolerance.
+async function apiGetAllUsers(): Promise<PSResult<{ groups: ADGroup[]; users: (ADUser & { groupName: string })[] }>> {
+  const g = await apiGetGroups();
+  if (!g.ok || !g.data) return { ok: false, error: g.error };
+  const groups = g.data;
+  const perGroup = await Promise.all(
+    groups.map(async (grp) => {
+      const r = await apiGetGroupMembers(grp.Name);
+      const members = r.ok && Array.isArray(r.data) ? r.data : [];
+      return members.map((u) => ({ ...u, groupName: grp.Name }));
+    }),
+  );
+  return { ok: true, data: { groups, users: perGroup.flat() } };
 }
 
 // search-users returns exactly ADUserLite ({ SamAccountName, DisplayName, Enabled }).

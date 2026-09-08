@@ -1,4 +1,4 @@
-import { useState, useEffect, useId, memo } from "react";
+import { useState, useEffect, useId, useRef, memo } from "react";
 import {
   Eye, X, Boxes, Copy, ExternalLink, Power, PowerOff, MonitorSmartphone,
   Server, AlertTriangle, Printer, UserCheck, UserMinus, Wrench, ClipboardList,
@@ -6,7 +6,6 @@ import {
 import { adAPI } from "../adAPI";
 import { inventoryAPI } from "../inventoryAPI";
 import { cn } from "../lib/cn";
-import { useOutsideClick } from "../hooks/useOutsideClick";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { Button } from "../components/ui/Button";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
@@ -20,6 +19,7 @@ import LabelPreviewModal from "../components/LabelPreviewModal";
 import CheckoutMemberModal from "../components/CheckoutMemberModal";
 import MaintenanceStartModal from "../components/MaintenanceStartModal";
 import MaintenanceViewModal from "../components/MaintenanceViewModal";
+import PortalMenu from "../components/PortalMenu";
 
 // Admin-configured deep-link templates (from Settings → Dispositivos). Empty
 // strings mean the corresponding action is hidden.
@@ -168,7 +168,8 @@ function DeviceRow({
   // Trap Tab focus inside the detail dialog and restore it on close (Escape is
   // still handled by the keyboard effect below, so no onEscape here).
   const cardRef = useFocusTrap<HTMLDivElement>(open);
-  const menuRef = useOutsideClick<HTMLDivElement>(menu, () => setMenu(false));
+  // Anchor for the portaled row-action menu (positioned against this button).
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
 
   const Icon = categoryIcon(device.category, device.name);
   const name = device.displayName || device.name || "—";
@@ -322,9 +323,10 @@ function DeviceRow({
         </td>
         <td className="px-6 py-3.5"><StatusBadge device={device} /></td>
         <td className="px-6 py-3.5 text-right">
-          <div className="relative inline-block" ref={menuRef}>
+          <div className="inline-block">
             <button
-              onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+              ref={menuBtnRef}
+              onClick={(e) => { e.stopPropagation(); setMenu(false); setOpen(true); }}
               title="Ver detalhes"
               aria-label="Ver detalhes"
               className={cn(
@@ -338,8 +340,7 @@ function DeviceRow({
               <Eye size={15} />
             </button>
 
-            {menu && (
-              <div role="menu" className="anim-popover absolute right-0 mt-1 w-56 max-w-[calc(100vw-1rem)] bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20 text-left">
+            <PortalMenu open={menu} onClose={() => setMenu(false)} anchorRef={menuBtnRef} width={224}>
                 <DeviceMenuItem icon={<Eye size={13} />} label="Abrir detalhes" onClick={() => { setMenu(false); setOpen(true); }} />
                 <div className="border-t border-zinc-100" />
                 <DeviceMenuItem icon={<Copy size={13} />} label="Copiar nome" onClick={() => copy(device.name, "Nome copiado")} />
@@ -380,8 +381,7 @@ function DeviceRow({
                 )}
                 <div className="border-t border-zinc-100" />
                 <DeviceMenuItem icon={<Printer size={13} />} label="Imprimir etiqueta" onClick={() => { setMenu(false); setPreview(true); }} />
-              </div>
-            )}
+            </PortalMenu>
           </div>
         </td>
       </tr>

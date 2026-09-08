@@ -3,10 +3,16 @@
 // groups and all members. We keep the last successful load here and reuse it;
 // an explicit refresh (the refresh button, or after creating a user) reloads.
 import type { ADGroup, ADUser } from "../adAPI";
+import { readCache, writeCache } from "./persistCache";
 
 export interface UserWithGroup extends ADUser {
   groupName: string;
 }
+
+// On-disk key + shape for the stale-while-revalidate paint (see persistCache).
+// The directory is single-source (the connected AD), so one fixed key is enough.
+const DISK_KEY = "users|directory";
+type PersistedUsers = { groups: ADGroup[]; users: UserWithGroup[] };
 
 interface UsersCache {
   groups: ADGroup[];
@@ -24,6 +30,25 @@ export const usersCache: UsersCache = {
 
 export function setUsersCache(next: Partial<UsersCache>): void {
   Object.assign(usersCache, next);
+}
+
+// Persist the last-good directory so the next cold launch paints instantly.
+// Only a successful, fully-loaded state (never an error) is written to disk.
+export function persistUsersCache(): void {
+  if (!usersCache.loaded || usersCache.error) return;
+  writeCache<PersistedUsers>(DISK_KEY, { groups: usersCache.groups, users: usersCache.users });
+}
+
+// Seed the in-memory cache from disk on a cold mount. Returns true when it filled
+// the cache with a stale directory (the caller then refreshes in the background).
+export function hydrateUsersCacheFromDisk(): boolean {
+  if (usersCache.loaded) return true;
+  const disk = readCache<PersistedUsers>(DISK_KEY);
+  if (disk && disk.groups.length > 0) {
+    Object.assign(usersCache, { groups: disk.groups, users: disk.users, loaded: true, error: null });
+    return true;
+  }
+  return false;
 }
 
 // Users already living in a category (OU), read straight from the cache — used

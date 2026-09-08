@@ -3,8 +3,8 @@ import { Lock, Unlock, KeyRound, MoreHorizontal, X, User, UserMinus, AlertTriang
 import { adAPI, type ADUser } from "../../adAPI";
 import { cn } from "../../lib/cn";
 import { initials as computeInitials } from "../../lib/initials";
-import { useOutsideClick } from "../../hooks/useOutsideClick";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
+import PortalMenu from "../../components/PortalMenu";
 import { userStatusKind } from "../../lib/userStatus";
 import { Kbd } from "../../components/ui/Kbd";
 import { Button } from "../../components/ui/Button";
@@ -38,8 +38,8 @@ function UserRow({
   // Offboard confirmation inputs (re-typed username + re-confirmed admin password).
   const [confirmName, setConfirmName] = useState("");
   const [adminPw, setAdminPw]         = useState("");
-  // Close the dropdown menu on an outside click.
-  const menuRef = useOutsideClick<HTMLDivElement>(menu, () => setMenu(false));
+  // Anchor for the portaled row-action menu (positioned against this button).
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
   // Trap Tab focus inside the open modal and restore it on close. The primary
   // action (Reset / Unlock) takes initial focus so Enter confirms it directly;
   // Escape is still owned by the keyboard effect below.
@@ -198,8 +198,9 @@ function UserRow({
         </td>
         <td className="px-6 py-3.5">{statusBadge()}</td>
         <td className="px-6 py-3.5 text-right">
-          <div className="relative inline-block" ref={menuRef}>
+          <div className="inline-block">
             <button
+              ref={menuBtnRef}
               onClick={(e) => { e.stopPropagation(); setMenu((v) => !v); }}
               aria-label="Ações do utilizador"
               aria-haspopup="menu"
@@ -217,8 +218,7 @@ function UserRow({
               <MoreHorizontal size={15} />
             </button>
 
-            {menu && (
-              <div role="menu" className="anim-popover absolute right-0 mt-1 w-52 max-w-[calc(100vw-1rem)] bg-white border border-zinc-200 rounded-xl shadow-lg overflow-hidden z-20">
+            <PortalMenu open={menu} onClose={() => setMenu(false)} anchorRef={menuBtnRef} width={208}>
                 <MenuItem
                   icon={<User size={13} />}
                   label="Abrir"
@@ -247,8 +247,7 @@ function UserRow({
                   danger
                   onClick={() => { setMenu(false); setModal("offboard"); }}
                 />
-              </div>
-            )}
+            </PortalMenu>
           </div>
         </td>
       </tr>

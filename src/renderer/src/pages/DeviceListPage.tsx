@@ -7,6 +7,7 @@ import { adAPI, type ADComputer } from "../adAPI";
 import { inventoryAPI, type InventoryAsset, type InventorySourceDevice } from "../inventoryAPI";
 import { getInventoryConfig } from "../lib/inventoryConfig";
 import { getDeviceConfig } from "../lib/deviceConfig";
+import { readCache, writeCache } from "../lib/persistCache";
 import { cn } from "../lib/cn";
 import type { ExternalToast } from "sonner";
 import DeviceRow, { type UrlTemplates } from "./DeviceRow";
@@ -79,6 +80,12 @@ type DevicesCache = {
   key: string;
 };
 let devicesCache: DevicesCache = { base: [], assets: null, sourced: false, loaded: false, error: null, enrichError: null, key: "" };
+
+// The subset of a successful load persisted to disk (see persistCache): enough to
+// repaint the fleet instantly on the next cold launch. Never persists an error
+// state — a failed load leaves the last-good disk cache untouched.
+type PersistedDevices = Pick<DevicesCache, "base" | "assets" | "sourced" | "enrichError">;
+const devicesDiskKey = (cacheKey: string) => `devices|${cacheKey}`;
 
 export default function DeviceListPage({
   toast,
@@ -241,6 +248,8 @@ export default function DeviceListPage({
         setBase(b); setAssets(a); setSourced(useInventorySource); setError(null);
         setEnrichError(enrichErr);
         devicesCache = { base: b, assets: a, sourced: useInventorySource, loaded: true, error: null, enrichError: enrichErr, key };
+        // Persist for a stale-while-revalidate paint on the next cold launch.
+        writeCache<PersistedDevices>(devicesDiskKey(key), { base: b, assets: a, sourced: useInventorySource, enrichError: enrichErr });
       })
       .catch((e) => {
         // Background hiccup: keep the last-good fleet untouched (no blank, no error).
@@ -260,7 +269,25 @@ export default function DeviceListPage({
     // Wait until the source decision is known (which inventory config resolves),
     // then fetch on the first ever mount or whenever the source/enrichment changes.
     if (!invReady) return;
-    if (!devicesCache.loaded || devicesCache.key !== cacheKey) load();
+    // Fresh in-memory cache for this exact source → nothing to do.
+    if (devicesCache.loaded && devicesCache.key === cacheKey) return;
+
+    // Cold launch: if a last-good list is on disk, paint it INSTANTLY and refresh
+    // in the background (stale-while-revalidate) instead of blocking on a
+    // multi-second network read. No disk cache → foreground load with the spinner.
+    const persisted = readCache<PersistedDevices>(devicesDiskKey(cacheKey));
+    if (persisted && persisted.base.length > 0) {
+      setBase(persisted.base);
+      setAssets(persisted.assets);
+      setSourced(persisted.sourced);
+      setEnrichError(persisted.enrichError);
+      setError(null);
+      setLoading(false);
+      devicesCache = { ...persisted, loaded: true, error: null, key: cacheKey };
+      load(true);
+    } else {
+      load();
+    }
   }, [invReady, cacheKey, load]);
 
   // Kiosk: silently refresh every 5 minutes so a wall display stays current.
@@ -674,7 +701,7 @@ export default function DeviceListPage({
                   <th className="pl-3 pr-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Dispositivo</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-md:hidden">Departamento</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-lg:hidden">Categoria</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-lg:hidden whitespace-nowrap">Último início de sessão</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider max-lg:hidden">Último início de sessão</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">Estado</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider"><span className="sr-only">Detalhes</span></th>
                 </tr>

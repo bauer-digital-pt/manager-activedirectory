@@ -51,6 +51,9 @@ declare global {
     adAPI: {
       getGroups(): Promise<PSResult<ADGroup[]>>;
       getGroupMembers(groupName: string): Promise<PSResult<ADUser[]>>;
+      // Whole directory in one call: categories + every member tagged with its
+      // category (groupName). One PowerShell spawn on Windows (was N+1).
+      getAllUsers(): Promise<PSResult<{ groups: ADGroup[]; users: (ADUser & { groupName: string })[] }>>;
       // params may include: firstName, lastName, username, password, groupName,
       // description, street, city, postalCode, changePasswordAtLogon,
       // passwordNeverExpires, jobTitle, department, company, email
@@ -213,6 +216,32 @@ const mockAPI: Window["adAPI"] = {
     return { ok: true, data };
   },
   getGroupMembers: async (g) => { await delay(); return { ok: true, data: MOCK_USERS[g] ?? [] }; },
+  getAllUsers: async () => {
+    await delay();
+    if (new URLSearchParams(location.search).has("groupsfail")) {
+      return {
+        ok: false,
+        error:
+          "Não foi possível contactar o servidor Active Directory. Confirma o endereço e as credenciais.",
+      };
+    }
+    const config = await getGroupConfig();
+    const groups = Object.keys(config).map((n) => ({
+      Name: n, Description: "", GroupCategory: "Security", GroupScope: "Global",
+    }));
+    // ?baduser injects a malformed member (mirrors getGroups) to prove the row
+    // never crashes the app on bad AD data.
+    if (new URLSearchParams(location.search).has("baduser") && groups[0]) {
+      MOCK_USERS[groups[0].Name] = [
+        ...(MOCK_USERS[groups[0].Name] ?? []),
+        { SamAccountName: undefined as unknown as string, DisplayName: undefined as unknown as string, EmailAddress: "", Enabled: true, LockedOut: false },
+      ];
+    }
+    const users = groups.flatMap((g) =>
+      (MOCK_USERS[g.Name] ?? []).map((u) => ({ ...u, groupName: g.Name })),
+    );
+    return { ok: true, data: { groups, users } };
+  },
   createUser: async (p) => {
     await delay(900);
     if (!MOCK_USERS[p.groupName]) MOCK_USERS[p.groupName] = [];
@@ -397,6 +426,7 @@ if (!window.adAPI) {
 export const adAPI = {
   getGroups:            () => window.adAPI.getGroups(),
   getGroupMembers:      (g: string) => window.adAPI.getGroupMembers(g),
+  getAllUsers:          () => window.adAPI.getAllUsers(),
   createUser:           (p: Record<string, string>) => window.adAPI.createUser(p),
   resetPassword:        (p: { username: string; newPassword: string }) => window.adAPI.resetPassword(p),
   setDeviceState:       (p: { identity: string; action: "enable" | "disable" }) => window.adAPI.setDeviceState(p),

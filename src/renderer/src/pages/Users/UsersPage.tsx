@@ -13,7 +13,7 @@ import { Button } from "../../components/ui/Button";
 import { focusRing } from "../../components/ui/controls";
 import { Kbd } from "../../components/ui/Kbd";
 import { userStatusRank } from "../../lib/userStatus";
-import { usersCache, setUsersCache, type UserWithGroup } from "../../lib/usersCache";
+import { usersCache, setUsersCache, persistUsersCache, hydrateUsersCacheFromDisk, type UserWithGroup } from "../../lib/usersCache";
 
 type ToastFn = (msg: string, opts?: ExternalToast) => void;
 
@@ -111,73 +111,46 @@ export default function UsersPage({
   const toastRef = useRef(toast);
   toastRef.current = toast;
 
-  // `background` (kiosk auto-refresh) reloads without the loading skeleton and,
-  // on a partial/total failure, keeps the last-good list instead of wiping it or
-  // nagging with a toast — a wall display should stay showing stale-but-useful
-  // data rather than flashing an error every 5 minutes.
-  const loadAllUsers = useCallback(async (gs: ADGroup[], background = false) => {
-    if (!background) setLoadingUsers(true);
-    const results = await Promise.all(
-      gs.map((g) =>
-        adAPI.getGroupMembers(g.Name).then((r) => {
-          if (r.ok)
-            // Same single-item serialization quirk as groups (one-member group).
-            return { failed: false, members: toArray<ADUser>(r.data).map((u) => ({ ...u, groupName: g.Name })) };
-          // A query failure (unreachable DC, bad credentials) must NOT silently
-          // look like an empty team — track it so we can warn the user.
-          return { failed: true, members: [] as UserWithGroup[] };
-        })
-      )
-    );
-    const failed = results.filter((r) => r.failed).length;
-
-    // In the background, only swap in a fully-successful reload — a transient
-    // failure must not blank out teams the operator can still see.
-    if (background && failed > 0) return;
-
-    // Dedupe by SamAccountName, keeping first occurrence
-    const seen = new Set<string>();
-    const merged: UserWithGroup[] = [];
-    for (const { members } of results) {
-      for (const u of members) {
-        if (!seen.has(u.SamAccountName)) {
-          seen.add(u.SamAccountName);
-          merged.push(u);
-        }
-      }
-    }
-    setAllUsers(merged);
-    setUsersCache({ users: merged, loaded: true });
-    if (!background) setLoadingUsers(false);
-
-    if (failed > 0 && !background) {
-      toastRef.current.error(
-        failed === gs.length
-          ? "Não foi possível carregar os utilizadores do Active Directory. Verifica a ligação."
-          : `Não foi possível carregar ${failed} de ${gs.length} grupos — a lista pode estar incompleta.`
-      );
-    }
-  }, []);
-
-  const loadGroups = useCallback((background = false) => {
-    if (!background) { setLoadingGroups(true); setGroupsError(null); }
+  // Load the WHOLE directory (categories + every member) in ONE call. On Windows
+  // this is a single PowerShell spawn instead of the old fan-out of one member
+  // query per category — that N+1 of pwsh startups + AD-module imports was the
+  // main reason "carregar utilizadores" was slow.
+  //
+  // `background` (kiosk auto-refresh, or the stale-while-revalidate refresh after a
+  // disk paint) reloads without the loading skeleton and, on failure, keeps the
+  // last-good list instead of wiping it or nagging with a toast — a wall display
+  // (or a warm page) should stay showing stale-but-useful data rather than flashing
+  // an error.
+  const loadDirectory = useCallback((background = false) => {
+    if (!background) { setLoadingGroups(true); setLoadingUsers(true); setGroupsError(null); }
     adAPI
-      .getGroups()
+      .getAllUsers()
       .then((r) => {
-        if (!background) setLoadingGroups(false);
-        if (r.ok) {
-          // Windows PowerShell's ConvertTo-Json emits a bare object (not an
-          // array) for a single group — normalize so one-group tenants work.
-          const gs = toArray<ADGroup>(r.data);
+        if (r.ok && r.data) {
+          // ConvertTo-Json can emit a bare object for a single element — normalize
+          // both arrays so a one-category / one-user tenant still works.
+          const gs = toArray<ADGroup>(r.data.groups);
+          const rawUsers = toArray<UserWithGroup>(r.data.users);
+          // Dedupe by SamAccountName, keeping first occurrence (a user can appear
+          // under more than one category via a nested-OU subtree match).
+          const seen = new Set<string>();
+          const merged: UserWithGroup[] = [];
+          for (const u of rawUsers) {
+            if (!seen.has(u.SamAccountName)) {
+              seen.add(u.SamAccountName);
+              merged.push(u);
+            }
+          }
           setGroups(gs);
+          setAllUsers(merged);
           setGroupsError(null);
-          setUsersCache({ groups: gs, error: null });
-          loadAllUsers(gs, background);
+          setUsersCache({ groups: gs, users: merged, error: null, loaded: true });
+          persistUsersCache();
         } else if (!background) {
           // Explicit, recoverable error state — never a misleading "No users found".
           setGroups([]);
           setAllUsers([]);
-          const err = r.error ?? "Não foi possível carregar os grupos do Active Directory.";
+          const err = r.error ?? "Não foi possível carregar os utilizadores do Active Directory.";
           setGroupsError(err);
           setUsersCache({ groups: [], users: [], error: err, loaded: true });
         }
@@ -185,7 +158,6 @@ export default function UsersPage({
       })
       .catch((e) => {
         if (background) return; // keep last-good on a background hiccup
-        setLoadingGroups(false);
         setGroups([]);
         setAllUsers([]);
         const err =
@@ -194,26 +166,41 @@ export default function UsersPage({
             : "Não foi possível comunicar com o Active Directory.";
         setGroupsError(err);
         setUsersCache({ groups: [], users: [], error: err, loaded: true });
+      })
+      .finally(() => {
+        if (!background) { setLoadingGroups(false); setLoadingUsers(false); }
       });
-  }, [loadAllUsers]);
+  }, []);
 
   useEffect(() => {
-    // Only fetch on the first ever mount; subsequent mounts reuse the cache.
-    if (!usersCache.loaded) loadGroups();
-  }, [loadGroups]);
+    // Subsequent mounts reuse the in-memory cache. On the first ever mount, try
+    // disk first: a last-good directory paints INSTANTLY and refreshes in the
+    // background (stale-while-revalidate), so a cold launch isn't a slow fan-out
+    // of one member query per group. No disk cache → foreground load.
+    if (usersCache.loaded) return;
+    if (hydrateUsersCacheFromDisk()) {
+      setGroups(usersCache.groups);
+      setAllUsers(usersCache.users);
+      setGroupsError(null);
+      setLoadingGroups(false);
+      loadDirectory(true);
+    } else {
+      loadDirectory();
+    }
+  }, [loadDirectory]);
 
   // Kiosk: silently refresh the directory every 5 minutes so the live view (and
   // the top locked/expired bucket) stays current without any operator action.
   useEffect(() => {
     if (!kiosk) return;
-    const id = setInterval(() => loadGroups(true), 5 * 60 * 1000);
+    const id = setInterval(() => loadDirectory(true), 5 * 60 * 1000);
     return () => clearInterval(id);
-  }, [kiosk, loadGroups]);
+  }, [kiosk, loadDirectory]);
 
   // Full reload — used by the toolbar refresh button and after creating a user.
   const refresh = useCallback(() => {
-    loadGroups();
-  }, [loadGroups]);
+    loadDirectory();
+  }, [loadDirectory]);
 
   // Creating a user requires at least one group to place them in. With no
   // groups the wizard would be a dead-end, so the entry points no-op instead.
@@ -484,7 +471,7 @@ export default function UsersPage({
         ) : groupsError ? (
           <GroupsError
             message={groupsError}
-            onRetry={() => loadGroups()}
+            onRetry={() => loadDirectory()}
             onOpenSettings={onOpenSettings}
           />
         ) : filtered.length === 0 ? (

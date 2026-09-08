@@ -69,6 +69,9 @@ contextBridge.exposeInMainWorld("consoleAPI", {
 contextBridge.exposeInMainWorld("adAPI", {
   getGroups: () => ipcRenderer.invoke("ad:get-groups"),
   getGroupMembers: (groupName: string) => ipcRenderer.invoke("ad:get-group-members", groupName),
+  // Whole directory (categories + members) in one call — one PowerShell spawn on
+  // Windows instead of the per-category fan-out.
+  getAllUsers: () => ipcRenderer.invoke("ad:get-all-users"),
   createUser: (params: Record<string, string>) => ipcRenderer.invoke("ad:create-user", params),
   resetPassword: (params: { username: string; newPassword: string }) =>
     ipcRenderer.invoke("ad:reset-password", params),
