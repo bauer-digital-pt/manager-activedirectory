@@ -5,7 +5,7 @@ import { spawn, execFile } from "child_process";
 import os from "node:os";
 import electronUpdater from "electron-updater";
 import { runPS, type ADConnection, type LogEntry } from "./ps-runner";
-import { DEFAULT_DC } from "../shared/constants";
+import { DEFAULT_DC, migrateInventoryBaseUrl } from "../shared/constants";
 import { BUILD_FLAVOR, FLAVOR_META } from "../shared/flavor";
 import type { AppSettings, DeviceConfig, OnboardState, StartupInfo, PSResult, InventoryHealth, AssetPublicLink, ADGroup, ADUser, ADUserLite, ADComputer, WifiStatus } from "../shared/types";
 import {
@@ -130,8 +130,10 @@ function getConnection(): ADConnection {
 }
 
 // --- Inventory API config (inventory.json) ---
-// Points the Manager at the internal read-only inventory API (pyexp-inventory on
-// pt-srv-pyexp). Only the address + master switch are stored — there is NO token
+// Points the Manager at the internal read-only inventory API — today the legacy
+// pyexp-inventory container on pt-srv-pyexp-01 (`pt-srv-pyexp` in older comments
+// was this container's own name, never a separate machine; nothing resolves it).
+// Only the address + master switch are stored — there is NO token
 // and NO service account: every read is signed with the live login session (see
 // inventoryGet). Manager-only: the Agent installer never reads this.
 interface StoredInventory {
@@ -139,18 +141,30 @@ interface StoredInventory {
   enabled: boolean;
 }
 
-// Default address of the internal inventory API. Off Windows the Manager
-// authenticates + reads AD through this API, so the login screen no longer asks
-// for the address — it falls back to this unless changed in Definições →
-// Inventário. The master switch still defaults OFF: a stored address alone never
-// auto-connects (see inventoryGet), so on Windows this is just a pre-filled hint.
-const DEFAULT_INVENTORY_BASE_URL = "http://10.4.4.69:8000";
-
+// DEFAULT_INVENTORY_BASE_URL, LEGACY_INVENTORY_BASE_URLS and
+// migrateInventoryBaseUrl() live in src/shared/constants.ts — same shape as
+// DEFAULT_DC + LEGACY_DCS/migrateServer() above, but placed there so `node --test`
+// can reach them. THE CUTOVER is one line in that file.
+//
+// Off Windows the Manager authenticates + reads AD through this API, so the login
+// screen no longer asks for the address — it falls back to the default unless
+// changed in Definições → Inventário. The master switch still defaults OFF: a
+// stored address alone never auto-connects (see inventoryGet), so on Windows this
+// is just a pre-filled hint.
+//
+// The migration is applied at READ time rather than as a one-time rewrite of
+// inventory.json, because makeJsonStore's normalize() is a pure read-shaper with no
+// write access, by design (exactly as migrateServer is). The practical consequence:
+// after the cutover nobody can deliberately point the Manager back at a superseded
+// address through the UI — it would take removing the entry from that list. That is
+// the intended trade. Aiming production at a decommissioned API should cost a code
+// change, not a quiet setting, and the list only ever matches addresses already dead.
 const inventoryStore = makeJsonStore<StoredInventory>("inventory.json", (raw) => {
   const r = (raw ?? {}) as Partial<StoredInventory>;
-  const stored = typeof r.baseUrl === "string" ? r.baseUrl.trim() : "";
   return {
-    baseUrl: stored || DEFAULT_INVENTORY_BASE_URL,
+    // migrateInventoryBaseUrl("") returns the default, so a missing/blank address
+    // self-heals — same contract as migrateServer("").
+    baseUrl: migrateInventoryBaseUrl(typeof r.baseUrl === "string" ? r.baseUrl : ""),
     enabled: !!r.enabled,
   };
 });
@@ -1597,7 +1611,7 @@ handle("ad:test-connection", async (_e, rawOverride) => {
   return r;
 });
 
-// --- Inventory API transport (internal read-only HTTP API on pt-srv-pyexp) ---
+// --- Inventory API transport (the internal read-only HTTP API; address is a setting) ---
 // Every call is a GET signed with the current login session (HTTP Basic — no token
 // and no service account; see inventoryGet). Failures collapse to a
 // { ok:false, error } envelope (same contract as the PS runner) so the renderer
