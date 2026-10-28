@@ -286,3 +286,95 @@ PowerShell/Windows. Só as *leituras* podem ir pela API. O **Agent** (wizard PC)
 - `Dockerfile.api`, `deploy/inventory-api.compose.yml`, `tests/test_api.py`.
 - **Config partilhada** (`config.py`, `config.example.yaml`): `ApiConfig` + secção `api:` — alterações
   do próprio InventorySystem, fora deste repo.
+
+---
+
+## 10. O corte para a API do pyexporter (preparado 2026-10-28, NÃO executado)
+
+Esta secção é o estado medido em produção no dia, mais a sequência do corte. O código
+deste PR prepara-o; **nada foi cortado**.
+
+### Onde está a API hoje
+
+Não há "host da API antiga" para desmantelar. É um **contentor legado na própria
+`pt-srv-pyexp-01`**:
+
+| | medido 2026-10-28 |
+|---|---|
+| endereço | `http://10.4.4.69:8000` (o default desta app) |
+| `/healthz` | `200` — `{"version":"0.1.0","mode":"live","directory_enabled":true}` |
+| `/api/v1/assets` sem credenciais | `401` (o router autenticado está montado) |
+| `:8760` na mesma máquina | fechado |
+
+Na **mesma** máquina corre o `pyexporter`, que reporta `version: 1.0.0` e traz esta API
+portada. É a versão que distingue os dois programas. O nome `pt-srv-pyexp` que aparece
+em comentários antigos era o nome deste contentor, nunca uma segunda máquina — não
+resolve em DNS, nem ele nem `pt-srv-pyexp.bmap.lis`.
+
+**Caches da API antiga, no mesmo instante:** `assets` e `devices_ad` com ~5.0 dias,
+`members` e `reconciliation` com ~56.1 dias. São caches *stale-while-revalidate*, logo a
+idade mede a última actualização com sucesso — o que para uma entrada que só refresca
+quando é pedida pode significar "ninguém chamou esse endpoint desde então" e não
+"o refresh está a falhar". Não é possível distinguir sem os logs do contentor. Em
+qualquer dos casos, uma leitura hoje vem de um retrato com essa idade até uma chamada o
+renovar; vale a pena saber antes de alguém dizer que a API antiga "está a funcionar".
+
+### Para onde vai
+
+Máquina dedicada `pt-srv-pyexp-03`, porta **8760**, atrás de **TLS**. A máquina **ainda
+não existe**: não há IP nem nome de TLS. O lado do pyexporter está feito e em produção,
+inerte, à espera de duas variáveis de repositório.
+
+O TLS não é polimento: a autenticação desta API manda a **password de domínio** do
+utilizador num header HTTP Basic a cada pedido. Enquanto a porta esteve presa ao
+`127.0.0.1` da pt-srv-pyexp-01 isso era inofensivo; numa máquina feita para receber
+chamadas de fora, sem TLS são credenciais em claro na rede.
+
+### Porque é que não há flip transparente
+
+O `MERGE_PLAN` do pyexporter (OQ2) assumia "manter a :8760 e fazer um flip de DNS". Não
+dá: a API antiga está na **:8000** e a nova fica na **:8760**, e com TLS muda também o
+esquema para `https`. O endereço do cliente **tem** de mudar — e é por isso que mudar só
+o default não bastava, ver abaixo.
+
+### Sequência
+
+1. Construir a `pt-srv-pyexp-03` (dentro da rede: a API faz bind em AD por pedido),
+   registar o runner, pôr TLS à frente da `:8760`.
+2. Pôr as duas variáveis no repo do pyexporter — é o que faz a perna de deploy existir.
+3. Confirmar que a API nova responde: `GET /healthz` (aberto, sem auth) e uma leitura
+   autenticada em `/api/v1/assets`.
+4. **Aqui:** mudar `DEFAULT_INVENTORY_BASE_URL` em `src/shared/constants.ts` para o
+   endereço novo, e lançar. É uma linha. As instalações que têm o endereço antigo
+   gravado migram sozinhas (ver abaixo); nenhuma precisa de ser visitada.
+5. Só depois: parar o contentor `:8000` na pt-srv-pyexp-01.
+
+### Porque é que mudar só o default não bastava
+
+O endereço gravado em `inventory.json` **ganha** ao default:
+
+```ts
+baseUrl: stored || DEFAULT_INVENTORY_BASE_URL
+```
+
+Qualquer máquina onde alguém abriu Definições → Inventário tem o endereço gravado.
+Mudar o default moveria só as instalações nunca configuradas; as outras continuariam a
+chamar a `:8000` em silêncio, inclusive depois de o contentor morrer, e o único sintoma
+seria um separador de inventário que deixou de funcionar por razões que o utilizador não
+vê.
+
+Daí `LEGACY_INVENTORY_BASE_URLS` + `migrateInventoryBaseUrl()` em
+`src/shared/constants.ts` — a mesma forma que `LEGACY_DCS` + `migrateServer()` já usava
+para o controlador de domínio. Um endereço gravado que seja um dos que **nós** enviámos
+como default é tratado como não-configurado, e o default actual assume. Um endereço que
+alguém escreveu à mão por outra razão fica intocado.
+
+Consequência assumida: depois do corte não se consegue apontar a app a um endereço
+superseded pela UI — seria preciso tirar a entrada da lista. É a troca pretendida.
+Apontar produção a uma API desmantelada deve custar uma mudança de código, não uma
+definição silenciosa.
+
+**Fora de âmbito, mas registado:** o caminho de browser (dev/mock) em
+`src/renderer/src/lib/inventoryConfig.ts` guarda o seu próprio `baseUrl` em
+`localStorage` (`admanager.inventory`) e não passa por esta migração. Só afecta
+dev/mock, onde o valor em falta devolve `""` e o default do processo principal assume.
